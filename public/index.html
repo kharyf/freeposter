@@ -1,0 +1,774 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FreePoster</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --panel: #fff; --ink: #1c1b19; --muted: #6b6862; --line: #e4e1da;
+    --accent: #1f5eff; --ok: #1d7a46; --warn: #a15c00; --bad: #b42318;
+    --tiktok: #111; --instagram: #c13584; --facebook: #1877f2; --x: #000; --youtube: #e00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161615; --panel: #201f1d; --ink: #ecebe7; --muted: #a09d96; --line: #34322e; --accent: #6d95ff; --ok: #4cc283; --warn: #f0a640; --bad: #ff6b5e; --tiktok: #ddd; --x: #ddd; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { padding: 18px 24px; border-bottom: 1px solid var(--line); display: flex; align-items: baseline; gap: 12px; }
+  header h1 { margin: 0; font-size: 20px; letter-spacing: -0.01em; }
+  header span { color: var(--muted); font-size: 13px; }
+  main { display: grid; grid-template-columns: minmax(0, 420px) minmax(0, 1fr); gap: 20px; padding: 20px 24px; max-width: 1280px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; padding: 16px; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 20px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 12px; }
+  label { display: block; font-weight: 600; font-size: 13px; margin: 12px 0 4px; }
+  input[type=text], input[type=password], input[type=number], textarea, select { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); font: inherit; }
+  textarea { min-height: 110px; resize: vertical; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--bg); color: var(--ink); padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; padding: 10px 16px; width: 100%; margin-top: 16px; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .row { display: flex; align-items: center; gap: 8px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .platform-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-top: 1px solid var(--line); gap: 8px; }
+  .platform-row:first-of-type { border-top: 0; }
+  .acct { display: flex; align-items: center; gap: 8px; font-size: 14px; padding: 4px 0 4px 18px; }
+  .acct button { padding: 2px 8px; font-size: 12px; margin-left: auto; }
+  .counters { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .over { color: var(--bad); font-weight: 600; }
+  video { width: 100%; max-height: 320px; background: #000; border-radius: 8px; margin-top: 8px; display: none; }
+  .tiktok-box { border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-top: 12px; display: none; }
+  .tiktok-box .check { display: flex; gap: 8px; align-items: center; font-weight: 400; margin: 6px 0; }
+  .tiktok-box .check input { margin: 0; }
+  .banner { padding: 10px 14px; border-radius: 8px; margin: 0 24px; margin-top: 16px; white-space: pre-line; }
+  .banner.err { background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad); }
+  .banner.ok { background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); }
+  .post { border-top: 1px solid var(--line); padding: 12px 0; }
+  .post:first-child { border-top: 0; padding-top: 0; }
+  .post .cap { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 3em; overflow: hidden; }
+  .when { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; }
+  .when label { font-weight: 400; margin: 0; }
+  .when input[type=radio] { margin: 0; }
+  input[type=datetime-local] { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); font: inherit; color-scheme: light dark; }
+  #scheduleNote { margin-top: 6px; }
+  .when-at { font-weight: 600; }
+  .upcoming-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }
+  .state.scheduled { color: var(--accent); }
+  .job { display: grid; grid-template-columns: 130px 110px 1fr auto; gap: 8px; align-items: start; font-size: 13px; padding: 4px 0; }
+  @media (max-width: 600px) { .job { grid-template-columns: 1fr 1fr; } }
+  .state { font-weight: 600; }
+  .state.published { color: var(--ok); } .state.failed { color: var(--bad); }
+  .state.retry, .state.waiting_quota { color: var(--warn); } .state.running, .state.queued { color: var(--accent); }
+  .job .detail { overflow-wrap: anywhere; color: var(--muted); }
+  .job a { color: var(--accent); }
+  header .actions { margin-left: auto; display: flex; gap: 8px; }
+  a.link { color: var(--accent); }
+  /* ---- setup wizard ---- */
+  #setup { position: fixed; inset: 0; background: var(--bg); z-index: 10; display: none; overflow: auto; }
+  #setup.open { display: block; }
+  .wiz { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; max-width: 1040px; margin: 0 auto; padding: 24px; }
+  @media (max-width: 760px) { .wiz { grid-template-columns: 1fr; padding: 16px; } .steps { display: flex; flex-wrap: wrap; gap: 4px; } }
+  .steps { list-style: none; margin: 0; padding: 0; }
+  .steps li { padding: 8px 10px; border-radius: 6px; font-size: 14px; color: var(--muted); cursor: pointer; display: flex; gap: 8px; align-items: center; border: 1px solid transparent; }
+  .steps li.on { background: var(--panel); color: var(--ink); font-weight: 600; border-color: var(--line); }
+  .steps .tick { width: 16px; text-align: center; }
+  .steps .tick.done { color: var(--ok); }
+  .wiz h1 { font-size: 22px; margin: 0 0 8px; letter-spacing: -0.01em; }
+  .wiz ol { padding-left: 20px; } .wiz ol li { margin: 8px 0; }
+  .copy { display: flex; gap: 6px; margin: 6px 0; }
+  .copy code { flex: 1; padding: 7px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; font-size: 13px; overflow-wrap: anywhere; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
+  @media (max-width: 600px) { .grid2 { grid-template-columns: 1fr; } }
+  .field .hint { color: var(--muted); font-size: 12px; margin-top: 3px; }
+  .nav { display: flex; gap: 8px; margin-top: 20px; align-items: center; }
+  .nav .primary { width: auto; margin: 0 0 0 auto; }
+  .check-ok { color: var(--ok); font-weight: 600; } .check-bad { color: var(--bad); font-weight: 600; }
+  .note { border-left: 3px solid var(--warn); padding: 6px 10px; margin: 12px 0; font-size: 13px; color: var(--muted); }
+  details summary { cursor: pointer; font-weight: 600; margin-top: 14px; }
+</style>
+</head>
+<body>
+<header><h1>FreePoster</h1><span>one video → TikTok · Instagram · Facebook · X · YouTube</span>
+  <div class="actions"><button type="button" id="openSetup">Setup</button><button type="button" id="quit" hidden>Quit</button></div>
+</header>
+<div id="banner"></div>
+<main>
+  <div>
+    <section>
+      <h2>Accounts</h2>
+      <div id="accounts" class="muted">Loading…</div>
+    </section>
+    <section id="agents">
+      <h2>AI agents</h2>
+      <p class="muted" style="margin-top:0">Claude, Cursor, Codex and other agents can post for you through FreePoster's MCP server, built in while FreePoster runs. Point your agent at this address:</p>
+      <div id="agentsBody"></div>
+    </section>
+    <section>
+      <h2>New post</h2>
+      <form id="form">
+        <label for="file">Video</label>
+        <input id="file" type="file" accept="video/*" required>
+        <video id="preview" controls muted playsinline></video>
+        <div id="durationNote" class="muted"></div>
+
+        <label for="title">Title <span class="muted">(YouTube; defaults to the caption's first line)</span></label>
+        <input id="title" type="text" maxlength="100">
+
+        <label for="caption">Caption</label>
+        <textarea id="caption"></textarea>
+        <div class="counters" id="counters"></div>
+
+        <label>Post to</label>
+        <div id="targets" class="muted">Connect an account first.</div>
+
+        <div class="tiktok-box" id="tiktokBox"></div>
+
+        <label>When</label>
+        <div class="when">
+          <label class="row"><input type="radio" name="when" value="now" checked> Now</label>
+          <label class="row"><input type="radio" name="when" value="later"> Schedule for</label>
+          <input type="datetime-local" id="scheduleAt" disabled>
+        </div>
+        <div id="scheduleNote" class="muted" hidden>FreePoster has to be running at that time; if it isn't, the post goes out as soon as FreePoster starts again.<span class="desktop-only" hidden> Closing the window keeps it running in the background until scheduled posts are out.</span></div>
+
+        <button class="primary" id="submit" type="submit">Publish</button>
+      </form>
+    </section>
+  </div>
+  <div>
+    <section id="upcomingSection" hidden>
+      <h2>Upcoming</h2>
+      <div id="upcoming"></div>
+    </section>
+    <section>
+      <h2>Posts</h2>
+      <div id="posts" class="muted">Nothing posted yet.</div>
+    </section>
+  </div>
+</main>
+
+<div id="setup" role="dialog" aria-modal="true" aria-label="FreePoster setup">
+  <div class="wiz">
+    <nav><ul class="steps" id="steps"></ul></nav>
+    <section id="stepBody"></section>
+  </div>
+</div>
+<script>
+const COLORS = { tiktok: "var(--tiktok)", instagram: "var(--instagram)", facebook: "var(--facebook)", x: "var(--x)", youtube: "var(--youtube)" };
+const LIMITS = [["X", 280, "x"], ["TikTok", 2200, "tiktok"], ["Instagram", 2200, "instagram"], ["YouTube", 5000, "youtube"]];
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+let status = { platforms: [], accounts: [] };
+let videoDuration = null;
+let creators = {}; // tiktok account id -> creator_info
+
+function banner(kind, text) {
+  $("banner").innerHTML = text ? `<div class="banner ${kind}">${esc(text)}</div>` : "";
+}
+
+// X's counting: URLs are 23, characters above U+10FF count 2.
+function xLength(t) {
+  let n = 0;
+  t = t.replace(/https?:\/\/\S+/g, () => { n += 23; return ""; });
+  for (const ch of t) n += ch.codePointAt(0) > 0x10ff ? 2 : 1;
+  return n;
+}
+
+async function loadStatus() {
+  status = await (await fetch("/api/status")).json();
+  const byPlatform = (p) => status.accounts.filter((a) => a.platform === p);
+  $("accounts").innerHTML = status.platforms.map((p) => `
+    <div class="platform-row">
+      <div class="row"><span class="dot" style="background:${COLORS[p.platform]}"></span><strong>${esc(p.label)}</strong></div>
+      ${p.configured ? `<a href="/connect/${p.platform}"><button type="button">${byPlatform(p.platform).length ? "Add / reconnect" : "Connect"}</button></a>`
+                     : `<button type="button" data-setup="${p.platform === "instagram" ? "facebook" : p.platform}">Set up</button>`}
+    </div>
+    ${byPlatform(p.platform).map((a) => `
+      <div class="acct">${esc(a.name)}
+        ${a.reconnectSoon ? `<span class="over">reconnect soon</span>` : ""}
+        <button type="button" data-remove="${a.id}">Remove</button>
+      </div>`).join("")}
+  `).join("");
+  const prev = new Set(selectedIds());
+  $("targets").innerHTML = status.accounts.length
+    ? status.accounts.map((a) => `
+      <label class="row" style="font-weight:400;margin:4px 0">
+        <input type="checkbox" value="${a.id}" data-platform="${a.platform}" ${prev.has(a.id) ? "checked" : ""}>
+        <span class="dot" style="background:${COLORS[a.platform]}"></span>
+        ${esc(status.platforms.find((p) => p.platform === a.platform).label)} — ${esc(a.name)}
+      </label>`).join("")
+    : "Connect an account first.";
+  checkDuration();
+}
+
+const selectedIds = () => [...document.querySelectorAll("#targets input:checked")].map((i) => Number(i.value));
+const selectedAccounts = () => status.accounts.filter((a) => selectedIds().includes(a.id));
+
+function updateCounters() {
+  const text = $("caption").value;
+  const chosen = new Set(selectedAccounts().map((a) => a.platform));
+  $("counters").innerHTML = LIMITS.filter(([, , p]) => !chosen.size || chosen.has(p)).map(([name, max, p]) => {
+    const n = p === "x" ? xLength(text) : text.length;
+    return `<span class="${n > max ? "over" : ""}">${name} ${n}/${max}</span>`;
+  }).join("");
+}
+
+function checkDuration() {
+  if (videoDuration == null) return ($("durationNote").textContent = "");
+  const tooLong = selectedAccounts().filter((a) => videoDuration > a.maxDurationSec + 0.05)
+    .map((a) => `${a.name} (${a.platform}, max ${a.maxDurationSec}s)`);
+  $("durationNote").innerHTML = `Length ${videoDuration.toFixed(1)}s` +
+    (tooLong.length ? ` — <span class="over">too long for ${esc(tooLong.join(", "))}</span>` : "");
+}
+
+// ---- TikTok posting controls, built from live creator_info as TikTok's guidelines require ----
+
+async function renderTikTok() {
+  const box = $("tiktokBox");
+  const acct = selectedAccounts().find((a) => a.platform === "tiktok");
+  if (!acct) { box.style.display = "none"; box.innerHTML = ""; return; }
+  box.style.display = "block";
+  if (!creators[acct.id]) {
+    box.innerHTML = `<span class="muted">Loading TikTok account settings…</span>`;
+    const res = await fetch(`/api/accounts/${acct.id}/tiktok-creator`);
+    const body = await res.json();
+    if (!res.ok) { box.innerHTML = `<span class="over">TikTok: ${esc(body.error)}</span>`; return; }
+    creators[acct.id] = body;
+  }
+  const c = creators[acct.id];
+  const labels = { PUBLIC_TO_EVERYONE: "Everyone", MUTUAL_FOLLOW_FRIENDS: "Friends", FOLLOWER_OF_CREATOR: "Followers", SELF_ONLY: "Only me" };
+  box.innerHTML = `
+    <div class="row"><img src="${esc(c.creator_avatar_url)}" alt="" width="28" height="28" style="border-radius:50%">
+      <div>Posting to TikTok as <strong>${esc(c.creator_nickname)}</strong> <span class="muted">@${esc(c.creator_username)}</span></div></div>
+    <label for="ttPrivacy">Who can view this video</label>
+    <select id="ttPrivacy" required>
+      <option value="" selected disabled>Choose…</option>
+      ${c.privacy_level_options.map((o) => `<option value="${o}">${labels[o] ?? o}</option>`).join("")}
+    </select>
+    <label>Allow users to</label>
+    <label class="check"><input type="checkbox" id="ttComment" ${c.comment_disabled ? "disabled" : ""}> Comment ${c.comment_disabled ? "<span class='muted'>(off in your TikTok settings)</span>" : ""}</label>
+    <label class="check"><input type="checkbox" id="ttDuet" ${c.duet_disabled ? "disabled" : ""}> Duet ${c.duet_disabled ? "<span class='muted'>(off in your TikTok settings)</span>" : ""}</label>
+    <label class="check"><input type="checkbox" id="ttStitch" ${c.stitch_disabled ? "disabled" : ""}> Stitch ${c.stitch_disabled ? "<span class='muted'>(off in your TikTok settings)</span>" : ""}</label>
+    <label class="check" style="font-weight:600;margin-top:12px"><input type="checkbox" id="ttDisclose"> Disclose video content</label>
+    <div id="ttDiscloseBox" style="display:none;padding-left:22px">
+      <div class="muted">Turn on to disclose that this video promotes goods or services in exchange for something of value.</div>
+      <label class="check"><input type="checkbox" id="ttOrganic"> Your brand <span class="muted">— labeled "Promotional content"</span></label>
+      <label class="check"><input type="checkbox" id="ttBranded"> Branded content <span class="muted">— labeled "Paid partnership"</span></label>
+      <div id="ttDiscloseWarn" class="over"></div>
+    </div>
+    <p class="muted" id="ttConsent"></p>
+    <p class="muted">Max length for this account: ${c.max_video_post_duration_sec}s. After publishing, it may take a few minutes for the video to appear on your profile.</p>`;
+  acct.maxDurationSec = c.max_video_post_duration_sec;
+  const sync = () => {
+    const disclose = $("ttDisclose").checked;
+    $("ttDiscloseBox").style.display = disclose ? "block" : "none";
+    const branded = disclose && $("ttBranded").checked;
+    const selfOnly = $("ttPrivacy").querySelector('option[value="SELF_ONLY"]');
+    if (selfOnly) {
+      selfOnly.disabled = branded;
+      selfOnly.textContent = branded ? "Only me (not available for branded content)" : "Only me";
+      if (branded && $("ttPrivacy").value === "SELF_ONLY") $("ttPrivacy").value = "";
+    }
+    $("ttDiscloseWarn").textContent = disclose && !$("ttOrganic").checked && !$("ttBranded").checked
+      ? "Choose at least one option to disclose." : "";
+    $("ttConsent").innerHTML = branded
+      ? `By posting, you agree to TikTok's <a href="https://www.tiktok.com/legal/page/global/bc-policy/en" target="_blank">Branded Content Policy</a> and <a href="https://www.tiktok.com/legal/page/global/music-usage-confirmation/en" target="_blank">Music Usage Confirmation</a>.`
+      : `By posting, you agree to TikTok's <a href="https://www.tiktok.com/legal/page/global/music-usage-confirmation/en" target="_blank">Music Usage Confirmation</a>.`;
+  };
+  for (const id of ["ttDisclose", "ttOrganic", "ttBranded", "ttPrivacy"]) $(id).addEventListener("change", sync);
+  sync();
+  checkDuration();
+}
+
+function tiktokOptions() {
+  if (!selectedAccounts().some((a) => a.platform === "tiktok")) return null;
+  const privacy = $("ttPrivacy")?.value;
+  if (!privacy) throw new Error("Choose who can view the TikTok video.");
+  const disclose = $("ttDisclose").checked;
+  if (disclose && !$("ttOrganic").checked && !$("ttBranded").checked) throw new Error("Choose a TikTok disclosure option, or turn disclosure off.");
+  return {
+    privacyLevel: privacy,
+    disableComment: !$("ttComment").checked,
+    disableDuet: !$("ttDuet").checked,
+    disableStitch: !$("ttStitch").checked,
+    brandOrganic: disclose && $("ttOrganic").checked,
+    brandContent: disclose && $("ttBranded").checked,
+  };
+}
+
+// ---- setup wizard: asks for every value FreePoster needs, saves it to .env, then connects accounts ----
+
+const ext = (href, text) => `<a class="link" href="${href}" target="_blank" rel="noopener">${text}</a>`;
+const SETUP_PLATFORMS = {
+  youtube: {
+    title: "YouTube", short: "YouTube", uris: ["youtube"],
+    fields: [["YOUTUBE_CLIENT_ID", "Client ID"], ["YOUTUBE_CLIENT_SECRET", "Client secret"]],
+    steps: [
+      `In the ${ext("https://console.cloud.google.com/projectcreate", "Google Cloud console")}, create a project (or pick one).`,
+      `Enable the ${ext("https://console.cloud.google.com/apis/library/youtube.googleapis.com", "YouTube Data API v3")} for it.`,
+      `Under ${ext("https://console.cloud.google.com/auth/overview", "Google Auth Platform")}, fill in the consent screen. While the app is in Testing, add your own Google account under <em>Audience → Test users</em>.`,
+      `Go to ${ext("https://console.cloud.google.com/auth/clients", "Clients")} → <em>Create client</em> → type <strong>Web application</strong>, and add this <strong>Authorized redirect URI</strong>:`,
+      `Copy the client's <strong>Client ID</strong> and <strong>Client secret</strong> into the boxes below.`,
+    ],
+    note: "Until Google audits your project, YouTube makes every upload from it Private.",
+  },
+  tiktok: {
+    title: "TikTok", short: "TikTok", uris: ["tiktok"],
+    fields: [["TIKTOK_CLIENT_KEY", "Client key"], ["TIKTOK_CLIENT_SECRET", "Client secret"]],
+    steps: [
+      `In ${ext("https://developers.tiktok.com/apps", "TikTok for Developers")}, create an app.`,
+      `Add the <strong>Login Kit</strong> and <strong>Content Posting API</strong> products, and turn on <strong>Direct Post</strong>.`,
+      `Add the scopes <code>user.info.basic</code> and <code>video.publish</code>.`,
+      `In the app's basic information, enter FreePoster's <strong>Terms of Service URL</strong> <code>https://freeposter.pages.dev/terms</code> and <strong>Privacy Policy URL</strong> <code>https://freeposter.pages.dev/privacy</code>.`,
+      `In Login Kit, register this <strong>Redirect URI</strong>:`,
+      `Copy the app's <strong>Client key</strong> and <strong>Client secret</strong> into the boxes below.`,
+    ],
+    note: "Until TikTok audits your app, your posts can only be visible to you.",
+    tunnelNote: "TikTok only accepts https redirect URIs: if it refuses the localhost address, set up a tunnel in the Address step.",
+  },
+  facebook: {
+    title: "Instagram & Facebook", short: "Instagram or Facebook", uris: ["facebook", "instagram"],
+    fields: [["FACEBOOK_APP_ID", "App ID"], ["FACEBOOK_APP_SECRET", "App secret"]],
+    steps: [
+      `In ${ext("https://developers.facebook.com/apps", "Meta for Developers")}, create an app of type <strong>Business</strong>. One app covers both Instagram and Facebook.`,
+      `Add the products <strong>Facebook Login for Business</strong> and <strong>Instagram API</strong> (the "API setup with Facebook login" option).`,
+      `In Facebook Login for Business → Settings, add <strong>both</strong> of these as <strong>Valid OAuth Redirect URIs</strong>:`,
+      `From <em>App settings → Basic</em>, copy the <strong>App ID</strong> and <strong>App secret</strong> into the boxes below.`,
+    ],
+    note: "Facebook posts go to a Page, not a personal profile. Instagram must be a Business or Creator account linked to that Facebook Page.",
+  },
+  x: {
+    title: "X", short: "X", uris: ["x"],
+    fields: [["X_CLIENT_ID", "OAuth 2.0 Client ID"], ["X_CLIENT_SECRET", "OAuth 2.0 Client secret"]],
+    steps: [
+      `In the ${ext("https://developer.x.com/en/portal/dashboard", "X developer portal")}, open your app's <em>User authentication settings</em> → <em>Set up</em>.`,
+      `Choose <strong>Read and write</strong> permissions and the app type <strong>Web App, Automated App or Bot</strong>.`,
+      `Enter this as the <strong>Callback URI / Redirect URL</strong> (X also asks for a website; any of yours works):`,
+      `Under <em>Keys and tokens</em>, copy the <strong>OAuth 2.0 Client ID and Client Secret</strong> (not the API key) into the boxes below.`,
+    ],
+    note: "Posting needs an X API plan that allows it. Premium accounts can raise the caption and video length limits in the Limits step.",
+  },
+};
+
+const SETUP_STEPS = [
+  { id: "welcome", title: "Welcome" },
+  { id: "address", title: "Address" },
+  ...Object.entries(SETUP_PLATFORMS).map(([id, p]) => ({ id, title: p.title, platform: true })),
+  { id: "limits", title: "Limits" },
+  { id: "connect", title: "Connect accounts" },
+];
+let settings = null;
+let stepIndex = 0;
+
+// With the hosted redirect page, every platform returns to one fixed https address: no Address step.
+const setupSteps = () => SETUP_STEPS.filter((s) => s.id !== "address" || !settings.redirectPage);
+
+async function openSetup(stepId) {
+  settings = await (await fetch("/api/settings")).json();
+  stepIndex = Math.max(0, setupSteps().findIndex((s) => s.id === stepId));
+  $("setup").classList.add("open");
+  renderSetup();
+}
+
+function closeSetup() {
+  $("setup").classList.remove("open");
+  sessionStorage.removeItem("setupStep");
+  loadStatus();
+}
+
+const stepDone = (s) =>
+  s.id === "welcome" ? Boolean(settings.tools.ffmpeg && settings.tools.ffprobe)
+  : s.platform ? settings.configured[s.id]
+  : s.id === "connect" ? status.accounts.length > 0
+  : false;
+
+function field(key, label, hint = "", type = "text") {
+  const secret = key in settings.secretsSet;
+  const placeholder = secret && settings.secretsSet[key] ? "saved — leave blank to keep" : "";
+  return `<div class="field"><label for="f_${key}">${label}</label>
+    <input id="f_${key}" data-key="${key}" type="${secret ? "password" : type}" value="${secret ? "" : esc(settings.values[key])}"
+      placeholder="${placeholder}" autocomplete="off" spellcheck="false">
+    ${hint ? `<div class="hint">${hint}</div>` : ""}</div>`;
+}
+
+const copyBox = (text) => `<div class="copy"><code>${esc(text)}</code><button type="button" data-copy="${esc(text)}">Copy</button></div>`;
+const tool = (name, version) => version
+  ? `<span class="check-ok">✓ ${name} found</span> <span class="muted">${esc(version)}</span>`
+  : `<span class="check-bad">✗ ${name} not found</span>`;
+
+function stepHtml(step) {
+  if (step.id === "welcome") {
+    const missing = !settings.tools.ffmpeg || !settings.tools.ffprobe;
+    return `<h1>Set up FreePoster</h1>
+      <p>This walks you through everything FreePoster needs to post for you: a developer app on each platform you use, the keys from those apps, and signing in to your accounts. Skip any platform you don't use. You can come back here any time with the <strong>Setup</strong> button.</p>
+      <p class="muted">Everything you enter stays on this computer, in <code>${esc(settings.envFile)}</code>.</p>
+      <h2 style="margin-top:20px">Video tools</h2>
+      <p>FreePoster uses ffmpeg to convert each video into the format every platform accepts.</p>
+      <p>${tool("ffmpeg", settings.tools.ffmpeg)}<br>${tool("ffprobe", settings.tools.ffprobe)}</p>
+      ${missing ? `<p>Install ffmpeg (on Windows, run <code>winget install Gyan.FFmpeg</code> or download a build from ${ext("https://www.gyan.dev/ffmpeg/builds/", "gyan.dev")}) and restart FreePoster, or enter where the programs are:</p>` : ""}
+      <details ${missing ? "open" : ""}><summary>Program locations</summary><div class="grid2">
+        ${field("FFMPEG_PATH", "ffmpeg", "Blank uses ffmpeg from PATH; or the full path to ffmpeg.exe")}
+        ${field("FFPROBE_PATH", "ffprobe", "Blank uses ffprobe from PATH; or the full path to ffprobe.exe")}
+      </div></details>`;
+  }
+  if (step.id === "address") {
+    return `<h1>Address</h1>
+      <p>After you sign in, each platform sends you back to FreePoster at an address you register in its developer console. Right now that address is:</p>
+      ${copyBox(settings.baseUrl)}
+      <p>YouTube, X and Meta accept a localhost address. <strong>TikTok</strong> (and sometimes Meta) only accept <strong>https</strong>. For those, run a tunnel such as <code>cloudflared tunnel --url http://localhost:${settings.port}</code> and enter the https address it prints. A public address needs an app password, so only you can use FreePoster.</p>
+      ${field("BASE_URL", "Public address", `Blank for http://localhost:${settings.port}. Example: https://my-tunnel.trycloudflare.com`)}
+      ${field("APP_PASSWORD", "App password", "Required with a public address. Your browser asks for it once (any user name).")}`;
+  }
+  if (step.platform) {
+    const p = SETUP_PLATFORMS[step.id];
+    const addresses = [...new Set(p.uris.map((u) => settings.redirectUris[u]))];
+    const uris = addresses.map(copyBox).join("");
+    // Meta's two products share one address when sign-ins go through the redirect page.
+    const steps = p.steps.map((t) => addresses.length === 1 ? t.replace("<strong>both</strong> of these", "this") : t);
+    const note = [settings.redirectPage ? "" : p.tunnelNote, p.note].filter(Boolean).join(" ");
+    return `<h1>${esc(p.title)} ${settings.configured[step.id] ? `<span class="check-ok" style="font-size:14px">✓ keys saved</span>` : ""}</h1>
+      <ol>${steps.map((t) => `<li>${t}${/:$/.test(t) ? uris : ""}</li>`).join("")}</ol>
+      ${settings.redirectPage ? `<p class="muted">It's the same address for every platform: a small page that hands the sign-in straight back to FreePoster on this computer.</p>` : ""}
+      <div class="note">${esc(note)}</div>
+      <div class="grid2">${p.fields.map(([k, label]) => field(k, label)).join("")}</div>`;
+  }
+  if (step.id === "limits") {
+    return `<h1>Limits</h1>
+      <p>The defaults suit most accounts. Posts over a daily cap wait for the rolling 24-hour window instead of failing.</p>
+      <h2 style="margin-top:16px">Most posts per account per 24 hours</h2>
+      <div class="grid2">
+        ${field("DAILY_CAP_YOUTUBE", "YouTube", "default 6", "number")}${field("DAILY_CAP_TIKTOK", "TikTok", "default 15", "number")}
+        ${field("DAILY_CAP_INSTAGRAM", "Instagram", "default 50", "number")}${field("DAILY_CAP_FACEBOOK", "Facebook", "default 30", "number")}
+        ${field("DAILY_CAP_X", "X", "default 50", "number")}
+      </div>
+      <h2 style="margin-top:16px">X account limits</h2>
+      <div class="grid2">
+        ${field("X_MAX_CHARS", "Caption characters", "280 for standard accounts; more with Premium", "number")}
+        ${field("X_MAX_VIDEO_SECONDS", "Video length (seconds)", "140 for standard accounts; more with Premium", "number")}
+      </div>
+      <details><summary>Advanced</summary>
+        ${field("META_GRAPH_VERSION", "Meta Graph API version", "default v24.0")}
+        ${field("PORT", "Port", "Default 4400. Takes effect after you restart FreePoster.", "number")}
+      </details>`;
+  }
+  const rows = status.platforms.map((p) => {
+    const accts = status.accounts.filter((a) => a.platform === p.platform);
+    return `<div class="platform-row">
+      <div><div class="row"><span class="dot" style="background:${COLORS[p.platform]}"></span><strong>${esc(p.label)}</strong></div>
+        ${accts.length ? `<div class="muted">${accts.map((a) => esc(a.name)).join(", ")}</div>` : ""}</div>
+      ${settings.configured[p.platform]
+        ? `<a href="/connect/${p.platform}"><button type="button">${accts.length ? "Add / reconnect" : "Connect"}</button></a>`
+        : `<span class="muted">no keys</span>`}</div>`;
+  }).join("");
+  return `<h1>Connect accounts</h1>
+    ${$("banner").innerHTML /* the result of the sign-in you just came back from */}
+    <p>Sign in to each account you want to post to. ${status.desktop
+      ? "Each sign-in opens in your web browser (platforms don't allow it inside apps); this screen updates as soon as you're done."
+      : "You'll go to the platform's sign-in page and come straight back here."}</p>
+    ${rows}`;
+}
+
+function renderSetup() {
+  const step = setupSteps()[stepIndex];
+  sessionStorage.setItem("setupStep", step.id);
+  $("steps").innerHTML = setupSteps().map((s, i) => `
+    <li class="${i === stepIndex ? "on" : ""}" data-step="${i}"><span class="tick ${stepDone(s) ? "done" : ""}">${stepDone(s) ? "✓" : i + 1}</span>${esc(s.title)}</li>`).join("");
+  const last = stepIndex === setupSteps().length - 1;
+  const skip = step.platform ? `I don't use ${SETUP_PLATFORMS[step.id].short}` : null;
+  $("stepBody").innerHTML = `${stepHtml(step)}
+    <div id="setupError"></div>
+    <div class="nav">
+      ${stepIndex > 0 ? `<button type="button" data-nav="back">Back</button>` : ""}
+      ${skip && !settings.configured[step.id] ? `<button type="button" data-nav="skip">${esc(skip)}</button>` : ""}
+      <button type="button" class="primary" data-nav="next">${last ? "Finish" : "Save & continue"}</button>
+    </div>`;
+}
+
+async function saveStep() {
+  const step = setupSteps()[stepIndex];
+  const values = {};
+  for (const input of $("stepBody").querySelectorAll("[data-key]")) values[input.dataset.key] = input.value;
+  if (!Object.keys(values).length) return;
+  if (step.platform) {
+    const [[idKey, idLabel], [secretKey, secretLabel]] = SETUP_PLATFORMS[step.id].fields;
+    if (!values[idKey].trim() || !(values[secretKey].trim() || settings.secretsSet[secretKey])) {
+      throw new Error(`Enter both the ${idLabel} and the ${secretLabel}, or choose "I don't use ${SETUP_PLATFORMS[step.id].short}".`);
+    }
+  }
+  const hadPassword = settings.secretsSet.APP_PASSWORD;
+  const res = await fetch("/api/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ values }) });
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.error);
+  settings = body;
+  if (body.restartNeeded) alert(`The new port takes effect after you restart FreePoster. It will then be at http://localhost:${body.port}.`);
+  if (!hadPassword && body.secretsSet.APP_PASSWORD) {
+    // Every request needs the password from now on; reloading lets the browser ask for it once.
+    sessionStorage.setItem("setupStep", setupSteps()[stepIndex + 1].id);
+    location.reload();
+    await new Promise(() => {});
+  }
+}
+
+$("setup").addEventListener("click", async (e) => {
+  const copy = e.target.closest("[data-copy]");
+  if (copy) {
+    await navigator.clipboard.writeText(copy.dataset.copy);
+    copy.textContent = "Copied";
+    setTimeout(() => (copy.textContent = "Copy"), 1500);
+    return;
+  }
+  const jump = e.target.closest("[data-step]");
+  if (jump) { stepIndex = Number(jump.dataset.step); return renderSetup(); }
+  const nav = e.target.closest("[data-nav]")?.dataset.nav;
+  if (nav === "back") { stepIndex--; return renderSetup(); }
+  if (nav === "next") {
+    try {
+      await saveStep();
+    } catch (err) {
+      $("setupError").innerHTML = `<div class="banner err" style="margin:16px 0 0">${esc(err.message)}</div>`;
+      return;
+    }
+    if (stepIndex === setupSteps().length - 1) {
+      await fetch("/api/setup", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ complete: true }) });
+      return closeSetup();
+    }
+  }
+  if (nav === "next" || nav === "skip") {
+    stepIndex++;
+    await loadStatus();
+    renderSetup();
+  }
+});
+
+$("openSetup").addEventListener("click", () => openSetup());
+$("quit").addEventListener("click", async () => {
+  const { pendingJobs } = await (await fetch("/api/status")).json();
+  const waiting = pendingJobs
+    ? `${pendingJobs} post${pendingJobs === 1 ? " is" : "s are"} still waiting to go out (including scheduled ones). They go out the next time you open FreePoster, or close the window instead of quitting to keep posting in the background.`
+    : "";
+  if (!confirm(`Quit FreePoster?${waiting ? `\n\n${waiting}` : ""}`)) return;
+  await fetch("/api/quit", { method: "PUT", headers: { "content-type": "application/json" }, body: "{}" });
+  document.body.innerHTML = `<p style="padding:24px">FreePoster has stopped. You can close this window.</p>`;
+});
+
+// ---- submit & history ----
+
+async function submit(allowDuplicate = false) {
+  banner();
+  let tiktok;
+  try { tiktok = tiktokOptions(); } catch (e) { return banner("err", e.message); }
+  const ids = selectedIds();
+  if (!ids.length) return banner("err", "Pick at least one account.");
+  const fd = new FormData();
+  fd.append("caption", $("caption").value);
+  fd.append("title", $("title").value);
+  fd.append("accounts", JSON.stringify(ids));
+  if (tiktok) fd.append("tiktok", JSON.stringify(tiktok));
+  const scheduledAt = scheduledTime();
+  if (scheduledAt === undefined) return;
+  if (scheduledAt) fd.append("scheduledAt", String(scheduledAt));
+  if (allowDuplicate) fd.append("allowDuplicate", "true");
+  fd.append("video", $("file").files[0]); // last, so fields arrive before the large file
+  $("submit").disabled = true;
+  $("submit").textContent = "Uploading…";
+  try {
+    const res = await fetch("/api/posts", { method: "POST", body: fd });
+    const body = await res.json();
+    if (res.status === 409 && body.duplicate) {
+      if (confirm(`${body.error}\n\nPost it again anyway?`)) return submit(true);
+      return;
+    }
+    if (!res.ok) return banner("err", body.error);
+    banner("ok", scheduledAt
+      ? `Scheduled for ${new Date(scheduledAt).toLocaleString()}. It's listed under Upcoming, where you can change the time or cancel it.`
+      : "Queued. Each platform's status updates below.");
+    $("form").reset(); $("preview").style.display = "none"; videoDuration = null; checkDuration(); syncWhen();
+    $("tiktokBox").style.display = "none";
+    loadPosts();
+  } catch (e) {
+    banner("err", e.message);
+  } finally {
+    $("submit").disabled = false;
+    syncWhen();
+  }
+}
+
+// ---- scheduling ----
+
+/** epoch ms → the "YYYY-MM-DDTHH:MM" local-time string a datetime-local input wants */
+const toLocalInput = (ms) => {
+  const d = new Date(ms);
+  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+  return d.toISOString().slice(0, 16);
+};
+const later = () => document.querySelector('input[name="when"]:checked').value === "later";
+
+function syncWhen() {
+  const on = later();
+  $("scheduleAt").disabled = !on;
+  $("scheduleNote").hidden = !on;
+  $("scheduleAt").min = toLocalInput(Date.now());
+  if (on && !$("scheduleAt").value) {
+    // Default: the next quarter hour at least an hour from now.
+    const d = new Date(Date.now() + 3_600_000);
+    d.setMinutes(Math.ceil(d.getMinutes() / 15) * 15, 0, 0);
+    $("scheduleAt").value = toLocalInput(d.getTime());
+  }
+  $("submit").textContent = on ? "Schedule" : "Publish";
+}
+
+/** null = post now; undefined = invalid (a banner says why). */
+function scheduledTime() {
+  if (!later()) return null;
+  const at = new Date($("scheduleAt").value).getTime();
+  if (!$("scheduleAt").value || Number.isNaN(at)) { banner("err", "Pick the date and time to post."); return undefined; }
+  if (at < Date.now()) { banner("err", "That time has already passed; pick a time in the future."); return undefined; }
+  return at;
+}
+
+const isUpcoming = (p) => p.jobs.some((j) => j.state === "queued" && j.nextRunAt > Date.now());
+
+function renderUpcoming(posts) {
+  // Don't redraw under someone who is picking a new time.
+  if ($("upcoming").contains(document.activeElement)) return;
+  const upcoming = posts.filter(isUpcoming).sort((a, b) => a.scheduledAt - b.scheduledAt);
+  $("upcomingSection").hidden = !upcoming.length;
+  $("upcoming").innerHTML = upcoming.map((p) => `
+    <div class="post">
+      <div><span class="when-at">${new Date(p.scheduledAt).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>${p.title ? ` <span class="muted">· ${esc(p.title)}</span>` : ""}</div>
+      <div class="cap">${esc(p.caption) || "<span class='muted'>(no caption)</span>"}</div>
+      <div class="row muted" style="flex-wrap:wrap;margin-top:4px">${p.jobs.map((j) => `<span class="row"><span class="dot" style="background:${COLORS[j.platform]}"></span>${esc(j.account)}</span>`).join("")}</div>
+      <div class="upcoming-actions">
+        <input type="datetime-local" data-reschedule-input="${p.id}" value="${toLocalInput(p.scheduledAt)}" min="${toLocalInput(Date.now())}" aria-label="New time">
+        <button type="button" data-reschedule="${p.id}">Change time</button>
+        <button type="button" data-post-now="${p.id}">Post now</button>
+        <button type="button" data-cancel="${p.id}">Cancel</button>
+      </div>
+    </div>`).join("");
+}
+
+async function changePost(id, method, body) {
+  const res = await fetch(`/api/posts/${id}`, { method, ...(body ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {}) });
+  if (!res.ok) banner("err", (await res.json()).error);
+  document.activeElement?.blur();
+  loadPosts();
+}
+
+const STATE_LABEL = { queued: "Queued", running: "Posting…", retry: "Retrying", waiting_quota: "Waiting (daily cap)", published: "Published", failed: "Failed" };
+
+async function loadPosts() {
+  const posts = await (await fetch("/api/posts")).json();
+  renderUpcoming(posts);
+  const history = posts.filter((p) => !isUpcoming(p));
+  if (!history.length) {
+    $("posts").classList.add("muted");
+    $("posts").textContent = "Nothing posted yet.";
+    return;
+  }
+  $("posts").classList.remove("muted");
+  $("posts").innerHTML = history.map((p) => `
+    <div class="post">
+      <div class="muted">${new Date(p.scheduledAt ?? p.createdAt).toLocaleString()}${p.scheduledAt ? " (scheduled)" : ""}${p.title ? ` · ${esc(p.title)}` : ""}</div>
+      <div class="cap">${esc(p.caption) || "<span class='muted'>(no caption)</span>"}</div>
+      ${p.jobs.map((j) => `
+        <div class="job">
+          <div class="row"><span class="dot" style="background:${COLORS[j.platform]}"></span>${esc(j.account)}</div>
+          <div class="state ${j.state}">${STATE_LABEL[j.state]}${j.state === "retry" ? ` <span class="muted">(${new Date(j.nextRunAt).toLocaleTimeString()})</span>` : ""}</div>
+          <div class="detail">${j.url ? `<a href="${esc(j.url)}" target="_blank" rel="noopener">${esc(j.url)}</a><br>` : ""}${esc(j.error ?? "")}</div>
+          <div>${j.state === "failed" ? `<button type="button" data-retry="${j.id}">Retry</button>` : ""}</div>
+        </div>`).join("")}
+    </div>`).join("");
+}
+
+document.addEventListener("click", async (e) => {
+  const remove = e.target.closest("[data-remove]");
+  if (remove && confirm("Disconnect this account? Its post history here is removed; live posts are not touched.")) {
+    await fetch(`/api/accounts/${remove.dataset.remove}`, { method: "DELETE" });
+    loadStatus();
+  }
+  // The desktop app opens sign-ins in the system browser (platforms block them in app windows).
+  const connect = e.target.closest('a[href^="/connect/"]');
+  if (connect && status.desktop) {
+    const label = status.platforms.find((p) => connect.getAttribute("href") === `/connect/${p.platform}`)?.label ?? "the platform";
+    const note = `Your browser opened so you can sign in to ${label}. FreePoster updates here as soon as you're done.`;
+    if ($("setup").classList.contains("open")) $("setupError").innerHTML = `<div class="banner ok" style="margin:16px 0 0">${esc(note)}</div>`;
+    else banner("ok", note);
+  }
+  const setupLink = e.target.closest("[data-setup]");
+  if (setupLink) openSetup(setupLink.dataset.setup);
+  const retry = e.target.closest("[data-retry]");
+  if (retry) { await fetch(`/api/jobs/${retry.dataset.retry}/retry`, { method: "POST" }); loadPosts(); }
+  const reschedule = e.target.closest("[data-reschedule]");
+  if (reschedule) {
+    const id = reschedule.dataset.reschedule;
+    const value = document.querySelector(`[data-reschedule-input="${id}"]`).value;
+    const at = new Date(value).getTime();
+    if (!value || Number.isNaN(at) || at < Date.now()) return banner("err", "Pick a time in the future.");
+    banner();
+    await changePost(id, "PATCH", { scheduledAt: at });
+  }
+  const postNow = e.target.closest("[data-post-now]");
+  if (postNow && confirm("Post this now instead of at its scheduled time?")) {
+    banner();
+    await changePost(postNow.dataset.postNow, "PATCH", { scheduledAt: null });
+  }
+  const cancel = e.target.closest("[data-cancel]");
+  if (cancel && confirm("Cancel this scheduled post? It won't be posted, and its video is removed from FreePoster.")) {
+    banner();
+    await changePost(cancel.dataset.cancel, "DELETE");
+  }
+});
+for (const r of document.querySelectorAll('input[name="when"]')) r.addEventListener("change", syncWhen);
+$("targets").addEventListener("change", () => { updateCounters(); checkDuration(); renderTikTok(); });
+$("caption").addEventListener("input", updateCounters);
+$("file").addEventListener("change", () => {
+  const f = $("file").files[0];
+  const v = $("preview");
+  if (!f) return;
+  v.src = URL.createObjectURL(f);
+  v.style.display = "block";
+  v.onloadedmetadata = () => { videoDuration = v.duration; checkDuration(); };
+});
+$("form").addEventListener("submit", (e) => { e.preventDefault(); submit(); });
+
+const params = new URLSearchParams(location.search);
+if (params.get("error")) banner("err", params.get("error"));
+if (params.get("connected")) banner("ok", `Connected ${params.get("connected")}`);
+if (params.size) history.replaceState(null, "", "/");
+loadStatus().then(() => {
+  updateCounters();
+  $("quit").hidden = !status.desktop;
+  for (const el of document.querySelectorAll(".desktop-only")) el.hidden = !status.desktop;
+  // First run, or back from a platform's sign-in page during setup.
+  const resume = sessionStorage.getItem("setupStep");
+  if (!status.setupComplete || resume) openSetup(resume || "welcome");
+});
+loadPosts();
+setInterval(loadPosts, 3000);
+
+// ---- AI agents (MCP) ----
+
+{
+  const url = `${location.origin}/mcp`;
+  const json = JSON.stringify({ mcpServers: { freeposter: { type: "http", url } } }, null, 2);
+  $("agentsBody").innerHTML = `${copyBox(url)}
+    <details><summary>How to add it</summary>
+      <p><strong>Claude Code</strong></p>${copyBox(`claude mcp add --transport http freeposter ${url}`)}
+      <p><strong>Codex</strong></p>${copyBox(`codex mcp add freeposter --url ${url}`)}
+      <p><strong>Claude Desktop</strong>: Settings → Connectors → Add custom connector, with the address above.</p>
+      <p><strong>Cursor, VS Code, Windsurf and others</strong>: add it to the app's MCP settings file:</p>
+      <div class="copy"><code style="white-space:pre">${esc(json)}</code><button type="button" data-copy="${esc(json)}">Copy</button></div>
+      <p class="muted">An agent that only runs local commands can reach it through <code>npx mcp-remote ${esc(url)}</code>. With an app password set, agents must send it as HTTP Basic auth (any user name).</p>
+    </details>`;
+  $("agents").addEventListener("click", async (e) => {
+    const copy = e.target.closest("[data-copy]");
+    if (!copy) return;
+    await navigator.clipboard.writeText(copy.dataset.copy);
+    copy.textContent = "Copied";
+    setTimeout(() => (copy.textContent = "Copy"), 1500);
+  });
+}
+</script>
+</body>
+</html>

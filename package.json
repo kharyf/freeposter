@@ -1,0 +1,29 @@
+{
+  "name": "freeposter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Publish one short vertical video to TikTok, Instagram, Facebook, X and YouTube through their official APIs.",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "desktop": "node scripts/build-app.ts && electron build/app",
+    "dev": "node --watch src/main.ts",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "typecheck": "tsc",
+    "build:app": "node scripts/build-app.ts --package"
+  },
+  "dependencies": {
+    "@fastify/multipart": "^9.4.0",
+    "fastify": "^5.12.7"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "@types/node": "^24.19.2",
+    "electron": "^45.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.3"
+  }
+}

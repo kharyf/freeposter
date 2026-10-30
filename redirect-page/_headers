@@ -1,0 +1,6 @@
+# Applied by Cloudflare Pages (GitHub Pages ignores this file; the page's meta tags cover the same ground).
+/*
+  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  Referrer-Policy: no-referrer
+  X-Robots-Tag: noindex
+  Cache-Control: no-store
