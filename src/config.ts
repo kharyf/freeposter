@@ -23,6 +23,8 @@ export const envFile = join(root, ".env");
 export const dataDir = join(root, "data");
 mkdirSync(join(dataDir, "uploads"), { recursive: true });
 mkdirSync(join(dataDir, "renders"), { recursive: true });
+mkdirSync(join(dataDir, "edits"), { recursive: true });
+mkdirSync(join(dataDir, "models"), { recursive: true });
 
 /**
  * The hosted redirect page (redirect-page/ in this repo) that every platform sends sign-ins back to.
@@ -39,6 +41,7 @@ export const SETTINGS = {
   APP_PASSWORD: { secret: true },
   FFMPEG_PATH: { secret: false },
   FFPROBE_PATH: { secret: false },
+  WHISPER_MODEL_PATH: { secret: false },
   YOUTUBE_CLIENT_ID: { secret: false },
   YOUTUBE_CLIENT_SECRET: { secret: true },
   TIKTOK_CLIENT_KEY: { secret: false },
@@ -78,6 +81,7 @@ function build() {
     redirectPage: normalizePage(setting("REDIRECT_PAGE_URL", BUILT_IN_REDIRECT_PAGE)),
     ffmpeg: setting("FFMPEG_PATH", "ffmpeg"),
     ffprobe: setting("FFPROBE_PATH", "ffprobe"),
+    whisperModel: setting("WHISPER_MODEL_PATH", join(dataDir, "models", "ggml-base.bin")),
     graphVersion: setting("META_GRAPH_VERSION", "v24.0"),
     credentials: {
       youtube: { id: setting("YOUTUBE_CLIENT_ID"), secret: setting("YOUTUBE_CLIENT_SECRET") },
