@@ -49,7 +49,8 @@ test("MCP handshake and tool list", async () => {
   assert.equal(note.statusCode, 202);
 
   const names = (await rpc("tools/list")).body.result.tools.map((t: any) => t.name);
-  assert.deepEqual(names.sort(), ["cancel_post", "get_post", "get_tiktok_creator_info", "list_accounts", "list_posts", "publish_video", "reschedule_post", "retry_job"]);
+  assert.deepEqual(names.sort(), ["cancel_post", "create_edit", "get_edit", "get_post", "get_tiktok_creator_info", "list_accounts", "list_posts", "publish_video", "reschedule_post", "retry_job"]);
+  assert.ok(!names.some((n: string) => /approve/.test(n)), "agents can never approve an edit");
   assert.equal((await rpc("nope")).body.error.code, -32601);
   assert.equal((await rpc("tools/call", { name: "nope" })).body.error.code, -32602);
   assert.equal((await app.inject({ method: "GET", url: "/mcp", headers: HOST })).statusCode, 405);
@@ -144,4 +145,31 @@ test("TikTok posts need a privacy level the account offers", async () => {
     fetch.restore();
   }
   await app.close();
+});
+
+test("an agent makes an edit but can't publish it until the user approves it", async () => {
+  const { dir, store, call, published } = setup();
+  const xAcct = store.upsertAccount(account("x"));
+  const video = verticalSilent(dir);
+  const made = await call("create_edit", { video_path: video, settings: { punchIn: false } });
+  assert.ok(!made.isError, made.content?.[0]?.text);
+  const editId = made.structuredContent.id;
+  assert.equal(made.structuredContent.state, "queued");
+  assert.match(made.structuredContent.next, /approve/i);
+
+  // the worker finished it (stand-in): ready but not approved
+  store.updateEdit(editId, { state: "ready", outputPath: video, durationSec: 4, progress: 1 });
+  const got = await call("get_edit", { edit_id: editId });
+  assert.equal(got.structuredContent.state, "ready");
+  assert.equal(got.structuredContent.preview_path, video);
+
+  const refused = await call("publish_video", { video_path: video, account_ids: [xAcct.id], caption: "edited", edit_id: editId });
+  assert.equal(refused.isError, true);
+  assert.match(refused.content[0].text, /approve/i);
+
+  store.approveEdit(editId);
+  const ok = await call("publish_video", { video_path: video, account_ids: [xAcct.id], caption: "edited", edit_id: editId });
+  assert.ok(!ok.isError, ok.content?.[0]?.text);
+  assert.equal(store.post(ok.structuredContent.id)!.editId, editId);
+  assert.deepEqual(published, []); // queued; the runner sends it
 });

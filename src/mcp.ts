@@ -10,7 +10,8 @@ import { config, isConfigured } from "./config.ts";
 import type { Store } from "./db.ts";
 import type { Publisher } from "./platforms/base.ts";
 import { creatorInfo } from "./platforms/tiktok.ts";
-import { checkDraft, DuplicateError, parseSchedule, postView, saveUpload, type Draft } from "./posts.ts";
+import { parseEditSettings } from "./edit/settings.ts";
+import { checkDraft, DuplicateError, editView, parseSchedule, postView, saveUpload, type Draft } from "./posts.ts";
 import type { Runner } from "./runner.ts";
 import { PLATFORMS, type Platform, type TikTokOptions } from "./types.ts";
 
@@ -21,7 +22,9 @@ const INSTRUCTIONS = `FreePoster publishes one short vertical video to the user'
 
 Start with list_accounts to get account ids. publish_video queues the post and returns at once; each account becomes a job that renders, uploads and publishes in the background, so follow it with get_post until every job is "published" (with the post's url) or "failed" (with the platform's reason). "retry" and "waiting_quota" jobs go out later by themselves.
 
-Posting is public and hard to undo: only post what the user asked for, to the accounts they chose. For TikTok, call get_tiktok_creator_info first and let the user pick the privacy level from privacy_level_options; TikTok requires that choice to be the user's, never a default. Use dry_run to check a post without queueing it.`;
+Posting is public and hard to undo: only post what the user asked for, to the accounts they chose. For TikTok, call get_tiktok_creator_info first and let the user pick the privacy level from privacy_level_options; TikTok requires that choice to be the user's, never a default. Use dry_run to check a post without queueing it.
+
+create_edit makes an edited cut (pauses and filler words cut, captions, speaker framing, even sound) in the background; follow it with get_edit. Only the user can approve an edit, by previewing it in the FreePoster window; publish_video with edit_id is refused until they have.`;
 
 /** Epoch ms → ISO 8601; agents read and write times this way. */
 const iso = (ms: number | null | undefined) => (ms === null || ms === undefined ? null : new Date(ms).toISOString());
@@ -175,7 +178,8 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
       inputSchema: {
         type: "object",
         properties: {
-          video_path: { type: "string", description: "Absolute path of the video file on this computer." },
+          video_path: { type: "string", description: "Absolute path of the video file on this computer. Not needed with edit_id." },
+          edit_id: { type: "integer", description: "Post this edit (from create_edit) instead of the original file. The user must have approved it in FreePoster." },
           account_ids: { type: "array", items: { type: "integer" }, minItems: 1, description: "Account ids from list_accounts." },
           caption: { type: "string", description: "The post's text: the tweet on X, the description on YouTube, the caption elsewhere." },
           title: { type: "string", description: "YouTube title (up to 100 characters); defaults to the caption's first line." },
@@ -184,22 +188,14 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
           allow_duplicate: { type: "boolean", default: false, description: "Post even though this exact file already went to some of these accounts. Only when the user confirms." },
           dry_run: { type: "boolean", default: false, description: "Run every check and report, without queueing anything." },
         },
-        required: ["video_path", "account_ids"],
+        required: ["account_ids"],
         additionalProperties: false,
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
       async run(args) {
-        const videoPath = str(args, "video_path");
-        if (!isAbsolute(videoPath)) throw new ToolError("video_path must be an absolute path");
-        let size: number;
-        try {
-          const stat = statSync(videoPath);
-          if (!stat.isFile()) throw new Error();
-          size = stat.size;
-        } catch {
-          throw new ToolError(`no file at ${videoPath}`);
-        }
-        if (size > 4 * 1024 ** 3) throw new ToolError("the file is larger than 4 GB");
+        const edit = args.edit_id === undefined ? undefined : store.edit(int(args, "edit_id"));
+        if (args.edit_id !== undefined && !edit) throw new ToolError("no such edit; create_edit returns its id");
+        const videoPath = edit ? edit.sourcePath : checkedPath(str(args, "video_path"));
         const ids = args.account_ids;
         if (!Array.isArray(ids) || !ids.length || !ids.every(Number.isInteger)) throw new ToolError("account_ids must be a list of account ids");
         const tiktok = await tiktokOptions(args.tiktok, ids as number[]);
@@ -213,8 +209,12 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
           accountIds: ids as number[],
           tiktok,
           scheduledAt: when(args, "schedule_at"),
+          editId: edit?.id ?? null,
         };
-        if (dryRun) {
+        if (edit) {
+          // The edit keeps its own copy of the video.
+          draft.sha256 = edit.sha256;
+        } else if (dryRun) {
           const hash = createHash("sha256");
           await pipeline(createReadStream(videoPath), hash);
           draft.sha256 = hash.digest("hex");
@@ -232,10 +232,61 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
           runner.tick();
           return { ...post(postId), next: "Call get_post with this id to follow each account's progress." };
         } catch (err) {
-          if (!dryRun) try { unlinkSync(draft.sourcePath); } catch {}
+          if (!dryRun && !edit) try { unlinkSync(draft.sourcePath); } catch {}
           if (err instanceof DuplicateError) throw new ToolError(`${err.message}. Ask the user before posting it again with allow_duplicate: true.`);
           throw new ToolError((err as Error).message);
         }
+      },
+    },
+    {
+      name: "create_edit",
+      title: "Edit a video",
+      description: "Starts an edit of a video file on this computer, run locally in the background: cuts pauses, filler words and retakes, burns in word-synced captions, frames the speaker for 9:16, evens out the sound and zooms on cuts. Every setting defaults to on. Returns at once; follow with get_edit. The user must preview and approve it in the FreePoster window before publish_video can post it.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          video_path: { type: "string", description: "Absolute path of the video file on this computer." },
+          settings: {
+            type: "object",
+            properties: {
+              tighten: { type: "boolean", default: true },
+              captions: { type: "boolean", default: true },
+              reframe: { type: "boolean", default: true },
+              audio: { type: "boolean", default: true },
+              punchIn: { type: "boolean", default: true },
+            },
+            additionalProperties: false,
+          },
+        },
+        required: ["video_path"],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      async run(args) {
+        const videoPath = checkedPath(str(args, "video_path"));
+        let settings;
+        try { settings = parseEditSettings(args.settings); } catch (err) { throw new ToolError((err as Error).message); }
+        const saved = await saveUpload(createReadStream(videoPath), videoPath);
+        const edit = store.createEdit(saved.path, saved.sha256, settings);
+        if (edit.sourcePath !== saved.path) try { unlinkSync(saved.path); } catch {}
+        return { ...(await editView(store, publishers, edit)), next: "Call get_edit to follow it. When it is ready, ask the user to preview and approve it in the FreePoster window; then publish_video with edit_id." };
+      },
+    },
+    {
+      name: "get_edit",
+      title: "Get an edit",
+      description: "An edit's state (queued, transcribing, editing, ready, failed), progress, edited and original length, whether the user approved it, which accounts each length fits, and preview_path (the edited file on this computer) once ready.",
+      inputSchema: {
+        type: "object",
+        properties: { edit_id: { type: "integer" } },
+        required: ["edit_id"],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+      async run(args) {
+        const edit = store.edit(int(args, "edit_id"));
+        if (!edit) throw new ToolError("no such edit");
+        return { ...(await editView(store, publishers, edit)), preview_path: edit.state === "ready" ? edit.outputPath : null };
       },
     },
     {
@@ -330,6 +381,21 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
       },
     },
   ];
+
+  /** An absolute path to an existing video file of at most 4 GB. */
+  function checkedPath(videoPath: string): string {
+    if (!isAbsolute(videoPath)) throw new ToolError("video_path must be an absolute path");
+    let size: number;
+    try {
+      const stat = statSync(videoPath);
+      if (!stat.isFile()) throw new Error();
+      size = stat.size;
+    } catch {
+      throw new ToolError(`no file at ${videoPath}`);
+    }
+    if (size > 4 * 1024 ** 3) throw new ToolError("the file is larger than 4 GB");
+    return videoPath;
+  }
 
   /** The agent's TikTok choices, checked against the account's live options as the page's form is. */
   async function tiktokOptions(raw: unknown, accountIds: number[]): Promise<TikTokOptions | null> {
