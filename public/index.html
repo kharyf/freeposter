@@ -38,6 +38,14 @@
   .counters { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); margin-top: 4px; }
   .over { color: var(--bad); font-weight: 600; }
   video { width: 100%; max-height: 320px; background: #000; border-radius: 8px; margin-top: 8px; display: none; }
+  .drive .check { display: flex; gap: 8px; align-items: center; font-weight: 400; margin: 4px 0; }
+  .drive .check input { width: auto; margin: 0; }
+  .drive .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line); color: var(--muted); }
+  .dfile { border-top: 1px solid var(--line); padding: 10px 0; }
+  .dfile:first-child { border-top: 0; }
+  .dfile .state.scheduled { color: var(--ok); } .dfile .state.edit_failed, .dfile .state.failed, .dfile .state.invalid, .dfile .state.late { color: var(--bad); }
+  .dfile .state.needs_caption { color: var(--warn); }
   .edit-box { border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-top: 8px; }
   .edit-box .opts { display: flex; flex-wrap: wrap; gap: 6px 14px; }
   .edit-box .opts label { display: flex; gap: 6px; align-items: center; font-weight: 400; margin: 0; }
@@ -160,8 +168,16 @@
         <button class="primary" id="submit" type="submit">Publish</button>
       </form>
     </section>
+    <section id="driveSection" class="drive">
+      <h2>Google Drive folder</h2>
+      <div id="driveBody" class="muted">Loading…</div>
+    </section>
   </div>
   <div>
+    <section id="driveFilesSection" hidden>
+      <h2>From Drive</h2>
+      <div id="driveFiles"></div>
+    </section>
     <section id="upcomingSection" hidden>
       <h2>Upcoming</h2>
       <div id="upcoming"></div>
@@ -330,7 +346,7 @@ function tiktokOptions() {
 const ext = (href, text) => `<a class="link" href="${href}" target="_blank" rel="noopener">${text}</a>`;
 const SETUP_PLATFORMS = {
   youtube: {
-    title: "YouTube", short: "YouTube", uris: ["youtube"],
+    title: "YouTube", short: "YouTube", uris: ["youtube", "drive"],
     fields: [["YOUTUBE_CLIENT_ID", "Client ID"], ["YOUTUBE_CLIENT_SECRET", "Client secret"]],
     steps: [
       `In the ${ext("https://console.cloud.google.com/projectcreate", "Google Cloud console")}, create a project (or pick one).`,
@@ -338,6 +354,7 @@ const SETUP_PLATFORMS = {
       `Under ${ext("https://console.cloud.google.com/auth/overview", "Google Auth Platform")}, fill in the consent screen. While the app is in Testing, add your own Google account under <em>Audience → Test users</em>.`,
       `Go to ${ext("https://console.cloud.google.com/auth/clients", "Clients")} → <em>Create client</em> → type <strong>Web application</strong>, and add this <strong>Authorized redirect URI</strong>:`,
       `Copy the client's <strong>Client ID</strong> and <strong>Client secret</strong> into the boxes below.`,
+      `To post from a Google Drive folder, also enable the ${ext("https://console.cloud.google.com/apis/library/drive.googleapis.com", "Google Drive API")}, and under <em>Audience</em> set the app to <strong>In production</strong> (it can stay unverified for your own use). In Testing, Google signs FreePoster out of Drive every 7 days.`,
     ],
     note: "Until Google audits your project, YouTube makes every upload from it Private.",
   },
@@ -739,14 +756,22 @@ function renderUpcoming(posts) {
   $("upcomingSection").hidden = !upcoming.length;
   $("upcoming").innerHTML = upcoming.map((p) => `
     <div class="post">
-      <div><span class="when-at">${new Date(p.scheduledAt).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>${p.title ? ` <span class="muted">· ${esc(p.title)}</span>` : ""}</div>
+      <div><span class="when-at">${new Date(p.scheduledAt).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>${p.title ? ` <span class="muted">· ${esc(p.title)}</span>` : ""}
+        ${p.editId ? ` <a class="badge" href="/api/edits/${p.editId}/video" target="_blank" rel="noopener">${p.requireEdit ? "From Drive · edited" : "Edited"} ▶</a>` : ""}</div>
       <div class="cap">${esc(p.caption) || "<span class='muted'>(no caption)</span>"}</div>
+      <div data-text-editor="${p.id}" hidden>
+        <input type="text" maxlength="100" data-edit-title value="${esc(p.title)}" aria-label="Title">
+        <textarea data-edit-caption aria-label="Caption">${esc(p.caption)}</textarea>
+        <button type="button" data-save-text="${p.id}">Save text</button>
+      </div>
       <div class="row muted" style="flex-wrap:wrap;margin-top:4px">${p.jobs.map((j) => `<span class="row"><span class="dot" style="background:${COLORS[j.platform]}"></span>${esc(j.account)}</span>`).join("")}</div>
       <div class="upcoming-actions">
         <input type="datetime-local" data-reschedule-input="${p.id}" value="${toLocalInput(p.scheduledAt)}" min="${toLocalInput(Date.now())}" aria-label="New time">
         <button type="button" data-reschedule="${p.id}">Change time</button>
         <button type="button" data-post-now="${p.id}">Post now</button>
         <button type="button" data-cancel="${p.id}">Cancel</button>
+        <button type="button" data-edit-text="${p.id}">Edit text</button>
+        ${p.editId && !p.requireEdit ? `<button type="button" data-use-original="${p.id}">Use original</button>` : ""}
       </div>
     </div>`).join("");
 }
@@ -816,6 +841,47 @@ document.addEventListener("click", async (e) => {
     banner();
     await changePost(postNow.dataset.postNow, "PATCH", { scheduledAt: null });
   }
+  const editText = e.target.closest("[data-edit-text]");
+  if (editText) {
+    const box = document.querySelector(`[data-text-editor="${editText.dataset.editText}"]`);
+    box.hidden = !box.hidden;
+    if (!box.hidden) box.querySelector("textarea").focus();
+  }
+  const saveText = e.target.closest("[data-save-text]");
+  if (saveText) {
+    const box = saveText.closest("[data-text-editor]");
+    banner();
+    await changePost(saveText.dataset.saveText, "PATCH", { title: box.querySelector("[data-edit-title]").value, caption: box.querySelector("[data-edit-caption]").value });
+  }
+  const useOriginal = e.target.closest("[data-use-original]");
+  if (useOriginal && confirm("Post the original, unedited video instead of the edit?")) {
+    banner();
+    await changePost(useOriginal.dataset.useOriginal, "PATCH", { useOriginal: true });
+  }
+  const retryEdit = e.target.closest("[data-retry-edit]");
+  if (retryEdit) {
+    const res = await fetch(`/api/drive/files/${encodeURIComponent(retryEdit.dataset.retryEdit)}/retry-edit`, { method: "POST" });
+    if (!res.ok) banner("err", (await res.json()).error);
+    loadDrive();
+  }
+  const release = e.target.closest("[data-release]");
+  if (release) {
+    const box = release.closest(".dfile");
+    const res = await fetch(`/api/drive/files/${encodeURIComponent(release.dataset.release)}/caption`, {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: box.querySelector("[data-release-title]").value, caption: box.querySelector("[data-release-caption]").value }),
+    });
+    if (!res.ok) return banner("err", (await res.json()).error);
+    banner("ok", "Thanks. It will be scheduled as soon as its edit is ready.");
+    loadDrive();
+  }
+  const driveSave = e.target.closest("#driveSave");
+  if (driveSave) saveDrive();
+  const driveDisconnect = e.target.closest("#driveDisconnect");
+  if (driveDisconnect && confirm("Stop watching the Google Drive folder? Posts already scheduled from it still go out.")) {
+    await fetch("/api/drive", { method: "DELETE" });
+    loadDrive();
+  }
   const cancel = e.target.closest("[data-cancel]");
   if (cancel && confirm("Cancel this scheduled post? It won't be posted, and its video is removed from FreePoster.")) {
     banner();
@@ -844,6 +910,90 @@ $("approveEdit").addEventListener("click", async () => {
 });
 $("useOriginal").addEventListener("click", () => { $("doEdit").checked = false; $("editBox").hidden = true; resetEdit(); videoDuration = $("preview").duration || null; checkDuration(); });
 
+// ---- Google Drive folder: new videos there are edited, captioned by Claude and scheduled by their name ----
+
+const DRIVE_STATE = {
+  queued: "Found", downloading: "Downloading…", transcribing: "Listening…", processing: "Editing…", scheduled: "Scheduled",
+  needs_caption: "Needs a caption", edit_failed: "Edit failed", failed: "Not posted", invalid: "Name not understood", late: "Too late",
+};
+let driveView = null;
+
+async function loadDrive() {
+  const [view, s] = await Promise.all([fetch("/api/drive").then((r) => r.json()), fetch("/api/settings").then((r) => r.json())]);
+  driveView = view;
+  // Don't redraw a form someone is typing in.
+  if (!$("driveBody").contains(document.activeElement)) renderDrive(view, s.secretsSet.ANTHROPIC_API_KEY);
+  if (!$("driveFiles").contains(document.activeElement)) renderDriveFiles(view.files);
+}
+
+function renderDrive(v, haveKey) {
+  const body = $("driveBody");
+  body.classList.remove("muted");
+  if (!v.configured) {
+    body.innerHTML = `<p class="muted" style="margin-top:0">Drop videos in a Google Drive folder and FreePoster edits, captions and posts them at the time in their name. It uses your YouTube app's Google keys: <a href="#" data-setup="youtube">add them in Setup</a> first.</p>`;
+    return;
+  }
+  if (!v.connected) {
+    body.innerHTML = `<p class="muted" style="margin-top:0">Drop videos in a Google Drive folder and FreePoster edits, captions and posts them at the time in their name. FreePoster only reads the folder; it never changes anything in your Drive.</p>
+      <a href="/connect/drive"><button type="button">Connect Google Drive</button></a>`;
+    return;
+  }
+  const accts = status.accounts.map((a) => `<label class="check"><input type="checkbox" data-drive-account="${a.id}" ${v.accounts.includes(a.id) ? "checked" : ""}>
+    <span class="dot" style="background:${COLORS[a.platform]}"></span>${esc(a.name)}</label>`).join("") || `<span class="muted">Connect an account first.</span>`;
+  const tt = (key, label) => `<label class="check"><input type="checkbox" data-drive-tiktok="${key}" ${v.tiktok[key] ? "checked" : ""}> ${label}</label>`;
+  body.innerHTML = `
+    ${v.error ? `<div class="banner err" style="margin:0 0 10px">${esc(v.error)} <a href="/connect/drive">Reconnect</a></div>` : ""}
+    <div class="muted">Signed in as ${esc(v.email)}</div>
+    <label for="driveFolder">Folder link</label>
+    <input id="driveFolder" type="text" placeholder="https://drive.google.com/drive/folders/…" value="${esc(v.folderUrl ?? "")}">
+    <div class="muted">Name each video <code>name_m.d.yy_h.mm.am</code>, like <code>Gatekeeping_11.1.26_5.30.pm</code>. Videos already in the folder when you add it are left alone.</div>
+    <label>Post Drive videos to</label>
+    ${accts}
+    ${status.accounts.some((a) => a.platform === "tiktok") ? `<label>TikTok</label>
+      <div class="muted">Drive videos go to TikTok as <strong>Only me</strong>; make them public in the TikTok app.</div>
+      ${tt("allowComment", "Allow comments")}${tt("allowDuet", "Allow duets")}${tt("allowStitch", "Allow stitches")}` : ""}
+    <label for="anthropicKey">Anthropic API key <span class="muted">(Claude writes each video's title and caption from what's said in it)</span></label>
+    <input id="anthropicKey" type="password" autocomplete="off" placeholder="${haveKey ? "saved; type a new one to replace it" : "sk-ant-…"}">
+    <div class="actions"><button type="button" id="driveSave">Save</button><button type="button" id="driveDisconnect">Disconnect</button></div>`;
+}
+
+async function saveDrive() {
+  banner();
+  const body = {
+    folder: $("driveFolder").value,
+    accounts: [...document.querySelectorAll("[data-drive-account]:checked")].map((c) => Number(c.dataset.driveAccount)),
+  };
+  const ttBoxes = [...document.querySelectorAll("[data-drive-tiktok]")];
+  if (ttBoxes.length) body.tiktok = Object.fromEntries(ttBoxes.map((c) => [c.dataset.driveTiktok, c.checked]));
+  if (!body.folder.trim()) delete body.folder;
+  const res = await fetch("/api/drive", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  if (!res.ok) return banner("err", (await res.json()).error);
+  const key = $("anthropicKey").value.trim();
+  if (key) {
+    const saved = await fetch("/api/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ values: { ANTHROPIC_API_KEY: key } }) });
+    if (!saved.ok) return banner("err", (await saved.json()).error);
+  }
+  document.activeElement?.blur();
+  banner("ok", "Saved. FreePoster checks the folder every couple of minutes while it's running.");
+  loadDrive();
+}
+
+function renderDriveFiles(files) {
+  $("driveFilesSection").hidden = !files.length;
+  $("driveFiles").innerHTML = files.map((f) => `
+    <div class="dfile">
+      <div class="row" style="justify-content:space-between"><strong>${esc(f.name)}</strong><span class="state ${f.state}">${DRIVE_STATE[f.state] ?? esc(f.state)}</span></div>
+      ${f.scheduledAt ? `<div class="muted">${new Date(f.scheduledAt).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</div>` : ""}
+      ${f.title ? `<div>${esc(f.title)}</div>` : ""}
+      ${f.note ? `<div class="muted">${esc(f.note)}</div>` : ""}
+      ${f.state === "edit_failed" ? `<div class="actions" style="margin-top:6px"><button type="button" data-retry-edit="${esc(f.id)}">Retry edit</button></div>` : ""}
+      ${f.state === "needs_caption" ? `
+        <input type="text" maxlength="100" data-release-title placeholder="Title" aria-label="Title">
+        <textarea data-release-caption placeholder="Caption" aria-label="Caption"></textarea>
+        <button type="button" data-release="${esc(f.id)}">Post with this caption</button>` : ""}
+    </div>`).join("");
+}
+
 const params = new URLSearchParams(location.search);
 if (params.get("error")) banner("err", params.get("error"));
 if (params.get("connected")) banner("ok", `Connected ${params.get("connected")}`);
@@ -855,6 +1005,8 @@ loadStatus().then(() => {
   // First run, or back from a platform's sign-in page during setup.
   const resume = sessionStorage.getItem("setupStep");
   if (!status.setupComplete || resume) openSetup(resume || "welcome");
+  loadDrive();
+  setInterval(loadDrive, 5000);
 });
 loadPosts();
 setInterval(loadPosts, 3000);

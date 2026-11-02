@@ -45,10 +45,10 @@ function show(query = "") {
   window!.focus();
 }
 
-/** With the window gone: keep posting from the tray while posts are waiting, otherwise quit. */
+/** With the window gone: keep running from the tray while posts are waiting or Drive is watched, otherwise quit. */
 function windowGone() {
   if (quitting) return;
-  if (running?.pendingJobs()) showTray();
+  if (running?.keepAlive()) showTray();
   else void quit();
 }
 
@@ -84,8 +84,8 @@ function createWindow(query = "") {
     openOutside(url);
   });
   window.on("close", (event) => {
-    // Scheduled posts need FreePoster running: hide to the tray (keeping the page as it was) until they're out.
-    if (quitting || !running?.pendingJobs()) return;
+    // Scheduled posts and the Drive folder need FreePoster running: hide to the tray (keeping the page as it was).
+    if (quitting || !running?.keepAlive()) return;
     event.preventDefault();
     window!.hide();
     showTray();
@@ -97,7 +97,7 @@ function createWindow(query = "") {
 function showTray() {
   if (tray) return;
   tray = new Tray(icon.resize({ width: 16, height: 16 }));
-  tray.setToolTip("FreePoster: posting scheduled videos in the background");
+  tray.setToolTip("FreePoster: watching Google Drive and posting in the background");
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: "Open FreePoster", click: () => show() },
     { type: "separator" },
@@ -106,12 +106,12 @@ function showTray() {
   tray.on("click", () => show());
   tray.displayBalloon?.({
     title: "FreePoster is still running",
-    content: "Your scheduled posts will go out on time. FreePoster closes by itself once they're done.",
+    content: "Scheduled posts go out on time, and new videos in your Google Drive folder are picked up. Quit from this icon to stop.",
     iconType: "info",
   });
   const exitWhenDone = setInterval(() => {
     if (windowOpen() && window!.isVisible()) return;
-    if (!running?.pendingJobs()) {
+    if (!running?.keepAlive()) {
       clearInterval(exitWhenDone);
       void quit();
     }

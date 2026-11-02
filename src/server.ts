@@ -10,7 +10,8 @@ import type { SignIn, Store } from "./db.ts";
 import { registerMcp } from "./mcp.ts";
 import type { Publisher } from "./platforms/base.ts";
 import { creatorInfo } from "./platforms/tiktok.ts";
-import { driveAuthorizeUrl, exchangeDriveCode } from "./drive/client.ts";
+import { driveAuthorizeUrl, driveRedirectUri, exchangeDriveCode, folderIdFrom } from "./drive/client.ts";
+import type { DriveTikTokPrefs, Intake } from "./drive/intake.ts";
 import { parseEditSettings } from "./edit/settings.ts";
 import { checkDraft, DuplicateError, editView, parseSchedule, postView, saveUpload, type Draft } from "./posts.ts";
 import type { Runner } from "./runner.ts";
@@ -47,7 +48,14 @@ ${params.connected
   : `<h1 class="err">Sign-in didn't finish</h1><p>${esc(params.error ?? "")}</p>`}
 <p>You can close this tab and go back to FreePoster.</p>`;
 
-export function buildServer(store: Store, runner: Runner, publishers: Record<Platform, Publisher>, options: ServerOptions = {}): FastifyInstance {
+/** The running Drive pipeline, for the settings and review routes. */
+export interface DriveServices {
+  intake: Intake;
+  /** checks the folder now (after it changes) */
+  poll: () => Promise<void>;
+}
+
+export function buildServer(store: Store, runner: Runner, publishers: Record<Platform, Publisher>, options: ServerOptions = {}, drive?: DriveServices): FastifyInstance {
   const app = Fastify({ logger: false, bodyLimit: 1024 * 1024 });
   app.register(multipart, { limits: { fileSize: 4 * 1024 ** 3, files: 1, fields: 20 } });
 
@@ -173,7 +181,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
       baseUrl: config.baseUrl,
       redirectPage: config.redirectPage,
       port: config.port,
-      redirectUris: Object.fromEntries(PLATFORMS.map((p) => [p, redirectUri(p)])),
+      redirectUris: { ...Object.fromEntries(PLATFORMS.map((p) => [p, redirectUri(p)])), drive: driveRedirectUri() },
       configured: Object.fromEntries(PLATFORMS.map((p) => [p, isConfigured(p)])),
       tools: { ffmpeg, ffprobe },
       values: Object.fromEntries(keys.filter((k) => !SETTINGS[k].secret).map((k) => [k, setting(k)])),
@@ -333,9 +341,28 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     return { ok: true };
   });
 
-  app.patch<{ Params: { id: string }; Body: { scheduledAt?: unknown } }>("/api/posts/:id", async (req, reply) => {
+  app.patch<{ Params: { id: string }; Body: { scheduledAt?: unknown; caption?: unknown; title?: unknown; useOriginal?: unknown } }>("/api/posts/:id", async (req, reply) => {
     const id = Number(req.params.id);
-    if (!store.post(id)) return reply.code(404).send({ error: "no such post" });
+    const post = store.post(id);
+    if (!post) return reply.code(404).send({ error: "no such post" });
+    const body = req.body ?? {};
+    if (body.useOriginal === true) {
+      if (post.requireEdit) return reply.code(409).send({ error: "Drive videos are never posted unedited" });
+      if (!store.setPostEdit(id, null)) return reply.code(409).send({ error: "this post has already started going out" });
+      return { ok: true };
+    }
+    if (body.caption !== undefined || body.title !== undefined) {
+      const caption = String(body.caption ?? post.caption);
+      const title = String(body.title ?? post.title);
+      const problems = store.jobsForPost(id).flatMap((j) => {
+        const account = store.account(j.accountId);
+        const reason = account && publishers[j.platform].validate({ ...post, caption, title }, account);
+        return reason ? [`${publishers[j.platform].label} (${account!.name}): ${reason}`] : [];
+      });
+      if (problems.length) return reply.code(400).send({ error: problems.join("\n") });
+      if (!store.updatePostText(id, caption, title)) return reply.code(409).send({ error: "this post has already started going out" });
+      return { ok: true };
+    }
     let at: number | null;
     try {
       at = parseSchedule(req.body?.scheduledAt);
@@ -361,6 +388,76 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     store.retryJob(Number(req.params.id));
     runner.tick();
     return { ok: true };
+  });
+
+  // ---- Google Drive: the watched folder, where its videos go, and what became of each ----
+
+  const driveView = () => {
+    const conn = store.driveConnection();
+    return {
+      configured: isConfigured("youtube"),
+      connected: Boolean(conn),
+      email: conn?.email ?? null,
+      folderId: conn?.folderId ?? null,
+      folderUrl: conn?.folderId ? `https://drive.google.com/drive/folders/${conn.folderId}` : null,
+      error: conn?.error ?? null,
+      accounts: store.pref<number[]>("drive.accounts") ?? [],
+      tiktok: { allowComment: true, allowDuet: true, allowStitch: true, ...store.pref<DriveTikTokPrefs>("drive.tiktok") },
+      tiktokPrivacy: "SELF_ONLY",
+      files: store.driveFiles(30).map((f) => ({
+        id: f.driveId, name: f.name, state: f.state, scheduledAt: f.scheduledAt, note: f.note,
+        postId: f.postId, editId: f.editId, title: f.title, caption: f.caption, createdAt: f.createdAt,
+      })),
+    };
+  };
+
+  app.get("/api/drive", async () => driveView());
+
+  app.put<{ Body: { folder?: unknown; accounts?: unknown; tiktok?: Record<string, unknown> } }>("/api/drive", async (req, reply) => {
+    const body = req.body ?? {};
+    if (body.folder !== undefined) {
+      if (!store.driveConnection()) return reply.code(400).send({ error: "connect Google Drive first" });
+      const folderId = folderIdFrom(String(body.folder ?? ""));
+      if (!folderId) return reply.code(400).send({ error: "paste the folder's link, like https://drive.google.com/drive/folders/…" });
+      store.setDriveFolder(folderId);
+    }
+    if (body.accounts !== undefined) {
+      const ids = Array.isArray(body.accounts) ? body.accounts.map(Number) : [];
+      if (!Array.isArray(body.accounts) || ids.some((id) => !store.account(id))) return reply.code(400).send({ error: "unknown account selected" });
+      store.setPref("drive.accounts", ids);
+    }
+    if (body.tiktok !== undefined) {
+      const t = body.tiktok ?? {};
+      if ("privacyLevel" in t) return reply.code(400).send({ error: "TikTok posts from Drive always go out as Only me" });
+      const allowed = ["allowComment", "allowDuet", "allowStitch"];
+      if (Object.keys(t).some((k) => !allowed.includes(k)) || Object.values(t).some((v) => typeof v !== "boolean")) {
+        return reply.code(400).send({ error: "tiktok takes allowComment, allowDuet and allowStitch (true or false)" });
+      }
+      store.setPref("drive.tiktok", t);
+    }
+    if (body.folder !== undefined) void drive?.poll().catch((err) => console.error(`drive poll: ${(err as Error).message}`));
+    return driveView();
+  });
+
+  app.delete("/api/drive", async () => {
+    store.deleteDriveConnection();
+    return { ok: true };
+  });
+
+  app.post<{ Params: { id: string } }>("/api/drive/files/:id/retry-edit", async (req, reply) => {
+    if (store.driveFile(req.params.id)?.state !== "edit_failed") return reply.code(409).send({ error: "only files whose edit failed can be retried" });
+    void drive?.intake.retryEdit(req.params.id);
+    return { ok: true };
+  });
+
+  app.put<{ Params: { id: string }; Body: { title?: unknown; caption?: unknown } }>("/api/drive/files/:id/caption", async (req, reply) => {
+    if (!drive) return reply.code(503).send({ error: "Drive isn't running" });
+    try {
+      await drive.intake.releaseCaption(req.params.id, String(req.body?.title ?? "").trim(), String(req.body?.caption ?? "").trim());
+      return { ok: true };
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
   });
 
   registerMcp(app, store, runner, publishers);

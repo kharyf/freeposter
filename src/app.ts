@@ -16,6 +16,8 @@ export interface RunningApp {
   stop(): Promise<void>;
   /** Posts still to go out (including scheduled ones). */
   pendingJobs(): number;
+  /** Whether FreePoster should keep running in the background: posts are waiting, or a Drive folder is watched. */
+  keepAlive(): boolean;
 }
 
 /** Opens the database, starts the HTTP server and job runner. */
@@ -39,7 +41,7 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
     writeCaption: (input) => writeCaption(input, publishers),
   });
   watcher = new DriveWatcher(store, (f) => void intake.handle(f).catch((err) => console.error(`drive intake: ${(err as Error).message}`)));
-  const app = buildServer(store, runner, publishers, options);
+  const app = buildServer(store, runner, publishers, options, { intake, poll: () => watcher.poll() });
 
   try {
     await app.listen({ port: config.port, host: "127.0.0.1" });
@@ -68,5 +70,9 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
       store.close();
     },
     pendingJobs: () => store.pendingJobCount(),
+    keepAlive: () => {
+      const drive = store.driveConnection();
+      return store.pendingJobCount() > 0 || Boolean(drive?.folderId && !drive.error);
+    },
   };
 }
