@@ -2,6 +2,10 @@ import { join } from "node:path";
 import { config, dataDir, isConfigured, isLocalUrl } from "./config.ts";
 import { loadKey } from "./crypto.ts";
 import { Store } from "./db.ts";
+import { writeCaption } from "./caption.ts";
+import { downloadFile } from "./drive/client.ts";
+import { Intake } from "./drive/intake.ts";
+import { DriveWatcher } from "./drive/watcher.ts";
 import { EditWorker } from "./edit/worker.ts";
 import { publishers } from "./platforms/index.ts";
 import { Runner } from "./runner.ts";
@@ -23,6 +27,18 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
   const store = new Store(join(dataDir, "freeposter.db"), loadKey(dataDir));
   const runner = new Runner(store, publishers);
   const editor = new EditWorker(store);
+  // Drive: the watcher finds new videos, the intake edits, captions and schedules them.
+  let watcher: DriveWatcher;
+  const intake = new Intake(store, publishers, {
+    download: async (id) => {
+      const token = await watcher.token();
+      if (!token) throw new Error("Google Drive isn't connected");
+      return downloadFile(token, id);
+    },
+    transcribe: (sourcePath, sha256) => editor.transcriptFor({ sourcePath, sha256 }),
+    writeCaption: (input) => writeCaption(input, publishers),
+  });
+  watcher = new DriveWatcher(store, (f) => void intake.handle(f).catch((err) => console.error(`drive intake: ${(err as Error).message}`)));
   const app = buildServer(store, runner, publishers, options);
 
   try {
@@ -33,6 +49,9 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
   }
   runner.start();
   editor.start();
+  void intake.resume().catch((err) => console.error(`drive resume: ${(err as Error).message}`));
+  const intakeTimer = setInterval(() => void intake.tick().catch((err) => console.error(`drive tick: ${(err as Error).message}`)), 10_000);
+  watcher.start();
 
   console.log(`FreePoster running at ${config.baseUrl}`);
   for (const p of PLATFORMS) {
@@ -43,6 +62,8 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
     async stop() {
       runner.stop();
       editor.stop();
+      watcher.stop();
+      clearInterval(intakeTimer);
       await app.close();
       store.close();
     },

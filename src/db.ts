@@ -213,19 +213,7 @@ export class Store {
   createPost(p: Omit<Post, "id" | "createdAt">, accountIds: number[]): number {
     this.db.exec("BEGIN");
     try {
-      const { lastInsertRowid } = this.db
-        .prepare("INSERT INTO posts (caption, title, source_path, sha256, tiktok, created_at, scheduled_at, edit_id, require_edit) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(p.caption, p.title, p.sourcePath, p.sha256, p.tiktok ? JSON.stringify(p.tiktok) : null, Date.now(), p.scheduledAt ?? null, p.editId ?? null, p.requireEdit ? 1 : 0);
-      const postId = Number(lastInsertRowid);
-      const insertJob = this.db.prepare(
-        "INSERT INTO jobs (post_id, account_id, platform, state, next_run_at, updated_at) VALUES (?, ?, ?, 'queued', ?, ?)",
-      );
-      for (const id of accountIds) {
-        const account = this.account(id);
-        if (!account) throw new Error(`unknown account ${id}`);
-        // A scheduled job is simply a queued job that isn't due yet; the runner picks it up at that time.
-        insertJob.run(postId, id, account.platform, p.scheduledAt ?? Date.now(), Date.now());
-      }
+      const postId = this.insertPost(p, accountIds);
       this.db.exec("COMMIT");
       return postId;
     } catch (err) {
@@ -233,6 +221,46 @@ export class Store {
       throw err;
     }
   }
+
+  /**
+   * Creates a Drive file's post and links the two in one transaction, so a restart or an overlapping
+   * tick can never make a second post for the same file. Returns null when the file already has one.
+   */
+  createDrivePost(driveId: string, p: Omit<Post, "id" | "createdAt">, accountIds: number[], note: string | null): number | null {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.db.prepare("SELECT post_id FROM drive_files WHERE drive_id = ?").get(driveId) as { post_id: number | null } | undefined;
+      if (!row || row.post_id !== null) {
+        this.db.exec("ROLLBACK");
+        return null;
+      }
+      const postId = this.insertPost(p, accountIds);
+      this.db.prepare("UPDATE drive_files SET state = 'scheduled', post_id = ?, note = ?, updated_at = ? WHERE drive_id = ?").run(postId, note, Date.now(), driveId);
+      this.db.exec("COMMIT");
+      return postId;
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
+  private insertPost(p: Omit<Post, "id" | "createdAt">, accountIds: number[]): number {
+    const { lastInsertRowid } = this.db
+      .prepare("INSERT INTO posts (caption, title, source_path, sha256, tiktok, created_at, scheduled_at, edit_id, require_edit) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(p.caption, p.title, p.sourcePath, p.sha256, p.tiktok ? JSON.stringify(p.tiktok) : null, Date.now(), p.scheduledAt ?? null, p.editId ?? null, p.requireEdit ? 1 : 0);
+    const postId = Number(lastInsertRowid);
+    const insertJob = this.db.prepare(
+      "INSERT INTO jobs (post_id, account_id, platform, state, next_run_at, updated_at) VALUES (?, ?, ?, 'queued', ?, ?)",
+    );
+    for (const id of accountIds) {
+      const account = this.account(id);
+      if (!account) throw new Error(`unknown account ${id}`);
+      // A scheduled job is simply a queued job that isn't due yet; the runner picks it up at that time.
+      insertJob.run(postId, id, account.platform, p.scheduledAt ?? Date.now(), Date.now());
+    }
+    return postId;
+  }
+
 
   /** The same video file already published or still due to go to this account (guards against accidental double posting). */
   alreadyPublished(sha256: string, accountId: number): Job | undefined {
