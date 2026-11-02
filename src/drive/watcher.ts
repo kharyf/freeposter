@@ -2,7 +2,7 @@
 // need a public address). Each new video is handed over once, after its upload has finished.
 import type { Store } from "../db.ts";
 import { AuthError, FatalError } from "../http.ts";
-import { listFolder, refreshDrive, type DriveFile } from "./client.ts";
+import { listFolder, refreshDrive, uploadedAt, type DriveFile } from "./client.ts";
 
 const RECONNECT = "Google Drive sign-in expired or was revoked; reconnect Google Drive in Setup";
 
@@ -90,7 +90,7 @@ export class DriveWatcher {
     for (const f of files) {
       const known = this.store.driveFile(f.id);
       if (!known) {
-        this.store.upsertDriveFile(f.id, { name: f.name, state: "pending", size: f.size, md5: f.md5Checksum ?? null });
+        this.store.upsertDriveFile(f.id, { name: f.name, state: "pending", size: f.size, md5: f.md5Checksum ?? null, uploadedAt: uploadedAt(f) });
         continue;
       }
       if (known.state !== "pending") continue;

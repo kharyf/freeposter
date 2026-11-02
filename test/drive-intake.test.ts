@@ -33,7 +33,7 @@ function setup(opts: { transcript?: Transcript; caption?: () => Promise<{ title:
     now: () => clock.now,
   };
   const intake = new Intake(store, publishers, deps);
-  const file = (name: string, id = "f1"): DriveFile => ({ id, name, mimeType: "video/mp4", size: 1, md5Checksum: "m", createdTime: "" });
+  const file = (name: string, id = "f1", uploadedAt = clock.now): DriveFile => ({ id, name, mimeType: "video/mp4", size: 1, md5Checksum: "m", createdTime: new Date(uploadedAt).toISOString() });
   /** The worker finished the edit (stand-in for EditWorker). */
   const finishEdit = (driveId: string, durationSec = 3) => {
     const editId = store.driveFile(driveId)!.editId!;
@@ -228,4 +228,48 @@ test("a file waits for Drive accounts to be chosen instead of failing", async ()
   store.setPref("drive.accounts", accts.map((a) => a.id));
   await intake.tick();
   assert.equal(posts(), 1);
+});
+
+/** "m.d.yy" for a local day */
+const dateKey = (d: Date) => `${d.getMonth() + 1}.${d.getDate()}.${String(d.getFullYear()).slice(2)}`;
+const noon = (days = 0) => { const d = new Date(); d.setDate(d.getDate() + days); return d.setHours(12, 0, 0, 0); };
+const dayStart = (days = 0) => new Date(noon(days)).setHours(0, 0, 0, 0);
+
+test("a name with no time posts as soon as possible on its date", async () => {
+  const { store, clock, intake, file, finishEdit } = setup();
+  clock.now = noon();
+  await intake.handle(file(`Today_${dateKey(new Date(noon()))}.mp4`));
+  assert.equal(store.driveFile("f1")!.scheduledAt, clock.now, "today: right away");
+  clock.now += 20 * MIN; // the edit takes a while; still the same day, so not late
+  finishEdit("f1");
+  await intake.tick();
+  const rec = store.driveFile("f1")!;
+  assert.equal(rec.state, "scheduled", rec.note ?? "");
+  assert.equal(rec.note, null);
+  assert.equal(store.post(rec.postId!)!.scheduledAt, clock.now);
+
+  await intake.handle(file(`Later_${dateKey(new Date(noon(2)))}.mp4`, "f2"));
+  assert.equal(store.driveFile("f2")!.scheduledAt, dayStart(2), "a later date: as soon as that day starts");
+});
+
+test("a name with no date uses the day it was uploaded", async () => {
+  const { store, clock, intake, file } = setup();
+  clock.now = noon();
+  await intake.handle(file("Evening_3.00.pm.mp4"));
+  assert.equal(store.driveFile("f1")!.scheduledAt, dayStart() + 15 * 60 * MIN);
+  await intake.handle(file("Anytime.mp4", "f2"));
+  assert.equal(store.driveFile("f2")!.scheduledAt, clock.now, "no date or time: right away");
+});
+
+test("a date with no time is late once that day is over", async () => {
+  const { store, clock, intake, file, posts } = setup();
+  clock.now = noon();
+  await intake.handle(file(`Yesterday_${dateKey(new Date(noon(-1)))}.mp4`));
+  assert.equal(store.driveFile("f1")!.state, "late");
+  assert.match(store.driveFile("f1")!.note!, /already passed/);
+  // No date: the upload day counts, not the day FreePoster first saw it.
+  await intake.handle(file("Undated.mp4", "f2", noon(-1)));
+  assert.equal(store.driveFile("f2")!.state, "late");
+  await intake.tick();
+  assert.equal(posts(), 0);
 });

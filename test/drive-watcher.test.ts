@@ -41,7 +41,7 @@ test("existing files at connect are ignored", async (t) => {
 });
 
 test("file not picked up until size stable", async (t) => {
-  const { state, fake, handed, watcher } = drive();
+  const { state, fake, handed, watcher, store } = drive();
   t.after(fake.restore);
   await watcher.poll(); // baseline: empty folder
   state.files = [{ id: "new", name: "New_11.2.26_9.00.am.mp4", size: 100 }];
@@ -53,6 +53,7 @@ test("file not picked up until size stable", async (t) => {
   assert.equal(handed.length, 1);
   assert.equal(handed[0].id, "new");
   assert.equal(handed[0].size, 200);
+  assert.equal(store.driveFile("new")!.uploadedAt, Date.parse("2026-11-01T10:00:00Z"), "Drive's upload time is kept");
 });
 
 test("each drive file handed over once", async (t) => {

@@ -1,4 +1,4 @@
-// What happens to a video dropped in the watched Drive folder: read the posting time from its name,
+// What happens to a video dropped in the watched Drive folder: read the posting time from its name (or its upload day),
 // download it, transcribe it, edit it (auto-approved) while Claude writes its title and caption, then
 // schedule it to the Drive accounts. A Drive video is never posted unedited: the post waits for the edit,
 // even past its time. Every step is saved, so a restart picks up where it stopped.
@@ -9,7 +9,7 @@ import type { Transcript } from "../edit/transcribe.ts";
 import type { Publisher } from "../platforms/base.ts";
 import { saveUpload } from "../posts.ts";
 import type { Account, DriveFileRecord, Platform, TikTokOptions } from "../types.ts";
-import type { DriveFile } from "./client.ts";
+import { uploadedAt, type DriveFile } from "./client.ts";
 import { parseDriveName } from "./filename.ts";
 
 export interface IntakeDeps {
@@ -50,7 +50,7 @@ export class Intake {
 
   /** A new file from the watcher (already recorded as "queued"). */
   async handle(f: DriveFile) {
-    if (!this.store.driveFile(f.id)) this.store.upsertDriveFile(f.id, { name: f.name, state: "queued", size: f.size });
+    if (!this.store.driveFile(f.id)) this.store.upsertDriveFile(f.id, { name: f.name, state: "queued", size: f.size, uploadedAt: uploadedAt(f) });
     await this.advance(f.id);
   }
 
@@ -123,14 +123,15 @@ export class Intake {
     const id = f.driveId;
     switch (f.state) {
       case "queued": {
-        const parsed = parseDriveName(f.name);
+        const parsed = this.parse(f);
         if (!parsed.ok) {
           this.store.upsertDriveFile(id, { state: "invalid", note: parsed.reason });
           return false;
         }
         const now = this.now();
-        if (parsed.at < now - GRACE_MS) {
-          this.store.upsertDriveFile(id, { state: "late", scheduledAt: parsed.at, note: `its time (${new Date(parsed.at).toLocaleString()}) had already passed when it reached the folder` });
+        if (parsed.latest < now - GRACE_MS) {
+          const when = parsed.latest === parsed.at ? `its time (${new Date(parsed.at).toLocaleString()})` : `its date (${new Date(parsed.at).toLocaleDateString()})`;
+          this.store.upsertDriveFile(id, { state: "late", scheduledAt: parsed.at, note: `${when} had already passed when it reached the folder` });
           return false;
         }
         if (parsed.at > now + YEAR_MS) {
@@ -183,12 +184,18 @@ export class Intake {
     }
     try {
       log(f, "writing the caption");
-      const topic = (parseDriveName(f.name) as { name?: string }).name ?? f.name;
+      const parsed = this.parse(f);
+      const topic = parsed.ok ? parsed.name : f.name;
       const { title, caption } = await this.deps.writeCaption({ topic, transcript: text, accounts: this.accounts() });
       this.store.upsertDriveFile(f.driveId, { title, caption });
     } catch (err) {
       this.store.upsertDriveFile(f.driveId, { state: "needs_caption", note: `${(err as Error).message}; add a title and caption` });
     }
+  }
+
+  /** The posting time in the name; a name without a date posts on the day it was uploaded. */
+  private parse(f: DriveFileRecord) {
+    return parseDriveName(f.name, f.uploadedAt ?? f.createdAt);
   }
 
   /** The accounts Drive videos go to (Drive settings). */
@@ -246,7 +253,10 @@ export class Intake {
     }
     const now = this.now();
     const at = Math.max(f.scheduledAt ?? now, now);
-    if (f.scheduledAt !== null && now - f.scheduledAt > 60_000) notes.unshift("the edit finished after the scheduled time; posted late");
+    // A name with no time is on time until its day ends.
+    const parsed = this.parse(f);
+    const latest = parsed.ok ? parsed.latest : f.scheduledAt;
+    if (latest !== null && now - latest > 60_000) notes.unshift("the edit finished after the scheduled time; posted late");
     const postId = this.store.createDrivePost(f.driveId, {
       caption: f.caption!,
       title: f.title ?? "",

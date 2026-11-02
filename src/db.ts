@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS drive_files (
   title TEXT,
   caption TEXT,
   note TEXT,
+  uploaded_at INTEGER,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -113,6 +114,8 @@ export class Store {
     // ...and before edits.
     if (!postColumns.some((c) => c.name === "edit_id")) this.db.exec("ALTER TABLE posts ADD COLUMN edit_id INTEGER REFERENCES edits(id)");
     if (!postColumns.some((c) => c.name === "require_edit")) this.db.exec("ALTER TABLE posts ADD COLUMN require_edit INTEGER NOT NULL DEFAULT 0");
+    const driveColumns = this.db.prepare("PRAGMA table_info(drive_files)").all() as { name: string }[];
+    if (!driveColumns.some((c) => c.name === "uploaded_at")) this.db.exec("ALTER TABLE drive_files ADD COLUMN uploaded_at INTEGER");
     // A crash mid-run leaves jobs "running"; their progress checkpoint lets them resume safely.
     this.db.prepare("UPDATE jobs SET state = 'retry' WHERE state = 'running'").run();
   }
@@ -543,7 +546,7 @@ export class Store {
   upsertDriveFile(driveId: string, f: Partial<Omit<DriveFileRecord, "driveId" | "createdAt" | "updatedAt">>) {
     const cols = {
       name: "name", state: "state", size: "size", md5: "md5", scheduledAt: "scheduled_at", sourcePath: "source_path", sha256: "sha256",
-      editId: "edit_id", postId: "post_id", title: "title", caption: "caption", note: "note",
+      editId: "edit_id", postId: "post_id", title: "title", caption: "caption", note: "note", uploadedAt: "uploaded_at",
     } as const;
     const keys = (Object.keys(f) as (keyof typeof cols)[]).filter((k) => k in cols);
     const values = keys.map((k) => f[k] ?? null);
@@ -616,6 +619,7 @@ function toDriveFile(r: any): DriveFileRecord {
     title: r.title,
     caption: r.caption,
     note: r.note,
+    uploadedAt: r.uploaded_at,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };

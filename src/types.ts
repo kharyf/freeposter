@@ -74,6 +74,8 @@ export interface DriveFileRecord {
   title: string | null;
   caption: string | null;
   note: string | null;
+  /** when it was uploaded to Drive; the date a name without one posts on */
+  uploadedAt: number | null;
   createdAt: number;
   updatedAt: number;
 }

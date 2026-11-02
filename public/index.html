@@ -946,7 +946,7 @@ function renderDrive(v, haveKey) {
     <div class="muted">Signed in as ${esc(v.email)}</div>
     <label for="driveFolder">Folder link</label>
     <input id="driveFolder" type="text" placeholder="https://drive.google.com/drive/folders/…" value="${esc(v.folderUrl ?? "")}">
-    <div class="muted">Name each video <code>name_m.d.yy_h.mm.am</code>, like <code>Gatekeeping_11.1.26_5.30.pm</code>. Videos already in the folder when you add it are left alone.</div>
+    <div class="muted">Name each video <code>name_m.d.yy_h.mm.am</code>, like <code>Gatekeeping_11.1.26_5.30.pm</code>. Leave off the time to post as soon as possible that day; leave off the date to use the day it was uploaded. Videos already in the folder when you add it are left alone.</div>
     <label>Post Drive videos to</label>
     ${accts}
     ${status.accounts.some((a) => a.platform === "tiktok") ? `<label>TikTok</label>

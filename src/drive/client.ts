@@ -27,6 +27,12 @@ export interface DriveFile {
 }
 
 const creds = () => config.credentials.youtube;
+/** Drive's upload time in ms, or null if it's missing or unreadable */
+export const uploadedAt = (f: Pick<DriveFile, "createdTime">) => {
+  const t = Date.parse(f.createdTime);
+  return Number.isFinite(t) ? t : null;
+};
+
 export const driveRedirectUri = () => config.redirectPage || `${config.baseUrl}/callback/drive`;
 
 /** "https://drive.google.com/drive/folders/<id>?usp=sharing" or a bare id → the id. */
