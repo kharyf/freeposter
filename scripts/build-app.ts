@@ -1,7 +1,7 @@
 // Builds the desktop app.
 //   node scripts/build-app.ts            → build/app, run with `electron build/app` (npm run desktop)
 //   node scripts/build-app.ts --package  → dist/FreePoster-win32-x64/FreePoster.exe (npm run build:app)
-import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { build } from "esbuild";
 import { iconIco, iconPng } from "./icon.ts";
@@ -20,11 +20,17 @@ await build({
   platform: "node",
   format: "cjs",
   target: "node24",
-  external: ["electron"],
+  // onnxruntime-node (face detection for reframing) loads a native binding, so it ships beside the bundle.
+  external: ["electron", "onnxruntime-node"],
   // config.ts falls back to __dirname when import.meta is empty, as it is in this bundle.
   logOverride: { "empty-import-meta": "silent" },
 });
 copyFileSync(join(root, "public", "index.html"), join(out, "public", "index.html"));
+// Only the Windows x64 binaries: the package carries every platform's (~300 MB).
+const ort = join(root, "node_modules", "onnxruntime-node");
+const ortOut = join(out, "node_modules", "onnxruntime-node");
+for (const part of ["package.json", "dist", join("bin", "napi-v6", "win32", "x64")]) cpSync(join(ort, part), join(ortOut, part), { recursive: true });
+cpSync(join(root, "node_modules", "onnxruntime-common"), join(out, "node_modules", "onnxruntime-common"), { recursive: true });
 writeFileSync(join(out, "icon.png"), iconPng());
 writeFileSync(join(root, "build", "icon.ico"), iconIco());
 writeFileSync(join(out, "package.json"), JSON.stringify({
@@ -47,7 +53,7 @@ if (process.argv.includes("--package")) {
     arch: "x64",
     electronVersion: JSON.parse(readFileSync(join(root, "node_modules", "electron", "package.json"), "utf8")).version,
     icon: join(root, "build", "icon.ico"),
-    asar: true,
+    asar: { unpack: "**/node_modules/onnxruntime-node/**" }, // native DLLs can't load from inside an asar
     overwrite: true,
     win32metadata: { ProductName: "FreePoster", FileDescription: "FreePoster", CompanyName: "FreePoster" },
   });
