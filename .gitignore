@@ -3,3 +3,5 @@ data/
 .env
 build/
 dist/
+demo/
+local_support/
