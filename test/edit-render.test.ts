@@ -94,3 +94,11 @@ test("silent source with cuts and audio processing still renders", async () => {
   const out = await renderEdit(verticalSilent(dir, 4), { words, language: null }, { ...DEFAULT_EDIT, reframe: false }, join(dir, "silent-cut.mp4"));
   assert.ok(out.durationSec < 2, `${out.durationSec}`);
 });
+
+test("works in a folder whose name has an apostrophe", async () => {
+  const { mkdirSync } = await import("node:fs");
+  const dir = join(tmp(), "O'Brien");
+  mkdirSync(dir);
+  const out = await renderEdit(verticalSilent(dir, 2), { words: [{ text: "hi", start: 0.2, end: 1.5 }], language: null }, { ...OFF, captions: true }, join(dir, "caps.mp4"));
+  assert.ok(existsSync(out.path));
+});

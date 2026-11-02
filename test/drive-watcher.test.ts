@@ -97,3 +97,15 @@ test("changing the folder starts a new baseline", async (t) => {
   await watcher.poll();
   assert.deepEqual(handed, []);
 });
+
+test("a folder FreePoster can't open is reported, and fixing the link clears it", async (t) => {
+  const store = newStore();
+  store.saveDriveTokens({ accessToken: "at-1", refreshToken: "rt-1", expiresAt: Date.now() + 3_600_000 }, "me@example.com");
+  store.setDriveFolder("missingFolder123");
+  const fake = mockFetch(() => json({ error: { code: 404, message: "File not found: ." } }, 404));
+  t.after(fake.restore);
+  await new DriveWatcher(store, () => {}).poll();
+  assert.match(store.driveConnection()!.error!, /folder/i);
+  store.setDriveFolder("1gz2qTGVjYyDM9vTB8Ik0DmaBWyMAISry");
+  assert.equal(store.driveConnection()!.error, null);
+});

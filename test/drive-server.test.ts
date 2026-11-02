@@ -1,5 +1,6 @@
 import "./isolated-home.ts";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { before, test } from "node:test";
 import { DEFAULT_EDIT } from "../src/edit/settings.ts";
 import { Intake } from "../src/drive/intake.ts";
@@ -121,4 +122,27 @@ test("posts list says which posts came from Drive", async () => {
   store.upsertDriveFile("d", { name: "D_11.2.26_9.00.am.mp4", state: "scheduled", postId: id });
   const posts = (await app.inject("/api/posts")).json();
   assert.equal(posts.find((p: any) => p.id === id).requireEdit, true);
+});
+
+test("cancelling a post keeps a source file other posts and edits still use", async () => {
+  const { store, app, x } = setup();
+  const own = verticalSilent(tmp(), 2);
+  const edit = store.createEdit(own, sha256(own), { ...DEFAULT_EDIT, captions: false });
+  store.updateEdit(edit.id, { state: "ready", outputPath: own, durationSec: 2 });
+  store.approveEdit(edit.id);
+  const post = (n: number) => store.createPost({ caption: `p${n}`, title: "", sourcePath: own, sha256: sha256(own), tiktok: null, scheduledAt: Date.now() + 3_600_000, editId: edit.id }, [x.id]);
+  const a = post(1);
+  post(2);
+  assert.equal((await app.inject({ method: "DELETE", url: `/api/posts/${a}` })).statusCode, 200);
+  assert.ok(existsSync(own), "the other post and the edit still need it");
+});
+
+test("cancelling a Drive post marks its file cancelled", async () => {
+  const { store, app, x } = setup();
+  const id = postWith(store, [x.id], true);
+  store.upsertDriveFile("d", { name: "D_11.2.26_9.00.am.mp4", state: "scheduled", postId: id });
+  assert.equal((await app.inject({ method: "DELETE", url: `/api/posts/${id}` })).statusCode, 200);
+  const f = store.driveFile("d")!;
+  assert.equal(f.state, "cancelled");
+  assert.equal(f.postId, null);
 });

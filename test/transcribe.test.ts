@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseWhisperJson, transcribe, whisperModelPath } from "../src/edit/transcribe.ts";
+import { tmp, verticalSilent } from "./helpers.ts";
 
 const fixtures = join(import.meta.dirname, "fixtures");
 // The real model lives in the checkout's data/models (tests use an isolated home, so point at it directly).
@@ -32,4 +33,9 @@ test("transcribe finds the spoken words", { skip: !existsSync(realModel) && "whi
   const text = words.map((w) => w.text.toLowerCase()).join(" ");
   assert.match(text, /gatekeeping/);
   assert.ok(whisperModelPath().endsWith("ggml-base.bin"));
+});
+
+test("a video with no audio track has no words", async () => {
+  const { words } = await transcribe(verticalSilent(tmp(), 2), realModel);
+  assert.deepEqual(words, []);
 });

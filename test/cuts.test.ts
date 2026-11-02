@@ -61,3 +61,10 @@ test("no words keeps whole clip", () => {
 test("a clip of only fillers keeps the whole clip", () => {
   assert.deepEqual(planCuts([w("um", 0.2, 0.5)], 5), [{ start: 0, end: 5 }]);
 });
+
+test("repeating a word across sentences is not a retake", () => {
+  const words = [w("show", 0, 0.3), w("you", 0.3, 0.5), w("this.", 0.5, 0.8), w("This", 0.85, 1.1), w("is", 1.1, 1.3), w("why", 1.3, 1.6)];
+  assert.deepEqual(remapWords(words, planCuts(words, 2)).map((x) => x.text), ["show", "you", "this.", "This", "is", "why"]);
+  const store = [w("the", 0, 0.2), w("store.", 0.2, 0.6), w("The", 0.65, 0.8), w("store", 0.8, 1.1), w("was", 1.1, 1.3)];
+  assert.equal(remapWords(store, planCuts(store, 2)).length, 5);
+});

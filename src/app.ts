@@ -18,6 +18,14 @@ export interface RunningApp {
   pendingJobs(): number;
   /** Whether FreePoster should keep running in the background: posts are waiting, or a Drive folder is watched. */
   keepAlive(): boolean;
+  /** Why Drive stopped (sign-in revoked, folder unreadable), for the tray to show. */
+  driveError(): string | null;
+}
+
+/** Posts waiting, edits or Drive files part-way through, or a watched folder (even one needing a reconnect). */
+export function keepRunning(store: Store): boolean {
+  return store.pendingJobCount() > 0 || store.openEditCount() > 0 || store.driveFilesIn(["queued", "downloading", "transcribing", "processing"]).length > 0
+    || Boolean(store.driveConnection()?.folderId);
 }
 
 /** Opens the database, starts the HTTP server and job runner. */
@@ -70,9 +78,7 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
       store.close();
     },
     pendingJobs: () => store.pendingJobCount(),
-    keepAlive: () => {
-      const drive = store.driveConnection();
-      return store.pendingJobCount() > 0 || Boolean(drive?.folderId && !drive.error);
-    },
+    keepAlive: () => keepRunning(store),
+    driveError: () => store.driveConnection()?.error ?? null,
   };
 }

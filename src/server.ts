@@ -378,9 +378,9 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   app.delete<{ Params: { id: string } }>("/api/posts/:id", async (req, reply) => {
     const id = Number(req.params.id);
     if (!store.post(id)) return reply.code(404).send({ error: "no such post" });
-    const { cancelled, deleted } = store.cancelPost(id);
+    const { cancelled, orphanedSource } = store.cancelPost(id);
     if (!cancelled) return reply.code(409).send({ error: "this post has already started going out" });
-    if (deleted) try { unlinkSync(deleted.sourcePath); } catch {}
+    if (orphanedSource) try { unlinkSync(orphanedSource); } catch {}
     return { ok: true, cancelled };
   });
 

@@ -60,12 +60,21 @@ export class DriveWatcher {
     if (!token) return;
     let files: DriveFile[];
     try {
-      files = await listFolder(token, conn.folderId);
+      try {
+        files = await listFolder(token, conn.folderId);
+      } catch (err) {
+        if (!(err instanceof AuthError)) throw err;
+        token = await this.token(true);
+        if (!token) return;
+        files = await listFolder(token, conn.folderId);
+      }
     } catch (err) {
-      if (!(err instanceof AuthError)) throw err;
-      token = await this.token(true);
-      if (!token) return;
-      files = await listFolder(token, conn.folderId);
+      // Not found / no access: the user has to fix the link or the sharing; say so instead of retrying quietly.
+      if (err instanceof FatalError && !(err instanceof AuthError)) {
+        this.store.setDriveError("FreePoster can't open the Drive folder. Check the folder link, and that it's shared with the Google account you connected.");
+        return;
+      }
+      throw err;
     }
 
     if (!conn.baselineDone) {

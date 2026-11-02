@@ -11,20 +11,22 @@ export interface Segment {
 export const FILLERS: ReadonlySet<string> = new Set(["um", "uh", "erm", "er", "ah", "hmm", "mm", "umm", "uhh"]);
 
 const norm = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}']/gu, "");
-const endsSentence = (text: string) => /[,.?!…;:-]$/.test(text);
+const endsSentence = (text: string) => /[.?!…]$/.test(text);
 
 /** Longest phrase checked for a repeated take. */
 const MAX_REPEAT = 8;
-/** A pause this long (or punctuation) between two copies of a phrase marks a retake. */
+/** A pause this long between two copies of a phrase marks a retake. */
 const RETAKE_GAP = 0.25;
 
 /** Indices (into words) of the earlier copies of repeated phrases. */
 function retakes(words: Word[]): Set<number> {
   const drop = new Set<number>();
   for (let i = 1; i < words.length; i++) {
-    const broke = words[i].start - words[i - 1].end > RETAKE_GAP || endsSentence(words[i - 1].text);
-    if (!broke) continue;
+    // A retake starts after a real pause; punctuation alone is just the next sentence.
+    if (words[i].start - words[i - 1].end <= RETAKE_GAP) continue;
     for (let n = Math.min(MAX_REPEAT, i, words.length - i); n >= 1; n--) {
+      // "...show you this. This is..." repeats a word or two across sentences on purpose: keep it.
+      if (n <= 2 && endsSentence(words[i - 1].text)) continue;
       let same = true;
       for (let k = 0; k < n && same; k++) same = norm(words[i - n + k].text) === norm(words[i + k].text);
       if (same) {

@@ -376,12 +376,22 @@ export class Store {
    * Cancels a post's unstarted jobs; jobs already under way are left alone, since stopping
    * mid-upload could leave a half-made post. Deletes the post when no jobs remain.
    */
-  cancelPost(postId: number): { cancelled: number; deleted: Post | undefined } {
+  cancelPost(postId: number): { cancelled: number; deleted: Post | undefined; orphanedSource: string | null } {
     const post = this.post(postId);
     const { changes } = this.db.prepare(`DELETE ${this.unstartedJobs(postId)}`).run(postId);
     const left = this.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE post_id = ?").get(postId) as { n: number };
-    if (left.n === 0) this.db.prepare("DELETE FROM posts WHERE id = ?").run(postId);
-    return { cancelled: Number(changes), deleted: left.n === 0 ? post : undefined };
+    if (left.n === 0) {
+      this.db.prepare("DELETE FROM posts WHERE id = ?").run(postId);
+      this.db.prepare("UPDATE drive_files SET state = 'cancelled', post_id = NULL, note = 'its post was cancelled', updated_at = ? WHERE post_id = ?").run(Date.now(), postId);
+    }
+    const deleted = left.n === 0 ? post : undefined;
+    return { cancelled: Number(changes), deleted, orphanedSource: deleted && !this.sourceInUse(deleted.sourcePath) ? deleted.sourcePath : null };
+  }
+
+  /** Whether any post, edit or Drive file still needs this uploaded video (edits share one copy of a file). */
+  sourceInUse(path: string): boolean {
+    const used = (sql: string) => Boolean(this.db.prepare(sql).get(path));
+    return used("SELECT 1 FROM posts WHERE source_path = ?") || used("SELECT 1 FROM edits WHERE source_path = ?") || used("SELECT 1 FROM drive_files WHERE source_path = ?");
   }
 
   /** Points an unstarted post at an edit (or back to the original). Drive posts can't go back to the original. */
@@ -458,6 +468,11 @@ export class Store {
     this.db.prepare("UPDATE edits SET approved_at = ? WHERE id = ? AND state = 'ready'").run(Date.now(), id);
   }
 
+  /** Edits still to be made or being made. */
+  openEditCount(): number {
+    return (this.db.prepare("SELECT COUNT(*) AS n FROM edits WHERE state IN ('queued', 'transcribing', 'editing')").get() as { n: number }).n;
+  }
+
   /** Edits interrupted by a crash or quit start over. */
   requeueInterruptedEdits() {
     this.db.prepare("UPDATE edits SET state = 'queued', progress = 0 WHERE state IN ('transcribing', 'editing')").run();
@@ -492,7 +507,7 @@ export class Store {
 
   /** A new folder starts with a fresh baseline: what's already in it is never posted. */
   setDriveFolder(folderId: string | null) {
-    this.db.prepare("UPDATE drive_connection SET folder_id = ?, baseline_done = 0 WHERE id = 1 AND COALESCE(folder_id, '') != COALESCE(?, '')").run(folderId, folderId);
+    this.db.prepare("UPDATE drive_connection SET folder_id = ?, baseline_done = 0, error = NULL WHERE id = 1 AND COALESCE(folder_id, '') != COALESCE(?, '')").run(folderId, folderId);
   }
 
   setDriveError(error: string | null) {

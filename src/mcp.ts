@@ -354,9 +354,9 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
       async run(args) {
         const id = int(args, "post_id");
         post(id);
-        const { cancelled, deleted } = store.cancelPost(id);
+        const { cancelled, deleted, orphanedSource } = store.cancelPost(id);
         if (!cancelled) throw new ToolError("nothing to cancel: this post has already started going out");
-        if (deleted) try { unlinkSync(deleted.sourcePath); } catch {}
+        if (orphanedSource) try { unlinkSync(orphanedSource); } catch {}
         return { cancelled, post: deleted ? null : post(id) };
       },
     },

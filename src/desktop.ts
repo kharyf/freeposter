@@ -109,7 +109,12 @@ function showTray() {
     content: "Scheduled posts go out on time, and new videos in your Google Drive folder are picked up. Quit from this icon to stop.",
     iconType: "info",
   });
+  let shownError: string | null = null;
   const exitWhenDone = setInterval(() => {
+    // Drive needs the user (sign-in revoked, folder gone): say so once, from the tray.
+    const error = running?.driveError() ?? null;
+    if (error && error !== shownError) tray?.displayBalloon?.({ title: "FreePoster: Google Drive stopped", content: error, iconType: "warning" });
+    shownError = error;
     if (windowOpen() && window!.isVisible()) return;
     if (!running?.keepAlive()) {
       clearInterval(exitWhenDone);

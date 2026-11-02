@@ -56,7 +56,8 @@ export type DriveFileState =
   | "queued" // handed to the intake
   | "ignored" | "invalid" | "late"
   | "downloading" | "transcribing" | "processing"
-  | "scheduled" | "needs_caption" | "edit_failed" | "failed";
+  | "scheduled" | "needs_caption" | "edit_failed" | "failed"
+  | "cancelled"; // its post was cancelled in FreePoster
 
 /** One video seen in the watched Drive folder, and how far FreePoster got with it. */
 export interface DriveFileRecord {

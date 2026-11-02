@@ -27,10 +27,13 @@ export interface Transcript {
 
 export const whisperModelPath = () => config.whisperModel;
 
-/** A path as an ffmpeg filter option value: forward slashes, colons escaped, quoted. */
+/**
+ * A path as an ffmpeg filter option value. ffmpeg unescapes twice (the filter graph, then the option), so
+ * colons get one backslash inside graph quotes, and a quote becomes \' for the option level, written as
+ * close-quote, escaped quote, reopen at the graph level.
+ */
 export function filterPath(path: string): string {
-  if (path.includes("'")) throw new Error(`ffmpeg can't use a path containing a quote: ${path}`);
-  return `'${path.replace(/\\/g, "/").replace(/:/g, "\\:")}'`;
+  return `'${path.replace(/\\/g, "/").replace(/:/g, "\\:").replace(/'/g, "\\'\\''")}'`;
 }
 
 export function parseWhisperJson(raw: string): Transcript {
@@ -68,7 +71,15 @@ export async function ensureWhisperModel(onProgress?: (fraction: number) => void
   return path;
 }
 
+async function hasAudio(source: string): Promise<boolean> {
+  const { stdout } = await run(config.ffprobe, ["-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", source], { windowsHide: true })
+    .catch((err) => { throw new Error(`transcription failed: not a readable media file (${(err as any).stderr?.trim() || (err as Error).message})`); });
+  return stdout.trim().length > 0;
+}
+
 export async function transcribe(source: string, model = whisperModelPath()): Promise<Transcript> {
+  // Screen recordings and B-roll have no sound at all: nothing to hear, not a failure.
+  if (!(await hasAudio(source))) return { words: [], language: null };
   if (!existsSync(model)) await ensureWhisperModel();
   const out = join(dataDir, "edits", `whisper-${randomToken(8)}.json`);
   const af = `aresample=16000,whisper=model=${filterPath(model)}:language=auto:format=json:max_len=1:use_gpu=true:destination=${filterPath(out)}`;
