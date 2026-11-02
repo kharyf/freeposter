@@ -216,3 +216,16 @@ test("no accounts left fails with the reasons", async () => {
   assert.match(store.driveFile("f1")!.note!, /Facebook/);
   assert.equal(posts(), 0);
 });
+
+test("a file waits for Drive accounts to be chosen instead of failing", async () => {
+  const { store, accts, clock, intake, file, finishEdit, posts } = setup();
+  store.setPref("drive.accounts", []);
+  await intake.handle(file(driveName("Early", clock.now + 60 * MIN)));
+  finishEdit("f1");
+  await intake.tick();
+  assert.equal(store.driveFile("f1")!.state, "processing");
+  assert.match(store.driveFile("f1")!.note!, /choose the accounts/);
+  store.setPref("drive.accounts", accts.map((a) => a.id));
+  await intake.tick();
+  assert.equal(posts(), 1);
+});

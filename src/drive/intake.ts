@@ -222,7 +222,13 @@ export class Intake {
     this.store.approveEdit(edit.id); // Drive videos go out without the user's preview (their decision)
     const sec = edit.durationSec ?? 0;
     const notes: string[] = [];
-    const to = this.accounts().filter((a) => {
+    const chosen = this.accounts();
+    if (!chosen.length) {
+      // Not set up yet: wait, and post as soon as accounts are chosen.
+      this.store.upsertDriveFile(f.driveId, { note: "choose the accounts Drive videos go to in Settings" });
+      return;
+    }
+    const to = chosen.filter((a) => {
       const p = this.publishers[a.platform];
       if (this.store.alreadyPublished(f.sha256!, a.id)) {
         notes.push(`${p.label} (${a.name}): this video was already posted there`);
@@ -235,7 +241,7 @@ export class Intake {
       return true;
     });
     if (!to.length) {
-      this.store.upsertDriveFile(f.driveId, { state: "failed", note: notes.length ? `no account could take it. ${notes.join("; ")}` : "choose the accounts Drive videos go to in Settings" });
+      this.store.upsertDriveFile(f.driveId, { state: "failed", note: `no account could take it. ${notes.join("; ")}` });
       return;
     }
     const now = this.now();
