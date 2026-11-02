@@ -38,6 +38,12 @@
   .counters { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); margin-top: 4px; }
   .over { color: var(--bad); font-weight: 600; }
   video { width: 100%; max-height: 320px; background: #000; border-radius: 8px; margin-top: 8px; display: none; }
+  .edit-box { border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-top: 8px; }
+  .edit-box .opts { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+  .edit-box .opts label { display: flex; gap: 6px; align-items: center; font-weight: 400; margin: 0; }
+  .edit-box progress { width: 100%; margin-top: 8px; }
+  .edit-box video { width: 100%; max-height: 420px; margin-top: 8px; background: #000; border-radius: 6px; }
+  .edit-box .actions { display: flex; gap: 8px; margin-top: 8px; }
   .tiktok-box { border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-top: 12px; display: none; }
   .tiktok-box .check { display: flex; gap: 8px; align-items: center; font-weight: 400; margin: 6px 0; }
   .tiktok-box .check input { margin: 0; }
@@ -112,6 +118,25 @@
         <video id="preview" controls muted playsinline></video>
         <div id="durationNote" class="muted"></div>
 
+        <label class="row" style="font-weight:400"><input type="checkbox" id="doEdit" style="width:auto;margin:0"> Edit this video first</label>
+        <div id="editBox" class="edit-box" hidden>
+          <div class="opts">
+            <label><input type="checkbox" data-edit-opt="tighten" checked> Cut pauses, "um"s and retakes</label>
+            <label><input type="checkbox" data-edit-opt="captions" checked> Captions</label>
+            <label><input type="checkbox" data-edit-opt="reframe" checked> Frame the speaker</label>
+            <label><input type="checkbox" data-edit-opt="audio" checked> Even out the sound</label>
+            <label><input type="checkbox" data-edit-opt="punchIn" checked> Zoom on cuts</label>
+          </div>
+          <div id="editStatus" class="muted" style="margin-top:8px">Everything runs on this computer. You'll preview the edit before anything is posted.</div>
+          <progress id="editProgress" max="1" value="0" hidden></progress>
+          <video id="editPreview" controls playsinline hidden></video>
+          <div id="editEligible" class="muted"></div>
+          <div class="actions" id="editActions" hidden>
+            <button type="button" id="approveEdit">Approve edit</button>
+            <button type="button" id="useOriginal">Use the original instead</button>
+          </div>
+        </div>
+
         <label for="title">Title <span class="muted">(YouTube; defaults to the caption's first line)</span></label>
         <input id="title" type="text" maxlength="100">
 
@@ -161,6 +186,9 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 let status = { platforms: [], accounts: [] };
 let videoDuration = null;
+/** The edit made from the chosen file: { id, state, approved, durationSec } once "Make edit" was pressed. */
+let edit = null;
+let editPoll;
 let creators = {}; // tiktok account id -> creator_info
 
 function banner(kind, text) {
@@ -554,8 +582,80 @@ $("quit").addEventListener("click", async () => {
 
 // ---- submit & history ----
 
+const editing = () => $("doEdit").checked;
+const editSettings = () => Object.fromEntries([...document.querySelectorAll("[data-edit-opt]")].map((c) => [c.dataset.editOpt, c.checked]));
+
+function resetEdit() {
+  clearTimeout(editPoll);
+  edit = null;
+  $("editProgress").hidden = true;
+  $("editPreview").hidden = true;
+  $("editPreview").removeAttribute("src");
+  $("editActions").hidden = true;
+  $("editEligible").textContent = "";
+  $("editStatus").textContent = "Everything runs on this computer. You'll preview the edit before anything is posted.";
+  syncWhen();
+}
+
+async function makeEdit() {
+  const file = $("file").files[0];
+  if (!file) return banner("err", "Choose a video first.");
+  const fd = new FormData();
+  fd.append("settings", JSON.stringify(editSettings()));
+  fd.append("video", file);
+  $("submit").disabled = true;
+  $("editStatus").textContent = "Uploading…";
+  try {
+    const res = await fetch("/api/edits", { method: "POST", body: fd });
+    const body = await res.json();
+    if (!res.ok) { $("editStatus").textContent = ""; return banner("err", body.error); }
+    edit = { id: body.editId, state: "queued", approved: false };
+    pollEdit();
+  } catch (e) {
+    banner("err", e.message);
+  } finally {
+    $("submit").disabled = false;
+    syncWhen();
+  }
+}
+
+const EDIT_LABEL = { queued: "Waiting to start…", transcribing: "Listening for words…", editing: "Editing…", ready: "Ready to preview.", failed: "The edit failed." };
+
+async function pollEdit() {
+  if (!edit) return;
+  const id = edit.id;
+  const view = await (await fetch(`/api/edits/${id}`)).json();
+  if (edit?.id !== id) return; // the user moved on
+  edit = { id, state: view.state, approved: view.approved, durationSec: view.durationSec };
+  $("editStatus").textContent = view.state === "failed" ? `The edit failed: ${view.error}` : EDIT_LABEL[view.state];
+  $("editProgress").hidden = !["transcribing", "editing"].includes(view.state);
+  $("editProgress").value = view.state === "editing" ? view.progress : 0;
+  if (view.state === "ready") {
+    if ($("editPreview").hidden) {
+      $("editPreview").src = `/api/edits/${id}/video`;
+      $("editPreview").hidden = false;
+    }
+    $("editActions").hidden = view.approved;
+    if (view.approved) $("editStatus").textContent = `Edit approved (${view.durationSec.toFixed(1)}s, was ${view.sourceDurationSec?.toFixed(1)}s).`;
+    const name = (accountId) => status.accounts.find((a) => a.id === accountId)?.name ?? "";
+    const gained = view.eligible.filter((e) => e.edited && !e.original).map((e) => name(e.accountId));
+    const still = view.eligible.filter((e) => !e.edited && selectedIds().includes(e.accountId)).map((e) => name(e.accountId));
+    $("editEligible").innerHTML = [
+      gained.length ? `Now short enough for: ${esc(gained.join(", "))}.` : "",
+      still.length ? `<span class="over">Still doesn't fit: ${esc(still.join(", "))}.</span>` : "",
+    ].filter(Boolean).join(" ");
+    videoDuration = view.durationSec;
+    checkDuration();
+  } else if (view.state !== "failed") {
+    editPoll = setTimeout(pollEdit, 1500);
+  }
+  syncWhen();
+}
+
 async function submit(allowDuplicate = false) {
   banner();
+  if (editing() && !edit) return makeEdit();
+  if (editing() && !edit.approved) return banner("err", edit.state === "ready" ? "Approve the edit, or choose to use the original, first." : "Wait for the edit to finish, then preview and approve it.");
   let tiktok;
   try { tiktok = tiktokOptions(); } catch (e) { return banner("err", e.message); }
   const ids = selectedIds();
@@ -569,7 +669,8 @@ async function submit(allowDuplicate = false) {
   if (scheduledAt === undefined) return;
   if (scheduledAt) fd.append("scheduledAt", String(scheduledAt));
   if (allowDuplicate) fd.append("allowDuplicate", "true");
-  fd.append("video", $("file").files[0]); // last, so fields arrive before the large file
+  if (editing()) fd.append("editId", String(edit.id)); // the edit already has the video
+  else fd.append("video", $("file").files[0]); // last, so fields arrive before the large file
   $("submit").disabled = true;
   $("submit").textContent = "Uploading…";
   try {
@@ -583,7 +684,8 @@ async function submit(allowDuplicate = false) {
     banner("ok", scheduledAt
       ? `Scheduled for ${new Date(scheduledAt).toLocaleString()}. It's listed under Upcoming, where you can change the time or cancel it.`
       : "Queued. Each platform's status updates below.");
-    $("form").reset(); $("preview").style.display = "none"; videoDuration = null; checkDuration(); syncWhen();
+    $("form").reset(); $("preview").style.display = "none"; videoDuration = null; checkDuration();
+    $("editBox").hidden = true; resetEdit();
     $("tiktokBox").style.display = "none";
     loadPosts();
   } catch (e) {
@@ -615,7 +717,8 @@ function syncWhen() {
     d.setMinutes(Math.ceil(d.getMinutes() / 15) * 15, 0, 0);
     $("scheduleAt").value = toLocalInput(d.getTime());
   }
-  $("submit").textContent = on ? "Schedule" : "Publish";
+  $("submit").textContent = editing() && !edit ? "Make edit" : on ? "Schedule" : "Publish";
+  $("submit").disabled = editing() && edit && !edit.approved;
 }
 
 /** null = post now; undefined = invalid (a banner says why). */
@@ -725,12 +828,21 @@ $("caption").addEventListener("input", updateCounters);
 $("file").addEventListener("change", () => {
   const f = $("file").files[0];
   const v = $("preview");
+  resetEdit();
   if (!f) return;
   v.src = URL.createObjectURL(f);
   v.style.display = "block";
   v.onloadedmetadata = () => { videoDuration = v.duration; checkDuration(); };
 });
 $("form").addEventListener("submit", (e) => { e.preventDefault(); submit(); });
+$("doEdit").addEventListener("change", () => { $("editBox").hidden = !editing(); if (!editing()) { resetEdit(); videoDuration = $("preview").duration || null; checkDuration(); } syncWhen(); });
+for (const c of document.querySelectorAll("[data-edit-opt]")) c.addEventListener("change", resetEdit);
+$("approveEdit").addEventListener("click", async () => {
+  const res = await fetch(`/api/edits/${edit.id}/approve`, { method: "PUT" });
+  if (!res.ok) return banner("err", (await res.json()).error);
+  pollEdit();
+});
+$("useOriginal").addEventListener("click", () => { $("doEdit").checked = false; $("editBox").hidden = true; resetEdit(); videoDuration = $("preview").duration || null; checkDuration(); });
 
 const params = new URLSearchParams(location.search);
 if (params.get("error")) banner("err", params.get("error"));

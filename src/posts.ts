@@ -9,7 +9,7 @@ import { randomToken } from "./crypto.ts";
 import type { Store } from "./db.ts";
 import { probe } from "./media.ts";
 import type { Publisher } from "./platforms/base.ts";
-import type { Account, Job, Platform, Post, TikTokOptions } from "./types.ts";
+import type { Account, Edit, Job, Platform, Post, TikTokOptions } from "./types.ts";
 
 const MAX_SCHEDULE_AHEAD_MS = 365 * 86_400_000;
 
@@ -45,6 +45,9 @@ export interface Draft {
   accountIds: number[];
   tiktok: TikTokOptions | null;
   scheduledAt: number | null;
+  /** publish this approved edit instead of the original */
+  editId?: number | null;
+  requireEdit?: boolean;
 }
 
 /** Thrown when the same file already went, or is due to go, to some of the chosen accounts. */
@@ -59,6 +62,14 @@ export async function checkDraft(store: Store, publishers: Record<Platform, Publ
   const accounts = d.accountIds.map((id) => store.account(id));
   if (accounts.some((a) => !a)) throw new Error("unknown account selected");
   const src = await probe(d.sourcePath); // rejects non-video files before anything is queued
+  let durationSec = src.durationSec;
+  if (d.editId) {
+    const edit = store.edit(d.editId);
+    if (!edit) throw new Error("unknown edit");
+    if (edit.state !== "ready" || !edit.outputPath) throw new Error("the edit isn't finished yet");
+    if (!edit.approvedAt) throw new Error("preview and approve the edit in FreePoster before posting it");
+    durationSec = (await probe(edit.outputPath)).durationSec;
+  }
 
   const problems: string[] = [];
   for (const a of accounts as Account[]) {
@@ -66,8 +77,8 @@ export async function checkDraft(store: Store, publishers: Record<Platform, Publ
     const reason = p.validate({ ...d, id: 0, createdAt: 0 }, a);
     if (reason) problems.push(`${p.label} (${a.name}): ${reason}`);
     const max = p.maxDurationSec(a);
-    if (src.durationSec > max + 0.05) problems.push(`${p.label} (${a.name}): accepts up to ${max}s; the video is ${src.durationSec.toFixed(1)}s`);
-    if (src.durationSec < p.minDurationSec) problems.push(`${p.label} (${a.name}): needs at least ${p.minDurationSec}s`);
+    if (durationSec > max + 0.05) problems.push(`${p.label} (${a.name}): accepts up to ${max}s; the video is ${durationSec.toFixed(1)}s`);
+    if (durationSec < p.minDurationSec) problems.push(`${p.label} (${a.name}): needs at least ${p.minDurationSec}s`);
   }
   if (problems.length) throw new Error(problems.join("\n"));
 
@@ -77,7 +88,32 @@ export async function checkDraft(store: Store, publishers: Record<Platform, Publ
       throw new DuplicateError(`This exact video was already published, or is waiting to be posted, to: ${dupes.map((a) => `${publishers[a.platform].label} ${a.name}`).join(", ")}`);
     }
   }
-  return { accounts: accounts as Account[], durationSec: src.durationSec };
+  return { accounts: accounts as Account[], durationSec };
+}
+
+/** Whether a video of this length fits the account's platform. */
+const fits = (publishers: Record<Platform, Publisher>, a: Account, sec: number) =>
+  sec <= publishers[a.platform].maxDurationSec(a) + 0.05 && sec >= publishers[a.platform].minDurationSec;
+
+/** What the page and agents see of an edit, including which accounts the trim made it fit. */
+export async function editView(store: Store, publishers: Record<Platform, Publisher>, edit: Edit) {
+  let sourceDurationSec: number | null = null;
+  try { sourceDurationSec = (await probe(edit.sourcePath)).durationSec; } catch {}
+  return {
+    id: edit.id,
+    state: edit.state,
+    progress: edit.progress,
+    error: edit.error,
+    settings: edit.settings,
+    durationSec: edit.durationSec,
+    sourceDurationSec,
+    approved: Boolean(edit.approvedAt),
+    eligible: store.accounts().map((a) => ({
+      accountId: a.id,
+      original: sourceDurationSec !== null && fits(publishers, a, sourceDurationSec),
+      edited: edit.durationSec !== null && fits(publishers, a, edit.durationSec),
+    })),
+  };
 }
 
 /** What the page and agents see of a post: never tokens or file paths. */
@@ -88,6 +124,8 @@ export function postView(store: Store, { post, jobs }: { post: Post; jobs: Job[]
     title: post.title,
     createdAt: post.createdAt,
     scheduledAt: post.scheduledAt,
+    editId: post.editId ?? null,
+    requireEdit: Boolean(post.requireEdit),
     jobs: jobs.map((j) => ({
       id: j.id,
       platform: j.platform,

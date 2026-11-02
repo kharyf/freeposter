@@ -2,7 +2,7 @@ import multipart from "@fastify/multipart";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import { timingSafeEqual } from "node:crypto";
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { codeDir, config, dataDir, envFile, isConfigured, isLocalUrl, redirectUri, saveSettings, setting, SETTINGS, type SettingKey } from "./config.ts";
 import { randomToken } from "./crypto.ts";
@@ -10,7 +10,8 @@ import type { Store } from "./db.ts";
 import { registerMcp } from "./mcp.ts";
 import type { Publisher } from "./platforms/base.ts";
 import { creatorInfo } from "./platforms/tiktok.ts";
-import { checkDraft, DuplicateError, parseSchedule, postView, saveUpload, type Draft } from "./posts.ts";
+import { parseEditSettings } from "./edit/settings.ts";
+import { checkDraft, DuplicateError, editView, parseSchedule, postView, saveUpload, type Draft } from "./posts.ts";
 import type { Runner } from "./runner.ts";
 import { PLATFORMS, type Platform } from "./types.ts";
 
@@ -229,13 +230,18 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
           fields[part.fieldname] = String(part.value);
         }
       }
-      if (!saved) throw new Error("attach a video file");
+      // A post of an approved edit names the edit instead of uploading the video again.
+      const edit = !saved && fields.editId ? store.edit(Number(fields.editId)) : undefined;
+      if (!saved && fields.editId && !edit) throw new Error("unknown edit");
+      const source = saved ?? (edit && { path: edit.sourcePath, sha256: edit.sha256 });
+      if (!source) throw new Error("attach a video file");
 
       const draft: Draft = {
         caption: fields.caption ?? "",
         title: fields.title ?? "",
-        sourcePath: saved.path,
-        sha256: saved.sha256,
+        sourcePath: source.path,
+        sha256: source.sha256,
+        editId: edit?.id ?? null,
         accountIds: JSON.parse(fields.accounts || "[]").map(Number),
         tiktok: fields.tiktok ? JSON.parse(fields.tiktok) : null,
         scheduledAt: parseSchedule(fields.scheduledAt),
@@ -252,6 +258,64 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   });
 
   app.get("/api/posts", async () => store.recentPosts().map((p) => postView(store, p)));
+
+  // ---- edits: made in the background, previewed and approved here before they can be posted ----
+
+  app.post("/api/edits", async (req, reply) => {
+    const fields: Record<string, string> = {};
+    let saved: { path: string; sha256: string } | undefined;
+    try {
+      for await (const part of req.parts()) {
+        if (part.type === "file") {
+          saved = await saveUpload(part.file, part.filename);
+          if (part.file.truncated) throw new Error("file is larger than 4 GB");
+        } else {
+          fields[part.fieldname] = String(part.value);
+        }
+      }
+      if (!saved) throw new Error("attach a video file");
+      const settings = parseEditSettings(fields.settings ? JSON.parse(fields.settings) : undefined);
+      const edit = store.createEdit(saved.path, saved.sha256, settings);
+      // The same file and settings were edited before: keep that edit and drop this copy.
+      if (edit.sourcePath !== saved.path) try { unlinkSync(saved.path); } catch {}
+      return { editId: edit.id };
+    } catch (err) {
+      if (saved) try { unlinkSync(saved.path); } catch {}
+      return reply.code(400).send({ error: (err as Error).message });
+    }
+  });
+
+  app.get<{ Params: { id: string } }>("/api/edits/:id", async (req, reply) => {
+    const edit = store.edit(Number(req.params.id));
+    if (!edit) return reply.code(404).send({ error: "no such edit" });
+    return editView(store, publishers, edit);
+  });
+
+  app.get<{ Params: { id: string } }>("/api/edits/:id/video", async (req, reply) => {
+    const edit = store.edit(Number(req.params.id));
+    if (!edit?.outputPath || !existsSync(edit.outputPath)) return reply.code(404).send({ error: "the edit isn't ready" });
+    const size = statSync(edit.outputPath).size;
+    reply.type("video/mp4").header("accept-ranges", "bytes");
+    // The preview player seeks with Range requests.
+    const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range ?? "");
+    if (range && (range[1] || range[2])) {
+      const start = range[1] ? Number(range[1]) : Math.max(size - Number(range[2]), 0);
+      const end = range[1] && range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
+      if (start > end || start >= size) return reply.code(416).header("content-range", `bytes */${size}`).send();
+      reply.code(206).header("content-range", `bytes ${start}-${end}/${size}`).header("content-length", end - start + 1);
+      return reply.send(createReadStream(edit.outputPath, { start, end }));
+    }
+    reply.header("content-length", size);
+    return reply.send(createReadStream(edit.outputPath));
+  });
+
+  app.put<{ Params: { id: string } }>("/api/edits/:id/approve", async (req, reply) => {
+    const edit = store.edit(Number(req.params.id));
+    if (!edit) return reply.code(404).send({ error: "no such edit" });
+    if (edit.state !== "ready") return reply.code(409).send({ error: "the edit isn't finished yet" });
+    store.approveEdit(edit.id);
+    return { ok: true };
+  });
 
   app.patch<{ Params: { id: string }; Body: { scheduledAt?: unknown } }>("/api/posts/:id", async (req, reply) => {
     const id = Number(req.params.id);
