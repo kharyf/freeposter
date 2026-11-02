@@ -1,7 +1,10 @@
 import { DatabaseSync } from "node:sqlite";
 import { decrypt, encrypt } from "./crypto.ts";
 import { editKey, type EditSettings } from "./edit/settings.ts";
-import type { Account, Edit, Job, JobState, NewAccount, Platform, Post, TikTokOptions, TokenSet } from "./types.ts";
+import type { Account, DriveConnection, DriveFileRecord, Edit, Job, JobState, NewAccount, Platform, Post, TikTokOptions, TokenSet } from "./types.ts";
+
+/** What a pending sign-in is for: a posting platform, or the watched Google Drive folder. */
+export type SignIn = Platform | "drive";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS accounts (
@@ -55,6 +58,37 @@ CREATE TABLE IF NOT EXISTS edits (
   error TEXT,
   approved_at INTEGER,
   created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS drive_connection (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  access_token TEXT NOT NULL,
+  refresh_token TEXT NOT NULL,
+  expires_at INTEGER,
+  email TEXT NOT NULL DEFAULT '',
+  folder_id TEXT,
+  baseline_done INTEGER NOT NULL DEFAULT 0,
+  error TEXT
+);
+CREATE TABLE IF NOT EXISTS drive_files (
+  drive_id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  state TEXT NOT NULL,
+  size INTEGER NOT NULL DEFAULT 0,
+  md5 TEXT,
+  scheduled_at INTEGER,
+  source_path TEXT,
+  sha256 TEXT,
+  edit_id INTEGER,
+  post_id INTEGER,
+  title TEXT,
+  caption TEXT,
+  note TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS prefs (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS oauth_states (
   state TEXT PRIMARY KEY,
@@ -155,18 +189,18 @@ export class Store {
 
   // ---- oauth state (CSRF + PKCE verifier) ----
 
-  putOAuthState(state: string, platform: Platform, verifier: string) {
+  putOAuthState(state: string, platform: SignIn, verifier: string) {
     this.db.prepare("DELETE FROM oauth_states WHERE created_at < ?").run(Date.now() - 15 * 60_000);
     this.db.prepare("INSERT INTO oauth_states VALUES (?, ?, ?, ?)").run(state, platform, verifier, Date.now());
   }
 
   /** Which platform a pending sign-in belongs to; the redirect page's callback doesn't say. */
-  oauthStatePlatform(state: string): Platform | undefined {
-    const row = this.db.prepare("SELECT platform FROM oauth_states WHERE state = ?").get(state) as { platform: Platform } | undefined;
+  oauthStatePlatform(state: string): SignIn | undefined {
+    const row = this.db.prepare("SELECT platform FROM oauth_states WHERE state = ?").get(state) as { platform: SignIn } | undefined;
     return row?.platform;
   }
 
-  takeOAuthState(state: string, platform: Platform): string | undefined {
+  takeOAuthState(state: string, platform: SignIn): string | undefined {
     const row = this.db
       .prepare("SELECT verifier FROM oauth_states WHERE state = ? AND platform = ? AND created_at > ?")
       .get(state, platform, Date.now() - 15 * 60_000) as { verifier: string } | undefined;
@@ -401,6 +435,95 @@ export class Store {
     this.db.prepare("UPDATE edits SET state = 'queued', progress = 0 WHERE state IN ('transcribing', 'editing')").run();
   }
 
+  // ---- Google Drive ----
+
+  driveConnection(): DriveConnection | undefined {
+    const r = this.db.prepare("SELECT * FROM drive_connection WHERE id = 1").get() as any;
+    if (!r) return undefined;
+    return {
+      accessToken: decrypt(this.key, r.access_token),
+      refreshToken: decrypt(this.key, r.refresh_token),
+      expiresAt: r.expires_at,
+      email: r.email,
+      folderId: r.folder_id,
+      baselineDone: Boolean(r.baseline_done),
+      error: r.error,
+    };
+  }
+
+  /** Saves Drive tokens (a new sign-in also clears any "reconnect" error). */
+  saveDriveTokens(t: { accessToken: string; refreshToken: string; expiresAt: number | null }, email?: string) {
+    this.db
+      .prepare(
+        `INSERT INTO drive_connection (id, access_token, refresh_token, expires_at, email) VALUES (1, ?, ?, ?, ?)
+         ON CONFLICT (id) DO UPDATE SET access_token = excluded.access_token, refresh_token = excluded.refresh_token,
+           expires_at = excluded.expires_at, email = CASE WHEN ? THEN excluded.email ELSE email END, error = NULL`,
+      )
+      .run(encrypt(this.key, t.accessToken), encrypt(this.key, t.refreshToken), t.expiresAt, email ?? "", email === undefined ? 0 : 1);
+  }
+
+  /** A new folder starts with a fresh baseline: what's already in it is never posted. */
+  setDriveFolder(folderId: string | null) {
+    this.db.prepare("UPDATE drive_connection SET folder_id = ?, baseline_done = 0 WHERE id = 1 AND COALESCE(folder_id, '') != COALESCE(?, '')").run(folderId, folderId);
+  }
+
+  setDriveError(error: string | null) {
+    this.db.prepare("UPDATE drive_connection SET error = ? WHERE id = 1").run(error);
+  }
+
+  markDriveBaseline() {
+    this.db.prepare("UPDATE drive_connection SET baseline_done = 1 WHERE id = 1").run();
+  }
+
+  deleteDriveConnection() {
+    this.db.prepare("DELETE FROM drive_connection WHERE id = 1").run();
+  }
+
+  driveFile(driveId: string): DriveFileRecord | undefined {
+    const r = this.db.prepare("SELECT * FROM drive_files WHERE drive_id = ?").get(driveId);
+    return r ? toDriveFile(r) : undefined;
+  }
+
+  driveFiles(limit = 50): DriveFileRecord[] {
+    return this.db.prepare("SELECT * FROM drive_files WHERE state NOT IN ('ignored', 'pending') ORDER BY created_at DESC LIMIT ?").all(limit).map(toDriveFile);
+  }
+
+  /** Files part-way through the pipeline, oldest first. */
+  driveFilesIn(states: DriveFileRecord["state"][]): DriveFileRecord[] {
+    return this.db
+      .prepare(`SELECT * FROM drive_files WHERE state IN (${states.map(() => "?").join(",")}) ORDER BY created_at`)
+      .all(...states)
+      .map(toDriveFile);
+  }
+
+  /** Inserts a file seen in the folder, or updates the given fields of one already known. */
+  upsertDriveFile(driveId: string, f: Partial<Omit<DriveFileRecord, "driveId" | "createdAt" | "updatedAt">>) {
+    const cols = {
+      name: "name", state: "state", size: "size", md5: "md5", scheduledAt: "scheduled_at", sourcePath: "source_path", sha256: "sha256",
+      editId: "edit_id", postId: "post_id", title: "title", caption: "caption", note: "note",
+    } as const;
+    const keys = (Object.keys(f) as (keyof typeof cols)[]).filter((k) => k in cols);
+    const values = keys.map((k) => f[k] ?? null);
+    if (!this.driveFile(driveId)) {
+      this.db
+        .prepare(`INSERT INTO drive_files (drive_id, ${keys.map((k) => cols[k]).join(", ")}, created_at, updated_at) VALUES (?, ${keys.map(() => "?").join(", ")}, ?, ?)`)
+        .run(driveId, ...values, Date.now(), Date.now());
+    } else if (keys.length) {
+      this.db.prepare(`UPDATE drive_files SET ${keys.map((k) => `${cols[k]} = ?`).join(", ")}, updated_at = ? WHERE drive_id = ?`).run(...values, Date.now(), driveId);
+    }
+  }
+
+  // ---- preferences (small JSON values kept in the database) ----
+
+  pref<T>(key: string): T | undefined {
+    const row = this.db.prepare("SELECT value FROM prefs WHERE key = ?").get(key) as { value: string } | undefined;
+    return row ? (JSON.parse(row.value) as T) : undefined;
+  }
+
+  setPref(key: string, value: unknown) {
+    this.db.prepare("INSERT INTO prefs (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(key, JSON.stringify(value));
+  }
+
   /** Jobs that still have to go out; the desktop app keeps running in the background while any remain. */
   pendingJobCount(): number {
     return (this.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state IN ('queued', 'running', 'retry', 'waiting_quota')").get() as { n: number }).n;
@@ -433,6 +556,26 @@ export class Store {
   close() {
     this.db.close();
   }
+}
+
+function toDriveFile(r: any): DriveFileRecord {
+  return {
+    driveId: r.drive_id,
+    name: r.name,
+    state: r.state,
+    size: r.size,
+    md5: r.md5,
+    scheduledAt: r.scheduled_at,
+    sourcePath: r.source_path,
+    sha256: r.sha256,
+    editId: r.edit_id,
+    postId: r.post_id,
+    title: r.title,
+    caption: r.caption,
+    note: r.note,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
 }
 
 function toJob(r: any): Job {

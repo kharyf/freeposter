@@ -51,6 +51,42 @@ export interface Post {
   requireEdit?: boolean;
 }
 
+export type DriveFileState =
+  | "pending" // seen, still uploading (size not yet stable)
+  | "queued" // handed to the intake
+  | "ignored" | "invalid" | "late"
+  | "downloading" | "transcribing" | "processing"
+  | "scheduled" | "needs_caption" | "edit_failed" | "failed";
+
+/** One video seen in the watched Drive folder, and how far FreePoster got with it. */
+export interface DriveFileRecord {
+  driveId: string;
+  name: string;
+  state: DriveFileState;
+  size: number;
+  md5: string | null;
+  scheduledAt: number | null;
+  sourcePath: string | null;
+  sha256: string | null;
+  editId: number | null;
+  postId: number | null;
+  title: string | null;
+  caption: string | null;
+  note: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface DriveConnection {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number | null;
+  email: string;
+  folderId: string | null;
+  baselineDone: boolean;
+  error: string | null;
+}
+
 export type EditState = "queued" | "transcribing" | "editing" | "ready" | "failed";
 
 export interface Edit {

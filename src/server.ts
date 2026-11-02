@@ -6,10 +6,11 @@ import { createReadStream, existsSync, readFileSync, statSync, unlinkSync, write
 import { join } from "node:path";
 import { codeDir, config, dataDir, envFile, isConfigured, isLocalUrl, redirectUri, saveSettings, setting, SETTINGS, type SettingKey } from "./config.ts";
 import { randomToken } from "./crypto.ts";
-import type { Store } from "./db.ts";
+import type { SignIn, Store } from "./db.ts";
 import { registerMcp } from "./mcp.ts";
 import type { Publisher } from "./platforms/base.ts";
 import { creatorInfo } from "./platforms/tiktok.ts";
+import { driveAuthorizeUrl, exchangeDriveCode } from "./drive/client.ts";
 import { parseEditSettings } from "./edit/settings.ts";
 import { checkDraft, DuplicateError, editView, parseSchedule, postView, saveUpload, type Draft } from "./posts.ts";
 import type { Runner } from "./runner.ts";
@@ -87,6 +88,15 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
 
   // ---- OAuth ----
 
+  // Google Drive signs in with the YouTube app's Google client, asking only to read files.
+  app.get("/connect/drive", async (_req, reply) => {
+    if (!isConfigured("youtube")) return reply.code(400).send("Google (YouTube) credentials are missing; add them in Setup");
+    const state = `${config.port}.${randomToken(24)}`;
+    const verifier = randomToken(48);
+    store.putOAuthState(state, "drive", verifier);
+    return reply.redirect(driveAuthorizeUrl(state, verifier));
+  });
+
   app.get<{ Params: { platform: string } }>("/connect/:platform", async (req, reply) => {
     const { platform } = req.params;
     if (!isPlatform(platform)) return reply.code(404).send("unknown platform");
@@ -100,6 +110,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
 
   app.get<{ Params: { platform: string }; Querystring: Record<string, string> }>("/callback/:platform", async (req, reply) => {
     const { platform } = req.params;
+    if (platform === "drive") return finishSignIn("drive", req.query, reply);
     if (!isPlatform(platform)) return reply.code(404).send("unknown platform");
     return finishSignIn(platform, req.query, reply);
   });
@@ -113,7 +124,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     return finishSignIn(platform, req.query, reply);
   });
 
-  async function finishSignIn(platform: Platform, q: Record<string, string>, reply: FastifyReply) {
+  async function finishSignIn(platform: SignIn, q: Record<string, string>, reply: FastifyReply) {
     const back = (params: Record<string, string>) => {
       if (!options.onSignIn) return reply.redirect(`/?${new URLSearchParams(params)}`);
       options.onSignIn(String(new URLSearchParams(params)));
@@ -123,6 +134,11 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     const verifier = q.state ? store.takeOAuthState(q.state, platform) : undefined;
     if (!verifier) return back({ error: `${platform}: login expired or was not started here; try again` });
     try {
+      if (platform === "drive") {
+        const { tokens, email } = await exchangeDriveCode(q.code, verifier);
+        store.saveDriveTokens(tokens, email);
+        return back({ connected: `Google Drive: ${email}` });
+      }
       const accounts = await publishers[platform].exchangeCode(q.code, verifier);
       for (const a of accounts) store.upsertAccount(a);
       return back({ connected: `${publishers[platform].label}: ${accounts.map((a) => a.name).join(", ")}` });
