@@ -42,6 +42,7 @@ export const SETTINGS = {
   FFMPEG_PATH: { secret: false },
   FFPROBE_PATH: { secret: false },
   WHISPER_MODEL_PATH: { secret: false },
+  ANTHROPIC_API_KEY: { secret: true },
   YOUTUBE_CLIENT_ID: { secret: false },
   YOUTUBE_CLIENT_SECRET: { secret: true },
   TIKTOK_CLIENT_KEY: { secret: false },
@@ -81,6 +82,7 @@ function build() {
     redirectPage: normalizePage(setting("REDIRECT_PAGE_URL", BUILT_IN_REDIRECT_PAGE)),
     ffmpeg: setting("FFMPEG_PATH", "ffmpeg"),
     ffprobe: setting("FFPROBE_PATH", "ffprobe"),
+    anthropicKey: setting("ANTHROPIC_API_KEY"),
     whisperModel: setting("WHISPER_MODEL_PATH", join(dataDir, "models", "ggml-base.bin")),
     graphVersion: setting("META_GRAPH_VERSION", "v24.0"),
     credentials: {
