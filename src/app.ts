@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { config, dataDir, isConfigured, isLocalUrl } from "./config.ts";
 import { loadKey } from "./crypto.ts";
 import { Store } from "./db.ts";
+import { EditWorker } from "./edit/worker.ts";
 import { publishers } from "./platforms/index.ts";
 import { Runner } from "./runner.ts";
 import { buildServer, type ServerOptions } from "./server.ts";
@@ -21,6 +22,7 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
 
   const store = new Store(join(dataDir, "freeposter.db"), loadKey(dataDir));
   const runner = new Runner(store, publishers);
+  const editor = new EditWorker(store);
   const app = buildServer(store, runner, publishers, options);
 
   try {
@@ -30,6 +32,7 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
     throw err;
   }
   runner.start();
+  editor.start();
 
   console.log(`FreePoster running at ${config.baseUrl}`);
   for (const p of PLATFORMS) {
@@ -39,6 +42,7 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
   return {
     async stop() {
       runner.stop();
+      editor.stop();
       await app.close();
       store.close();
     },

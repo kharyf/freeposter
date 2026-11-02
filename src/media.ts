@@ -113,13 +113,13 @@ export function specProblems(p: Probe): string[] {
 
 const renders = new Map<string, Promise<{ path: string; size: number; probe: Probe }>>();
 
-/** Renders once per source file (keyed by its hash) no matter how many platform jobs ask. */
-export function render(source: string, sha256: string, dir: string) {
-  let pending = renders.get(sha256);
+/** Renders once per source (keyed by its hash, or an edit's key) no matter how many platform jobs ask. */
+export function render(source: string, key: string, dir: string) {
+  let pending = renders.get(key);
   if (!pending) {
-    pending = doRender(source, join(dir, `${sha256}.mp4`));
-    renders.set(sha256, pending);
-    pending.catch(() => renders.delete(sha256));
+    pending = doRender(source, join(dir, `${key}.mp4`));
+    renders.set(key, pending);
+    pending.catch(() => renders.delete(key));
   }
   return pending;
 }

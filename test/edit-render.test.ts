@@ -88,3 +88,9 @@ test("reframed edit fills the frame instead of letterboxing", { skip: !existsSyn
   const mean = top.reduce((n, b) => n + b, 0) / top.length;
   assert.ok(mean > 40, `top strip mean brightness ${mean}`);
 });
+
+test("silent source with cuts and audio processing still renders", async () => {
+  const dir = tmp();
+  const out = await renderEdit(verticalSilent(dir, 4), { words, language: null }, { ...DEFAULT_EDIT, reframe: false }, join(dir, "silent-cut.mp4"));
+  assert.ok(out.durationSec < 2, `${out.durationSec}`);
+});

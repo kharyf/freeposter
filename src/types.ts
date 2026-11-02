@@ -1,3 +1,5 @@
+import type { EditSettings } from "./edit/settings.ts";
+
 export const PLATFORMS = ["tiktok", "instagram", "facebook", "x", "youtube"] as const;
 export type Platform = (typeof PLATFORMS)[number];
 
@@ -43,6 +45,29 @@ export interface Post {
   createdAt: number;
   /** epoch ms the post is scheduled to go out; null/absent = as soon as possible */
   scheduledAt?: number | null;
+  /** the edit to publish instead of the original, once it is ready and approved */
+  editId?: number | null;
+  /** Drive posts: never fall back to the original */
+  requireEdit?: boolean;
+}
+
+export type EditState = "queued" | "transcribing" | "editing" | "ready" | "failed";
+
+export interface Edit {
+  id: number;
+  sourcePath: string;
+  sha256: string;
+  settings: EditSettings;
+  /** editKey(sha256, settings): names the cached output and its render */
+  key: string;
+  state: EditState;
+  progress: number;
+  outputPath: string | null;
+  durationSec: number | null;
+  transcriptPath: string | null;
+  error: string | null;
+  approvedAt: number | null;
+  createdAt: number;
 }
 
 export type JobState = "queued" | "running" | "retry" | "waiting_quota" | "published" | "failed";

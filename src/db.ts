@@ -1,6 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { decrypt, encrypt } from "./crypto.ts";
-import type { Account, Job, JobState, NewAccount, Platform, Post, TikTokOptions, TokenSet } from "./types.ts";
+import { editKey, type EditSettings } from "./edit/settings.ts";
+import type { Account, Edit, Job, JobState, NewAccount, Platform, Post, TikTokOptions, TokenSet } from "./types.ts";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS accounts (
@@ -40,6 +41,21 @@ CREATE TABLE IF NOT EXISTS jobs (
   updated_at INTEGER NOT NULL,
   UNIQUE (post_id, account_id)
 );
+CREATE TABLE IF NOT EXISTS edits (
+  id INTEGER PRIMARY KEY,
+  source_path TEXT NOT NULL,
+  sha256 TEXT NOT NULL,
+  settings TEXT NOT NULL,
+  key TEXT NOT NULL,
+  state TEXT NOT NULL,
+  progress REAL NOT NULL DEFAULT 0,
+  output_path TEXT,
+  duration_sec REAL,
+  transcript_path TEXT,
+  error TEXT,
+  approved_at INTEGER,
+  created_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS oauth_states (
   state TEXT PRIMARY KEY,
   platform TEXT NOT NULL,
@@ -60,6 +76,9 @@ export class Store {
     // Databases created before scheduling existed.
     const postColumns = this.db.prepare("PRAGMA table_info(posts)").all() as { name: string }[];
     if (!postColumns.some((c) => c.name === "scheduled_at")) this.db.exec("ALTER TABLE posts ADD COLUMN scheduled_at INTEGER");
+    // ...and before edits.
+    if (!postColumns.some((c) => c.name === "edit_id")) this.db.exec("ALTER TABLE posts ADD COLUMN edit_id INTEGER REFERENCES edits(id)");
+    if (!postColumns.some((c) => c.name === "require_edit")) this.db.exec("ALTER TABLE posts ADD COLUMN require_edit INTEGER NOT NULL DEFAULT 0");
     // A crash mid-run leaves jobs "running"; their progress checkpoint lets them resume safely.
     this.db.prepare("UPDATE jobs SET state = 'retry' WHERE state = 'running'").run();
   }
@@ -161,8 +180,8 @@ export class Store {
     this.db.exec("BEGIN");
     try {
       const { lastInsertRowid } = this.db
-        .prepare("INSERT INTO posts (caption, title, source_path, sha256, tiktok, created_at, scheduled_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-        .run(p.caption, p.title, p.sourcePath, p.sha256, p.tiktok ? JSON.stringify(p.tiktok) : null, Date.now(), p.scheduledAt ?? null);
+        .prepare("INSERT INTO posts (caption, title, source_path, sha256, tiktok, created_at, scheduled_at, edit_id, require_edit) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(p.caption, p.title, p.sourcePath, p.sha256, p.tiktok ? JSON.stringify(p.tiktok) : null, Date.now(), p.scheduledAt ?? null, p.editId ?? null, p.requireEdit ? 1 : 0);
       const postId = Number(lastInsertRowid);
       const insertJob = this.db.prepare(
         "INSERT INTO jobs (post_id, account_id, platform, state, next_run_at, updated_at) VALUES (?, ?, ?, 'queued', ?, ?)",
@@ -204,6 +223,8 @@ export class Store {
       tiktok: r.tiktok ? (JSON.parse(r.tiktok) as TikTokOptions) : null,
       createdAt: r.created_at,
       scheduledAt: r.scheduled_at,
+      editId: r.edit_id ?? null,
+      requireEdit: Boolean(r.require_edit),
     };
   }
 
@@ -299,6 +320,85 @@ export class Store {
     const left = this.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE post_id = ?").get(postId) as { n: number };
     if (left.n === 0) this.db.prepare("DELETE FROM posts WHERE id = ?").run(postId);
     return { cancelled: Number(changes), deleted: left.n === 0 ? post : undefined };
+  }
+
+  /** Points an unstarted post at an edit (or back to the original). Drive posts can't go back to the original. */
+  setPostEdit(postId: number, editId: number | null): number {
+    if (editId === null && this.post(postId)?.requireEdit) return 0;
+    if (!this.allUnstarted(postId)) return 0;
+    this.db.prepare("UPDATE posts SET edit_id = ? WHERE id = ?").run(editId, postId);
+    return this.jobsForPost(postId).length;
+  }
+
+  /** Changes the caption and title of a post that hasn't started going out anywhere. */
+  updatePostText(postId: number, caption: string, title: string): number {
+    if (!this.allUnstarted(postId)) return 0;
+    this.db.prepare("UPDATE posts SET caption = ?, title = ? WHERE id = ?").run(caption, title, postId);
+    return this.jobsForPost(postId).length;
+  }
+
+  private allUnstarted(postId: number): boolean {
+    const count = (sql: string) => (this.db.prepare(sql).get(postId) as { n: number }).n;
+    const total = count("SELECT COUNT(*) AS n FROM jobs WHERE post_id = ?");
+    return total > 0 && total === count(`SELECT COUNT(*) AS n ${this.unstartedJobs(postId)}`);
+  }
+
+  // ---- edits ----
+
+  /** Queues an edit, or returns the one already made (or being made) from the same file with the same settings. */
+  createEdit(sourcePath: string, sha256: string, settings: EditSettings): Edit {
+    const key = editKey(sha256, settings);
+    const existing = this.db.prepare("SELECT id FROM edits WHERE key = ? AND state != 'failed' ORDER BY id DESC LIMIT 1").get(key) as { id: number } | undefined;
+    if (existing) return this.edit(existing.id)!;
+    const { lastInsertRowid } = this.db
+      .prepare("INSERT INTO edits (source_path, sha256, settings, key, state, created_at) VALUES (?, ?, ?, ?, 'queued', ?)")
+      .run(sourcePath, sha256, JSON.stringify(settings), key, Date.now());
+    return this.edit(Number(lastInsertRowid))!;
+  }
+
+  edit(id: number): Edit | undefined {
+    const r = this.db.prepare("SELECT * FROM edits WHERE id = ?").get(id) as any;
+    if (!r) return undefined;
+    return {
+      id: r.id,
+      sourcePath: r.source_path,
+      sha256: r.sha256,
+      settings: JSON.parse(r.settings),
+      key: r.key,
+      state: r.state,
+      progress: r.progress,
+      outputPath: r.output_path,
+      durationSec: r.duration_sec,
+      transcriptPath: r.transcript_path,
+      error: r.error,
+      approvedAt: r.approved_at,
+      createdAt: r.created_at,
+    };
+  }
+
+  /** Atomically takes the oldest queued edit. */
+  claimNextEdit(): Edit | undefined {
+    const row = this.db
+      .prepare("UPDATE edits SET state = 'transcribing', progress = 0, error = NULL WHERE id = (SELECT id FROM edits WHERE state = 'queued' ORDER BY id LIMIT 1) RETURNING id")
+      .get() as { id: number } | undefined;
+    return row ? this.edit(row.id) : undefined;
+  }
+
+  updateEdit(id: number, f: Partial<Pick<Edit, "state" | "progress" | "outputPath" | "durationSec" | "transcriptPath" | "error">>) {
+    const cols = { state: "state", progress: "progress", outputPath: "output_path", durationSec: "duration_sec", transcriptPath: "transcript_path", error: "error" } as const;
+    const keys = (Object.keys(f) as (keyof typeof cols)[]).filter((k) => k in cols);
+    if (!keys.length) return;
+    this.db.prepare(`UPDATE edits SET ${keys.map((k) => `${cols[k]} = ?`).join(", ")} WHERE id = ?`).run(...keys.map((k) => f[k] ?? null), id);
+  }
+
+  /** Only the user approves edits (the page's Approve button); agents have no way to. */
+  approveEdit(id: number) {
+    this.db.prepare("UPDATE edits SET approved_at = ? WHERE id = ? AND state = 'ready'").run(Date.now(), id);
+  }
+
+  /** Edits interrupted by a crash or quit start over. */
+  requeueInterruptedEdits() {
+    this.db.prepare("UPDATE edits SET state = 'queued', progress = 0 WHERE state IN ('transcribing', 'editing')").run();
   }
 
   /** Jobs that still have to go out; the desktop app keeps running in the background while any remain. */

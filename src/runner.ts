@@ -1,10 +1,11 @@
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { config, dataDir } from "./config.ts";
 import type { Store } from "./db.ts";
 import { AuthError, FatalError, RetryableError } from "./http.ts";
 import { render } from "./media.ts";
 import { StillProcessing, type Publisher } from "./platforms/base.ts";
-import type { Account, Job, Platform } from "./types.ts";
+import type { Account, Job, Platform, Post } from "./types.ts";
 
 export const MAX_ATTEMPTS = 6;
 
@@ -80,7 +81,7 @@ export class Runner {
         if (reason) throw new FatalError(reason);
       }
 
-      const video = await render(post.sourcePath, post.sha256, this.rendersDir);
+      const video = await this.renderFor(post);
       const { durationSec } = video.probe;
       const max = publisher.maxDurationSec(account);
       if (durationSec > max + 0.05) {
@@ -125,6 +126,16 @@ export class Runner {
     } catch (err) {
       this.handleFailure(job, err as Error);
     }
+  }
+
+  /** The approved edit when the post has one; Drive posts never fall back to the original. */
+  renderFor(post: Post) {
+    const edit = post.editId ? this.store.edit(post.editId) : undefined;
+    if (edit?.state === "ready" && edit.approvedAt && edit.outputPath && existsSync(edit.outputPath)) {
+      return render(edit.outputPath, edit.key, this.rendersDir);
+    }
+    if (post.requireEdit) throw new FatalError("the edited video isn't available; FreePoster never posts Drive videos unedited");
+    return render(post.sourcePath, post.sha256, this.rendersDir);
   }
 
   handleFailure(job: Job, err: Error) {

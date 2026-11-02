@@ -13,7 +13,7 @@ import { filterPath, type Transcript } from "./transcribe.ts";
 
 const PUNCH = 1.06;
 
-function filterGraph(segs: Segment[], s: EditSettings, opts: { reframe: { width: number; height: number; x: number; cmds: string } | null; ass: string | null; audioIn: string }) {
+function filterGraph(segs: Segment[], s: EditSettings, opts: { reframe: { width: number; height: number; x: number; cmds: string } | null; ass: string | null; audioIn: string; hasAudio: boolean }) {
   const n = segs.length;
   const parts: string[] = [];
   let v = "[0:v]";
@@ -37,7 +37,9 @@ function filterGraph(segs: Segment[], s: EditSettings, opts: { reframe: { width:
   });
   parts.push(`${segs.map((_, i) => `[vs${i}][as${i}]`).join("")}concat=n=${n}:v=1:a=1[cv][ca]`);
   parts.push(`[cv]${opts.ass ? `ass=filename=${filterPath(opts.ass)},` : ""}format=yuv420p[vout]`);
-  parts.push(`[ca]${s.audio ? "afftdn=nr=10,loudnorm=I=-14:TP=-1.5:LRA=11," : ""}aresample=48000,aformat=channel_layouts=stereo[aout]`);
+  // Silence has nothing to clean or level (and loudnorm turns it into NaNs the encoder rejects).
+  const clean = s.audio && opts.hasAudio ? "afftdn=nr=10,loudnorm=I=-14:TP=-1.5:LRA=11," : "";
+  parts.push(`[ca]${clean}aresample=48000,aformat=channel_layouts=stereo[aout]`);
   return parts.join(";");
 }
 
@@ -81,7 +83,7 @@ export async function renderEdit(
     "-i", source,
     // Silent clips get a silent track so the audio half of the graph always has an input.
     ...(src.hasAudio ? [] : ["-f", "lavfi", "-t", String(src.durationSec), "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]),
-    "-filter_complex", filterGraph(segs, s, { reframe, ass, audioIn: src.hasAudio ? "[0:a:0]" : "[1:a]" }),
+    "-filter_complex", filterGraph(segs, s, { reframe, ass, audioIn: src.hasAudio ? "[0:a:0]" : "[1:a]", hasAudio: src.hasAudio }),
     "-map", "[vout]", "-map", "[aout]",
     "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-c:a", "aac", "-b:a", "192k",
     "-movflags", "+faststart", part,
