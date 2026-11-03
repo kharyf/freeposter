@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
-<title>FreePoster Privacy Policy</title>
+<title>Privacy Policy · {{OWNER}}</title>
 <style>
   :root { --bg: #f6f5f2; --ink: #1c1b19; --muted: #6b6862; --accent: #1f5eff; }
   @media (prefers-color-scheme: dark) { :root { --bg: #161615; --ink: #ecebe7; --muted: #a09d96; --accent: #6d95ff; } }
@@ -20,14 +20,14 @@
 </head>
 <body>
 <main>
-  <h1>FreePoster Privacy Policy</h1>
-  <p class="muted">Effective October 30, 2026</p>
+  <h1>Privacy Policy</h1>
+  <p class="muted">Effective {{DATE}}</p>
 
-  <p>FreePoster is a desktop app that publishes short videos you choose to your own TikTok, Instagram, Facebook, X and YouTube accounts through each platform's official API. This policy explains what information FreePoster handles and where it goes. In short: <strong>FreePoster runs on your computer and keeps your information there. We, the FreePoster project, do not run servers that receive, store or sell your data.</strong></p>
+  <p>{{OWNER}} ("we") runs FreePoster, free open-source desktop software that publishes short videos you choose to your own TikTok, Instagram, Facebook, X and YouTube accounts through each platform's official API. This policy explains what information FreePoster handles and where it goes. In short: <strong>FreePoster runs on your computer and keeps your information there. We do not run servers that receive, store or sell your data.</strong></p>
 
   <h2>Information FreePoster handles</h2>
   <ul>
-    <li><strong>Account sign-in tokens.</strong> When you connect an account, the platform gives FreePoster access and refresh tokens. They are stored on your computer, encrypted (AES-256-GCM), and used only to post the videos you choose and to keep the connection alive.</li>
+    <li><strong>Account access tokens.</strong> When you connect an account, the platform gives FreePoster access and refresh tokens. They are stored on your computer, encrypted (AES-256-GCM), and used only to post the videos you choose and to keep the connection alive.</li>
     <li><strong>Basic account details.</strong> To show which account you are posting to, FreePoster keeps the account's identifier and name. For TikTok, that is your open ID, username and nickname, read with the <code>user.info.basic</code> permission, along with your account's posting options (allowed privacy levels, whether comments, duets and stitches are allowed, and the longest video you may post).</li>
     <li><strong>Your videos, captions and titles.</strong> FreePoster keeps a copy of each video you post, converts it to the format the platforms accept, and uploads it with your caption and title to the accounts you selected.</li>
     <li><strong>Post history.</strong> Which posts went to which accounts, when, their links, and any error a platform returned.</li>
@@ -36,13 +36,13 @@
   <p>All of this is stored only on your computer, in FreePoster's data folder (on Windows, <code>%APPDATA%\FreePoster</code>).</p>
 
   <h2>How it is used</h2>
-  <p>Only to do what you ask: connect your accounts, publish and schedule your posts, show their status, and refresh sign-ins before they expire. FreePoster does not use your information for advertising, profiling or analytics, and it contains no tracking, telemetry or third-party analytics.</p>
+  <p>Only to do what you ask: connect your accounts, publish and schedule your posts, show their status, and renew account connections before they expire. FreePoster does not use your information for advertising, profiling or analytics, and it contains no tracking, telemetry or third-party analytics.</p>
 
   <h2>Who it is shared with</h2>
   <ul>
     <li><strong>The platforms you choose.</strong> Your videos, captions and titles are sent directly from your computer to the platforms you select (TikTok, Meta, X, Google/YouTube), under their own privacy policies.</li>
-    <li><strong>The sign-in return page.</strong> After you sign in, platforms send your browser to this website (freeposter.pages.dev), which immediately passes the sign-in result back to FreePoster on your computer. The page stores nothing. Its host, Cloudflare, may keep standard technical logs (such as IP addresses) as described in Cloudflare's privacy policy.</li>
-    <li><strong>AI agents you connect.</strong> If you connect an AI agent to FreePoster's built-in MCP server, that agent can see your connected account names and post history and can post on your behalf. It never receives your sign-in tokens or keys.</li>
+    <li><strong>This website.</strong> When you connect an account, the platform sends your browser to this website, which immediately passes the platform's response back to FreePoster on your computer. The page stores nothing. Its host, Cloudflare, may keep standard technical logs (such as IP addresses) as described in Cloudflare's privacy policy.</li>
+    <li><strong>AI agents you connect.</strong> If you connect an AI agent to FreePoster's built-in MCP server, that agent can see your connected account names and post history and can post on your behalf. It never receives your access tokens or keys.</li>
   </ul>
   <p>We do not sell or rent information, and no one else receives it.</p>
 
@@ -50,7 +50,7 @@
   <p>Your information stays on your computer until you remove it. To disconnect an account, press <strong>Remove</strong> next to it in FreePoster, which deletes its tokens and post history from your computer. You can also revoke FreePoster's access in the platform's own settings (on TikTok: Settings and privacy → Security → Manage app permissions). To delete everything, uninstall FreePoster and delete its data folder. Videos you published stay on the platforms until you delete them there.</p>
 
   <h2>Security</h2>
-  <p>Sign-in tokens are encrypted at rest with a key kept on your computer, FreePoster's local server accepts connections only from your own computer, and every connection to a platform uses HTTPS.</p>
+  <p>Access tokens are encrypted at rest with a key kept on your computer, FreePoster's local server accepts connections only from your own computer, and every connection to a platform uses HTTPS.</p>
 
   <h2>Children</h2>
   <p>FreePoster is not directed to children under 13 (or the minimum age required in your country), and we do not knowingly handle their information.</p>
@@ -59,7 +59,7 @@
   <p>If this policy changes, the updated version will be posted on this page with a new effective date.</p>
 
   <h2>Contact</h2>
-  <p>Questions about this policy: open an issue at <a href="https://github.com/kharyf/freeposter/issues">github.com/kharyf/freeposter/issues</a>.</p>
+  <p>Questions about this policy: email <a href="mailto:{{EMAIL}}">{{EMAIL}}</a>.</p>
 
   <p class="muted"><a href="terms">Terms of Service</a></p>
 </main>

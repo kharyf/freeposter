@@ -14,6 +14,13 @@ test("connecting Google Drive asks for read-only access and stores the sign-in",
   const store = newStore();
   const app = buildServer(store, new Runner(store, publishers, tmp()), publishers);
 
+  const refused = await app.inject("/connect/drive");
+  assert.equal(refused.statusCode, 400, "no redirect URI yet");
+  assert.match(refused.body, /redirect URI/);
+  const page = config.redirectPage;
+  config.redirectPage = "https://me-freeposter.pages.dev/";
+  t.after(() => { config.redirectPage = page; });
+
   const start = await app.inject("/connect/drive");
   assert.equal(start.statusCode, 302);
   const auth = new URL(start.headers.location as string);

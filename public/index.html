@@ -105,12 +105,15 @@
   .check-ok { color: var(--ok); font-weight: 600; } .check-bad { color: var(--bad); font-weight: 600; }
   .note { border-left: 3px solid var(--warn); padding: 6px 10px; margin: 12px 0; font-size: 13px; color: var(--muted); }
   details summary { cursor: pointer; font-weight: 600; margin-top: 14px; }
+  .filebtn { display: inline-block; font-weight: 400; margin: 4px 0; }
+  .filebtn span { display: inline-block; border: 1px solid var(--line); background: var(--bg); padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; }
 </style>
 </head>
 <body>
 <header><h1>FreePoster</h1><span>one video → TikTok · Instagram · Facebook · X · YouTube</span>
   <div class="actions"><button type="button" id="openSetup">Setup</button><button type="button" id="quit" hidden>Quit</button></div>
 </header>
+<div id="redirectBanner"></div>
 <div id="banner"></div>
 <main>
   <div>
@@ -226,12 +229,15 @@ function xLength(t) {
 
 async function loadStatus() {
   status = await (await fetch("/api/status")).json();
+  $("redirectBanner").innerHTML = status.needsRedirectPage && status.setupComplete
+    ? `<div class="banner err">Set up your own redirect URI to connect or reconnect accounts. <a href="#" class="link" data-setup="redirect">Open setup</a></div>` : "";
   const byPlatform = (p) => status.accounts.filter((a) => a.platform === p);
   $("accounts").innerHTML = status.platforms.map((p) => `
     <div class="platform-row">
       <div class="row"><span class="dot" style="background:${COLORS[p.platform]}"></span><strong>${esc(p.label)}</strong></div>
-      ${p.configured ? `<a href="/connect/${p.platform}"><button type="button">${byPlatform(p.platform).length ? "Add / reconnect" : "Connect"}</button></a>`
-                     : `<button type="button" data-setup="${p.platform === "instagram" ? "facebook" : p.platform}">Set up</button>`}
+      ${!p.configured ? `<button type="button" data-setup="${p.platform === "instagram" ? "facebook" : p.platform}">Set up</button>`
+        : status.needsRedirectPage ? `<button type="button" data-setup="redirect">Set up redirect URI</button>`
+        : `<a href="/connect/${p.platform}"><button type="button">${byPlatform(p.platform).length ? "Add / reconnect" : "Connect"}</button></a>`}
     </div>
     ${byPlatform(p.platform).map((a) => `
       <div class="acct">${esc(a.name)}
@@ -264,7 +270,7 @@ function sharingBoxes(a) {
   if (!pair) return "";
   const ig = esc(a.name), page = esc(accountById(pair.facebookId).name);
   const box = (value, text) => `<label class="check share"><input type="checkbox" data-sharing="${esc(pair.pageId)}" value="${value}" ${pair.sharing === value ? "checked" : ""}> ${text}</label>`;
-  return box("ig_to_fb", `Meta shares ${ig}'s posts to "${page}"`) + box("fb_to_ig", `Meta shares "${page}"'s posts to ${ig}`);
+  return box("ig_to_fb", `Meta shares posts from ${ig} to "${page}"`) + box("fb_to_ig", `Meta shares posts from "${page}" to ${ig}`);
 }
 
 /** TikTok options for the posts FreePoster makes on its own; they always go out as Only me. */
@@ -395,12 +401,12 @@ const SETUP_PLATFORMS = {
       `In ${ext("https://developers.tiktok.com/apps", "TikTok for Developers")}, create an app.`,
       `Add the <strong>Login Kit</strong> and <strong>Content Posting API</strong> products, and turn on <strong>Direct Post</strong>.`,
       `Add the scopes <code>user.info.basic</code> and <code>video.publish</code>.`,
-      `In the app's basic information, enter FreePoster's <strong>Terms of Service URL</strong> <code>https://freeposter.pages.dev/terms</code> and <strong>Privacy Policy URL</strong> <code>https://freeposter.pages.dev/privacy</code>.`,
+      () => `In the app's basic information, enter your <strong>Terms of Service URL</strong> <code>${esc(pageUrl("terms"))}</code> and <strong>Privacy Policy URL</strong> <code>${esc(pageUrl("privacy"))}</code>. If TikTok asks you to verify them, download its file and add it here: ${tiktokFileHtml()}`,
       `In Login Kit, register this <strong>Redirect URI</strong>:`,
       `Copy the app's <strong>Client key</strong> and <strong>Client secret</strong> into the boxes below.`,
     ],
     note: "Until TikTok audits your app, your posts can only be visible to you.",
-    tunnelNote: "TikTok only accepts https redirect URIs: if it refuses the localhost address, set up a tunnel in the Address step.",
+    tunnelNote: "TikTok only accepts https redirect URIs: if it refuses the localhost address, set up a tunnel in the Redirect URI step.",
   },
   facebook: {
     title: "Instagram & Facebook", short: "Instagram or Facebook", uris: ["facebook", "instagram"],
@@ -427,8 +433,8 @@ const SETUP_PLATFORMS = {
 };
 
 const SETUP_STEPS = [
-  { id: "welcome", title: "Welcome" },
-  { id: "address", title: "Address" },
+  { id: "redirect", title: "Redirect URI" },
+  { id: "welcome", title: "Video tools" },
   ...Object.entries(SETUP_PLATFORMS).map(([id, p]) => ({ id, title: p.title, platform: true })),
   { id: "limits", title: "Limits" },
   { id: "connect", title: "Connect accounts" },
@@ -436,8 +442,16 @@ const SETUP_STEPS = [
 let settings = null;
 let stepIndex = 0;
 
-// With the hosted redirect page, every platform returns to one fixed https address: no Address step.
-const setupSteps = () => SETUP_STEPS.filter((s) => s.id !== "address" || !settings.redirectPage);
+const setupSteps = () => SETUP_STEPS;
+
+/** An address on the user's own redirect page, or a stand-in until it exists. */
+const pageUrl = (path) => settings.redirectPage ? settings.redirectPage + path : `<your redirect URI>${path}`;
+
+function tiktokFileHtml() {
+  const files = settings.tiktokFiles.length ? ` <span class="muted">(added: ${settings.tiktokFiles.map(esc).join(", ")})</span>` : "";
+  return `<label class="filebtn"><input type="file" accept=".txt" data-tiktok-file hidden><span>Add TikTok file</span></label>${files}
+    <div class="muted">Then upload the folder again in Cloudflare (your project → <em>Create deployment</em>).</div>`;
+}
 
 async function openSetup(stepId) {
   settings = await (await fetch("/api/settings")).json();
@@ -453,7 +467,8 @@ function closeSetup() {
 }
 
 const stepDone = (s) =>
-  s.id === "welcome" ? Boolean(settings.tools.ffmpeg && settings.tools.ffprobe)
+  s.id === "redirect" ? Boolean(settings.redirectDone || settings.redirectOff)
+  : s.id === "welcome" ? Boolean(settings.tools.ffmpeg && settings.tools.ffprobe)
   : s.platform ? settings.configured[s.id]
   : s.id === "connect" ? status.accounts.length > 0
   : false;
@@ -473,12 +488,36 @@ const tool = (name, version) => version
   : `<span class="check-bad">✗ ${name} not found</span>`;
 
 function stepHtml(step) {
+  if (step.id === "redirect") {
+    const done = settings.redirectDone;
+    return `<h1>Set up FreePoster</h1>
+      <p>This walks you through everything FreePoster needs to post for you: your redirect URI, a developer app on each platform you use, the keys from those apps, and connecting your accounts. Skip any platform you don't use. You can come back here any time with the <strong>Setup</strong> button.</p>
+      <p class="muted">Everything you enter stays on this computer, in <code>${esc(settings.envFile)}</code>.</p>
+      <h2 style="margin-top:20px">Your redirect URI ${done ? `<span class="check-ok">✓ checked</span>` : ""}</h2>
+      <p>When you connect an account, the platform sends your browser back to an https address you register with it: your redirect URI. This step makes yours, for free, on Cloudflare. It's a small page that hands the platform's response straight back to FreePoster on this computer, and stores nothing. The same site holds the Terms of Service and Privacy Policy that TikTok asks for.</p>
+      <ol>
+        <li>Enter the name and email to show on your Terms of Service and Privacy Policy:
+          <div class="grid2">${field("SITE_OWNER_NAME", "Your name or business name")}${field("SITE_CONTACT_EMAIL", "Contact email")}</div></li>
+        <li><button type="button" data-redirect="folder">Make the folder</button> FreePoster writes the pages to a folder on this computer.
+          <div id="redirectFolder"></div></li>
+        <li>${ext("https://dash.cloudflare.com/sign-up", "Create a free Cloudflare account")}, or ${ext("https://dash.cloudflare.com/login", "log in")} to yours.</li>
+        <li>In the Cloudflare dashboard, open <strong>Workers &amp; Pages</strong> → <strong>Create</strong> → <strong>Pages</strong> → <strong>Upload assets</strong> (Cloudflare may call it "Drag and drop your files").</li>
+        <li>Name the project. The name becomes your address, <code>https://&lt;name&gt;.pages.dev</code>, so pick something only you would use, like <code>yourname-freeposter</code>.</li>
+        <li>Drag the folder FreePoster made into the upload box and press <strong>Deploy</strong>.</li>
+        <li>Copy the address Cloudflare shows and paste it here:
+          ${field("REDIRECT_PAGE_URL", "Your redirect URI", "Like https://yourname-freeposter.pages.dev. FreePoster opens it to check it when you continue.")}</li>
+      </ol>
+      <details ${settings.redirectOff ? "open" : ""}><summary>Use a tunnel instead</summary>
+        <p>Without a redirect page, platforms send you back to FreePoster's own address. YouTube, X and Meta accept a localhost address; <strong>TikTok</strong> (and sometimes Meta) only accept <strong>https</strong>. For those, run a tunnel such as <code>cloudflared tunnel --url http://localhost:${settings.port}</code> and enter the https address it prints. A public address needs an app password, so only you can use FreePoster. Right now the address is:</p>
+        ${copyBox(settings.baseUrl)}
+        <label class="row" style="font-weight:400"><input type="checkbox" id="useTunnel" style="width:auto;margin:0" ${settings.redirectOff ? "checked" : ""}> Use this address instead of a redirect page</label>
+        ${field("BASE_URL", "Public address", `Blank for http://localhost:${settings.port}. Example: https://my-tunnel.trycloudflare.com`)}
+        ${field("APP_PASSWORD", "App password", "Required with a public address. Your browser asks for it once (any user name).")}
+      </details>`;
+  }
   if (step.id === "welcome") {
     const missing = !settings.tools.ffmpeg || !settings.tools.ffprobe;
-    return `<h1>Set up FreePoster</h1>
-      <p>This walks you through everything FreePoster needs to post for you: a developer app on each platform you use, the keys from those apps, and signing in to your accounts. Skip any platform you don't use. You can come back here any time with the <strong>Setup</strong> button.</p>
-      <p class="muted">Everything you enter stays on this computer, in <code>${esc(settings.envFile)}</code>.</p>
-      <h2 style="margin-top:20px">Video tools</h2>
+    return `<h1>Video tools</h1>
       <p>FreePoster uses ffmpeg to convert each video into the format every platform accepts.</p>
       <p>${tool("ffmpeg", settings.tools.ffmpeg)}<br>${tool("ffprobe", settings.tools.ffprobe)}</p>
       ${missing ? `<p>Install ffmpeg (on Windows, run <code>winget install Gyan.FFmpeg</code> or download a build from ${ext("https://www.gyan.dev/ffmpeg/builds/", "gyan.dev")}) and restart FreePoster, or enter where the programs are:</p>` : ""}
@@ -487,24 +526,21 @@ function stepHtml(step) {
         ${field("FFPROBE_PATH", "ffprobe", "Blank uses ffprobe from PATH; or the full path to ffprobe.exe")}
       </div></details>`;
   }
-  if (step.id === "address") {
-    return `<h1>Address</h1>
-      <p>After you sign in, each platform sends you back to FreePoster at an address you register in its developer console. Right now that address is:</p>
-      ${copyBox(settings.baseUrl)}
-      <p>YouTube, X and Meta accept a localhost address. <strong>TikTok</strong> (and sometimes Meta) only accept <strong>https</strong>. For those, run a tunnel such as <code>cloudflared tunnel --url http://localhost:${settings.port}</code> and enter the https address it prints. A public address needs an app password, so only you can use FreePoster.</p>
-      ${field("BASE_URL", "Public address", `Blank for http://localhost:${settings.port}. Example: https://my-tunnel.trycloudflare.com`)}
-      ${field("APP_PASSWORD", "App password", "Required with a public address. Your browser asks for it once (any user name).")}`;
-  }
   if (step.platform) {
     const p = SETUP_PLATFORMS[step.id];
     const addresses = [...new Set(p.uris.map((u) => settings.redirectUris[u]))];
-    const uris = addresses.map(copyBox).join("");
-    // Meta's two products share one address when sign-ins go through the redirect page.
-    const steps = p.steps.map((t) => addresses.length === 1 ? t.replace("<strong>both</strong> of these", "this") : t);
+    const uris = settings.needsRedirectPage
+      ? `<div class="note">Your redirect URI goes here. <a href="#" class="link" data-setup="redirect">Make it in the first step</a>, then come back.</div>`
+      : addresses.map(copyBox).join("") + (settings.redirectChangedFrom
+        ? `<div class="note">Your redirect URI changed. If this console still has <code>${esc(settings.redirectChangedFrom)}</code>, replace it with the address above.${step.id === "tiktok" ? " Changing the Terms of Service and Privacy Policy addresses may send your TikTok app back for review." : ""}</div>`
+        : "");
+    // Meta's two products share one address when they go through the redirect page.
+    const steps = p.steps.map((t) => typeof t === "function" ? t() : t)
+      .map((t) => addresses.length === 1 ? t.replace("<strong>both</strong> of these", "this") : t);
     const note = [settings.redirectPage ? "" : p.tunnelNote, p.note].filter(Boolean).join(" ");
     return `<h1>${esc(p.title)} ${settings.configured[step.id] ? `<span class="check-ok" style="font-size:14px">✓ keys saved</span>` : ""}</h1>
       <ol>${steps.map((t) => `<li>${t}${/:$/.test(t) ? uris : ""}</li>`).join("")}</ol>
-      ${settings.redirectPage ? `<p class="muted">It's the same address for every platform: a small page that hands the sign-in straight back to FreePoster on this computer.</p>` : ""}
+      ${settings.redirectPage ? `<p class="muted">It's the same address for every platform: your redirect page, which hands the platform's response straight back to FreePoster on this computer.</p>` : ""}
       <div class="note">${esc(note)}</div>
       <div class="grid2">${p.fields.map(([k, label]) => field(k, label)).join("")}</div>`;
   }
@@ -532,9 +568,9 @@ function stepHtml(step) {
     return `<div class="platform-row">
       <div><div class="row"><span class="dot" style="background:${COLORS[p.platform]}"></span><strong>${esc(p.label)}</strong></div>
         ${accts.length ? `<div class="muted">${accts.map((a) => esc(a.name)).join(", ")}</div>` : ""}</div>
-      ${settings.configured[p.platform]
-        ? `<a href="/connect/${p.platform}"><button type="button">${accts.length ? "Add / reconnect" : "Connect"}</button></a>`
-        : `<span class="muted">no keys</span>`}</div>`;
+      ${!settings.configured[p.platform] ? `<span class="muted">no keys</span>`
+        : settings.needsRedirectPage ? `<button type="button" data-setup="redirect">Set up redirect URI</button>`
+        : `<a href="/connect/${p.platform}"><button type="button">${accts.length ? "Add / reconnect" : "Connect"}</button></a>`}</div>`;
   }).join("");
   return `<h1>Connect accounts</h1>
     ${$("banner").innerHTML /* the result of the sign-in you just came back from */}
@@ -564,6 +600,13 @@ async function saveStep() {
   const step = setupSteps()[stepIndex];
   const values = {};
   for (const input of $("stepBody").querySelectorAll("[data-key]")) values[input.dataset.key] = input.value;
+  if (step.id === "redirect") {
+    if ($("useTunnel").checked) values.REDIRECT_PAGE_URL = "off";
+    else if (values.REDIRECT_PAGE_URL.toLowerCase() === "off") values.REDIRECT_PAGE_URL = "";
+    if (values.REDIRECT_PAGE_URL !== "off" && !values.REDIRECT_PAGE_URL.trim()) {
+      throw new Error('Paste the address Cloudflare gave you, or open "Use a tunnel instead".');
+    }
+  }
   if (!Object.keys(values).length) return;
   if (step.platform) {
     const [[idKey, idLabel], [secretKey, secretLabel]] = SETUP_PLATFORMS[step.id].fields;
@@ -576,6 +619,11 @@ async function saveStep() {
   const body = await res.json();
   if (!res.ok) throw new Error(body.error);
   settings = body;
+  if (step.id === "redirect" && settings.redirectPage && !settings.redirectDone) {
+    const check = await (await fetch("/api/redirect-page/check", { method: "POST" })).json();
+    if (!check.ok) throw Object.assign(new Error(check.reason), { canAccept: true });
+    settings = await (await fetch("/api/settings")).json();
+  }
   if (body.restartNeeded) alert(`The new port takes effect after you restart FreePoster. It will then be at http://localhost:${body.port}.`);
   if (!hadPassword && body.secretsSet.APP_PASSWORD) {
     // Every request needs the password from now on; reloading lets the browser ask for it once.
@@ -601,7 +649,8 @@ $("setup").addEventListener("click", async (e) => {
     try {
       await saveStep();
     } catch (err) {
-      $("setupError").innerHTML = `<div class="banner err" style="margin:16px 0 0">${esc(err.message)}</div>`;
+      $("setupError").innerHTML = `<div class="banner err" style="margin:16px 0 0">${esc(err.message)}${err.canAccept
+        ? `<div style="margin-top:8px"><button type="button" data-nav="accept">Continue anyway</button></div>` : ""}</div>`;
       return;
     }
     if (stepIndex === setupSteps().length - 1) {
@@ -609,11 +658,46 @@ $("setup").addEventListener("click", async (e) => {
       return closeSetup();
     }
   }
-  if (nav === "next" || nav === "skip") {
+  if (nav === "accept") {
+    await fetch("/api/redirect-page/accept", { method: "POST" });
+    settings = await (await fetch("/api/settings")).json();
+  }
+  const redirect = e.target.closest("[data-redirect]")?.dataset.redirect;
+  if (redirect === "folder") return makeRedirectFolder();
+  if (redirect === "show") return fetch("/api/redirect-page/show", { method: "PUT" });
+  if (nav === "next" || nav === "skip" || nav === "accept") {
     stepIndex++;
     await loadStatus();
     renderSetup();
   }
+});
+
+/** Saves the owner's details, then writes the folder to upload to Cloudflare. */
+async function makeRedirectFolder() {
+  const values = { SITE_OWNER_NAME: $("f_SITE_OWNER_NAME").value, SITE_CONTACT_EMAIL: $("f_SITE_CONTACT_EMAIL").value };
+  const out = $("redirectFolder");
+  const fail = (message) => (out.innerHTML = `<div class="banner err" style="margin:8px 0 0">${esc(message)}</div>`);
+  if (!values.SITE_OWNER_NAME.trim() || !values.SITE_CONTACT_EMAIL.trim()) return fail("Enter your name or business name and a contact email first.");
+  const saved = await fetch("/api/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ values }) });
+  if (!saved.ok) return fail((await saved.json()).error);
+  settings = await saved.json();
+  const res = await fetch("/api/redirect-page/folder", { method: "POST" });
+  const body = await res.json();
+  if (!res.ok) return fail(body.error);
+  out.innerHTML = `<p class="muted" style="margin:8px 0 0">Done. Upload this folder:</p>${copyBox(body.path)}
+    ${status.desktop ? `<button type="button" data-redirect="show">Show folder</button>` : ""}`;
+}
+
+// TikTok's verification file: read here, kept by FreePoster, and added to the folder.
+$("setup").addEventListener("change", async (e) => {
+  if (!e.target.matches("[data-tiktok-file]") || !e.target.files[0]) return;
+  const file = e.target.files[0];
+  const res = await fetch("/api/redirect-page/tiktok-file", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: file.name, content: await file.text() }),
+  });
+  if (!res.ok) { $("setupError").innerHTML = `<div class="banner err" style="margin:16px 0 0">${esc((await res.json()).error)}</div>`; return; }
+  settings = await (await fetch("/api/settings")).json();
+  renderSetup();
 });
 
 $("openSetup").addEventListener("click", () => openSetup());
@@ -1038,7 +1122,7 @@ loadStatus().then(() => {
   for (const el of document.querySelectorAll(".desktop-only")) el.hidden = !status.desktop;
   // First run, or back from a platform's sign-in page during setup.
   const resume = sessionStorage.getItem("setupStep");
-  if (!status.setupComplete || resume) openSetup(resume || "welcome");
+  if (!status.setupComplete || resume) openSetup(resume || "redirect");
   loadDrive();
   setInterval(loadDrive, 5000);
 });

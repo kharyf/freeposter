@@ -26,6 +26,11 @@ await build({
   logOverride: { "empty-import-meta": "silent" },
 });
 copyFileSync(join(root, "public", "index.html"), join(out, "public", "index.html"));
+// The templates each user's redirect page is made from (setup's first step); not the maintainer's TikTok files.
+mkdirSync(join(out, "redirect-page"));
+for (const name of ["index.html", "forward.js", "terms.html", "privacy.html", "_headers"]) {
+  copyFileSync(join(root, "redirect-page", name), join(out, "redirect-page", name));
+}
 // Only the Windows x64 binaries: the package carries every platform's (~300 MB).
 const ort = join(root, "node_modules", "onnxruntime-node");
 const ortOut = join(out, "node_modules", "onnxruntime-node");

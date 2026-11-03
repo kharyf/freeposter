@@ -15,9 +15,9 @@ npm run desktop         # or: run the app from source, without packaging
 
 Run `dist/FreePoster-win32-x64/FreePoster.exe` (keep it with the rest of that folder; you can move the whole folder and pin the exe to Start or the taskbar). Closing the window, or pressing **Quit**, stops it. Launching it again while it runs brings its window forward.
 
-The first time, a **setup screen** asks for everything FreePoster needs: it checks ffmpeg, then walks through each platform's developer console with the exact redirect URIs to register, takes the keys, and ends with signing in to your accounts. Skip any platform you don't use; reopen it any time with **Setup**.
+The first time, a **setup screen** asks for everything FreePoster needs. It starts by making your own redirect URI on Cloudflare (free), checks ffmpeg, then walks through each platform's developer console with that redirect URI to register, takes the keys, and ends with connecting your accounts. Skip any platform you don't use; reopen it any time with **Setup**.
 
-**Signing in to accounts happens in your web browser**, because Google, Meta and others refuse sign-in inside app windows. Press **Connect**, sign in on the page that opens, and the FreePoster window updates by itself; the browser tab can be closed.
+**Connecting accounts happens in your web browser**, because Google, Meta and others refuse to let you sign in to them inside app windows. Press **Connect**, sign in on the page that opens, and the FreePoster window updates by itself; the browser tab can be closed.
 
 The app keeps its settings and data in `%APPDATA%\FreePoster` (`.env`, `data/`, and `data/freeposter.log`), separate from a source checkout's. `ffmpeg`/`ffprobe` must be installed (on PATH, or their paths entered in setup).
 
@@ -60,22 +60,26 @@ For apps configured with a JSON file: `{"mcpServers": {"freeposter": {"type": "h
 
 It deliberately can't read or change settings, keys or tokens, or connect and remove accounts: those stay in the window. It speaks MCP's Streamable HTTP transport (protocol 2025-03-26 through 2025-11-25), statelessly with plain JSON responses: `publish_video` returns at once and the job runner does the posting, as it does for the window. It only answers on this computer: requests from web pages (any `Origin` other than FreePoster's own) and from other host names are refused, and with an app password set, agents must send it as HTTP Basic auth.
 
-## Sign-in redirect page (one time, for whoever distributes FreePoster)
+## Your redirect URI (one time, in setup's first step)
 
-Platforms send the browser back to an **https** address after sign-in, and TikTok (sometimes Meta) won't accept `http://localhost`. Instead of every user running a tunnel, FreePoster uses a tiny static page, [redirect-page/](redirect-page/), hosted once. It forwards each sign-in to `http://localhost:<port>/callback` on the user's own computer, reading the port from the sign-in's `state` (FreePoster starts every sign-in with `state=<port>.<random>`). It forwards nowhere else, stores nothing, and loads nothing from other sites. The code it passes along is useless without the user's app secret and PKCE verifier, which never leave their computer.
+After you connect an account, the platform sends your browser back to an **https** address you registered with it, and TikTok (sometimes Meta) won't accept `http://localhost`. So each FreePoster user has their own small static page, made from the templates in [redirect-page/](redirect-page/), that forwards the platform's response to `http://localhost:<port>/callback` on their own computer. It reads the port from the `state` parameter (FreePoster starts every connection with `state=<port>.<random>`). It forwards nowhere else, stores nothing, and loads nothing from other sites. The authorization code it passes along is useless without your app secret and PKCE verifier, which never leave your computer.
 
-The same site hosts FreePoster's **Terms of Service** and **Privacy Policy** (`terms.html`, `privacy.html`), which TikTok's developer portal asks for: `https://freeposter.pages.dev/terms` and `https://freeposter.pages.dev/privacy`.
+The same site hosts your **Terms of Service** and **Privacy Policy** (`/terms`, `/privacy`), which TikTok's developer portal asks for.
 
-1. Deploy the `redirect-page/` folder (all its files) as a static site:
-   - **Cloudflare Pages** (free): dashboard → Workers & Pages → Create → Pages → *Upload assets*, name it (e.g. `freeposter-signin`), drop in the folder. You get `https://freeposter-signin.pages.dev`. The `_headers` file adds the security headers there.
-   - **GitHub Pages** (free): put the files at the root of a repo's Pages branch. You get `https://<user>.github.io/<repo>/`.
-2. Set `BUILT_IN_REDIRECT_PAGE` in [src/config.ts](src/config.ts) to that address and rebuild (`npm run build:app`).
+Setup's first step does all of it:
 
-FreePoster's page is live at **`https://freeposter.pages.dev/`**, and that's the built-in address. Users register it as the redirect URI on every platform, the setup screen shows it to them, and its Address step disappears. To try a different page without rebuilding, set `REDIRECT_PAGE_URL` in `.env`. Set `REDIRECT_PAGE_URL=off` for the older setup: redirect URIs of `{BASE_URL}/callback/{platform}`, with a tunnel where https is required.
+1. Enter the name (or business name) and contact email to show on the Terms and Privacy pages.
+2. Press **Make the folder**. FreePoster writes the pages, with your details filled in, to `data/redirect-page/`.
+3. In the Cloudflare dashboard (free account): **Workers & Pages → Create → Pages → Upload assets**, name the project (the name becomes `https://<name>.pages.dev`), drag the folder in, and press **Deploy**.
+4. Paste the address back into FreePoster. It opens the page to check it, then shows it as the redirect URI in every platform step, and `<address>terms` / `<address>privacy` in the TikTok step.
+
+If TikTok asks you to verify those URLs, add its `tiktok….txt` file in the TikTok step; FreePoster keeps it in the folder, and you upload the folder again as a new deployment. If you change your name or email, make the folder and upload it again.
+
+Prefer no page? Under **Use a tunnel instead** in that step (or `REDIRECT_PAGE_URL=off` in `.env`), redirect URIs are `{BASE_URL}/callback/{platform}`, with a tunnel where https is required.
 
 ## Platform setup (one time)
 
-Register the redirect page address from above (or, without one, `{BASE_URL}/callback/{platform}`) as each app's redirect URI.
+Register your redirect URI from above (or, with a tunnel, `{BASE_URL}/callback/{platform}`) as each app's redirect URI.
 
 | Platform | App / product | Scopes requested | Account requirement |
 |---|---|---|---|
@@ -85,13 +89,15 @@ Register the redirect page address from above (or, without one, `{BASE_URL}/call
 | Facebook | Same Meta app | `pages_show_list`, `pages_read_engagement`, `pages_manage_posts`, `business_management` | A **Page** (profiles can't be posted to via API) |
 | X | OAuth 2.0 "Web App" client | `tweet.read tweet.write users.read media.write offline.access` | API tier that permits posting |
 
-Without the redirect page, if a console refuses `http://localhost` redirect URIs, run a tunnel (e.g. `cloudflared tunnel --url http://localhost:4400`), set `BASE_URL` to the https address, and set `APP_PASSWORD`. The app refuses to start on a public URL without one.
+With a tunnel instead of a redirect page, if a console refuses `http://localhost` redirect URIs, run a tunnel (e.g. `cloudflared tunnel --url http://localhost:4400`), set `BASE_URL` to the https address, and set `APP_PASSWORD`. The app refuses to start on a public URL without one.
 
 ## How it works
 
 - **One render for all platforms.** ffmpeg normalizes any input to 1080×1920, H.264 High, 30 fps, AAC 48 kHz stereo, faststart. Wrong aspect ratios are letterboxed and silent clips get a silent track. The render is verified with ffprobe before any upload.
 - **Rejected before upload, not after.** Caption limits (X 280 weighted chars, TikTok/IG 2200, IG 30 hashtags), per-platform durations (FB Reels 3–90 s, X 140 s, Shorts 180 s, TikTok per-account max), and TikTok privacy rules are checked when you press Publish.
 - **Scheduling.** Choose *Schedule for* to post at a set time (up to a year ahead). Upcoming posts can be moved, posted early, or cancelled until they start going out. FreePoster has to be running at that time; a post whose time passed while it was closed goes out as soon as it starts. In the desktop app, closing the window while posts are scheduled keeps FreePoster running in the system tray until they're out; click the tray icon (or open the app again) to get the window back.
+- **Default accounts.** Videos that arrive without you at the screen (from Google Drive) go to the accounts ticked **Default** under Accounts. At first that's the first account you connected on each platform; change it any time. Drive only hands FreePoster the files.
+- **Meta's automatic sharing.** If Meta shares your Instagram posts to the linked Facebook Page (or the reverse), tick that under the Instagram account. FreePoster then never posts to the receiving account itself, so nothing goes up twice.
 - **One job per (post, account).** Each job runs independently: a platform failing never blocks the others.
 - **Never posts twice.** Every step saves a checkpoint (upload session, container id, byte offset). A crash or retry resumes from there. If the final "publish" request was sent but its response was lost, the job looks the post up on the platform instead of publishing again. Re-uploading the same file to the same account asks first.
 - **Retries:** network errors, 5xx and 429 retry with backoff (30 s → 30 min, 6 attempts). Policy/spec errors fail immediately with the platform's message. "Still processing" re-checks without using attempts.
@@ -108,13 +114,15 @@ src/app.ts             shared startup: database, server, job runner
 src/config.ts          settings from .env; the setup screen saves back to it
 src/server.ts          HTTP routes: setup, OAuth connect/callback, upload, history, retry
 src/posts.ts           checks and queues a post; shared by the upload route and the MCP server
+src/accounts.ts        default accounts, and Meta's automatic sharing between linked accounts
+src/redirect-page.ts   makes the redirect page folder and checks the address it went live at
 src/mcp.ts             the MCP server at /mcp, for AI agents
 src/runner.ts          job loop, retries, quotas, token refresh
 src/media.ts           ffprobe + ffmpeg render and spec check
 src/db.ts              SQLite (data/freeposter.db)
 src/platforms/*.ts     one module per platform, against its official API
 public/index.html      the UI, including the setup screen
-redirect-page/         the hosted https page sign-ins return through (deploy once; see above)
+redirect-page/         templates for each user's redirect page, Terms and Privacy (made in setup; see above)
 scripts/build-app.ts   bundles the desktop app and packages it into dist/FreePoster-win32-x64/
 scripts/icon.ts        draws the app icon
 ```

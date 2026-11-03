@@ -133,7 +133,7 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(async () => {
     Menu.setApplicationMenu(null);
     try {
-      running = await startApp({ onQuit: () => void quit(), onSignIn: (query) => show(query) });
+      running = await startApp({ onQuit: () => void quit(), onSignIn: (query) => show(query), showFolder: (path) => void shell.openPath(path) });
     } catch (err) {
       const e = err as NodeJS.ErrnoException;
       dialog.showErrorBox("FreePoster", e.code === "EADDRINUSE"

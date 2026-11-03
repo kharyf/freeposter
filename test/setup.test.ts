@@ -26,7 +26,8 @@ test("setup screen saves settings to .env, hides secrets, and enables platforms"
   assert.equal(res.statusCode, 200, res.body);
   const view = res.json();
   assert.deepEqual([view.configured.youtube, view.configured.facebook, view.configured.instagram, view.configured.x], [true, true, true, false]);
-  assert.equal(view.redirectUris.instagram, "https://freeposter.pages.dev/", "the hosted redirect page by default");
+  assert.equal(view.redirectPage, "", "no built-in redirect page");
+  assert.equal(view.needsRedirectPage, true);
   assert.ok(!res.body.includes("yt secret#1") && !res.body.includes("fb-secret"), "secrets are never sent back");
   assert.equal(view.secretsSet.YOUTUBE_CLIENT_SECRET, true);
 

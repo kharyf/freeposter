@@ -5,7 +5,7 @@ import { execFile } from "node:child_process";
 import { createReadStream, existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { defaultAccountIds, defaultTikTokPrefs, noteConnected, noteRemoving, setDefaultAccounts, setDefaultTikTokPrefs, setSharing, sharedFrom, sharingPairs, type Sharing } from "./accounts.ts";
-import { codeDir, config, dataDir, envFile, isConfigured, isLocalUrl, redirectUri, saveSettings, setting, SETTINGS, type SettingKey } from "./config.ts";
+import { codeDir, config, dataDir, envFile, isConfigured, isLocalUrl, needsRedirectPage, redirectUri, saveSettings, setting, SETTINGS, type SettingKey } from "./config.ts";
 import { randomToken } from "./crypto.ts";
 import type { SignIn, Store } from "./db.ts";
 import { registerMcp } from "./mcp.ts";
@@ -15,6 +15,7 @@ import { driveAuthorizeUrl, driveRedirectUri, exchangeDriveCode, folderIdFrom } 
 import type { Intake } from "./drive/intake.ts";
 import { parseEditSettings } from "./edit/settings.ts";
 import { checkDraft, DuplicateError, editView, parseSchedule, postView, saveUpload, type Draft } from "./posts.ts";
+import { acceptRedirect, addTikTokFile, checkRedirect, folderPath, makeFolder, redirectDone, tiktokFiles } from "./redirect-page.ts";
 import type { Runner } from "./runner.ts";
 import { PLATFORMS, type Platform } from "./types.ts";
 
@@ -36,7 +37,11 @@ export interface ServerOptions {
    * (as the page's query string) so the app window can show it; the browser tab gets a short note.
    */
   onSignIn?: (query: string) => void;
+  /** Present in the desktop app: shows a folder in Explorer. */
+  showFolder?: (path: string) => void;
 }
+
+const NO_REDIRECT_PAGE = "Set up your own redirect URI first (Setup, step 1), so the platform has somewhere to send you back to.";
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
@@ -84,6 +89,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     return {
       desktop: Boolean(options.onQuit),
       pendingJobs: store.pendingJobCount(),
+      needsRedirectPage: needsRedirectPage(),
       setupComplete: existsSync(setupMarker()),
       platforms: PLATFORMS.map((p) => ({ platform: p, label: publishers[p].label, configured: isConfigured(p) })),
       accounts: store.accounts().map((a) => ({
@@ -108,6 +114,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   // Google Drive signs in with the YouTube app's Google client, asking only to read files.
   app.get("/connect/drive", async (_req, reply) => {
     if (!isConfigured("youtube")) return reply.code(400).send("Google (YouTube) credentials are missing; add them in Setup");
+    if (needsRedirectPage()) return reply.code(400).send(NO_REDIRECT_PAGE);
     const state = `${config.port}.${randomToken(24)}`;
     const verifier = randomToken(48);
     store.putOAuthState(state, "drive", verifier);
@@ -118,6 +125,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     const { platform } = req.params;
     if (!isPlatform(platform)) return reply.code(404).send("unknown platform");
     if (!isConfigured(platform)) return reply.code(400).send(`${platform} credentials are missing; add them in Setup`);
+    if (needsRedirectPage()) return reply.code(400).send(NO_REDIRECT_PAGE);
     // Starts with the port, so the hosted redirect page knows where to hand the result back.
     const state = `${config.port}.${randomToken(24)}`;
     const verifier = randomToken(48);
@@ -223,6 +231,13 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
       envFile,
       baseUrl: config.baseUrl,
       redirectPage: config.redirectPage,
+      redirectOff: config.redirectOff,
+      needsRedirectPage: needsRedirectPage(),
+      redirectDone: redirectDone(store),
+      // the address before the last change: every developer console still has it until the user updates them
+      redirectChangedFrom: store.pref<string>("redirect.changedFrom") ?? null,
+      redirectFolder: folderPath(),
+      tiktokFiles: tiktokFiles(),
       port: config.port,
       redirectUris: { ...Object.fromEntries(PLATFORMS.map((p) => [p, redirectUri(p)])), drive: driveRedirectUri() },
       configured: Object.fromEntries(PLATFORMS.map((p) => [p, isConfigured(p)])),
@@ -249,8 +264,9 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
       }
       if (k === "PORT" && Number(value) > 65535) problems.push("PORT must be 65535 or lower");
       if (k === "REDIRECT_PAGE_URL" && value && value.toLowerCase() !== "off" && !/^https:\/\/[^\s?#]+$/.test(value)) {
-        problems.push("REDIRECT_PAGE_URL must be an https address, like https://freeposter.pages.dev, or off");
+        problems.push("REDIRECT_PAGE_URL must be an https address, like https://yourname-freeposter.pages.dev, or off");
       }
+      if (k === "SITE_CONTACT_EMAIL" && value && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) problems.push("the contact email doesn't look like an email address");
       if (k === "BASE_URL" && value) {
         value = value.replace(/\/$/, "");
         if (!/^https?:\/\/[^/?#\s]+$/.test(value)) problems.push("BASE_URL must look like https://example.com (no path)");
@@ -265,14 +281,52 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     }
     if (problems.length) return reply.code(400).send({ error: problems.join("\n") });
     const portBefore = config.port;
+    const pageBefore = config.redirectPage;
     saveSettings(out);
+    if (pageBefore && config.redirectPage !== pageBefore) store.setPref("redirect.changedFrom", pageBefore);
     return { ...(await settingsView()), restartNeeded: config.port !== portBefore };
   });
 
   app.put<{ Body: { complete?: boolean } }>("/api/setup", async (req) => {
     if (req.body?.complete === false) { try { unlinkSync(setupMarker()); } catch {} }
-    else writeFileSync(setupMarker(), new Date().toISOString());
+    else {
+      writeFileSync(setupMarker(), new Date().toISOString());
+      store.setPref("redirect.changedFrom", null); // finishing setup means the consoles were updated
+    }
     return { ok: true };
+  });
+
+  // ---- the user's own redirect page: make the folder to upload, then check the address it went live at ----
+
+  app.post("/api/redirect-page/folder", async (_req, reply) => {
+    try {
+      return { path: makeFolder() };
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
+  });
+
+  app.put("/api/redirect-page/show", async (_req, reply) => {
+    if (!options.showFolder) return reply.code(404).send({ error: "only the desktop app can open folders" });
+    options.showFolder(folderPath());
+    return { ok: true };
+  });
+
+  app.post("/api/redirect-page/check", async () => checkRedirect(store));
+
+  app.post("/api/redirect-page/accept", async (_req, reply) => {
+    if (!config.redirectPage) return reply.code(400).send({ error: "paste your Cloudflare address first" });
+    acceptRedirect(store);
+    return { ok: true };
+  });
+
+  app.post<{ Body: { name?: unknown; content?: unknown } }>("/api/redirect-page/tiktok-file", async (req, reply) => {
+    try {
+      addTikTokFile(String(req.body?.name ?? ""), String(req.body?.content ?? ""));
+      return { ok: true, files: tiktokFiles() };
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
   });
 
   if (options.onQuit) {

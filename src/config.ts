@@ -26,18 +26,13 @@ mkdirSync(join(dataDir, "renders"), { recursive: true });
 mkdirSync(join(dataDir, "edits"), { recursive: true });
 mkdirSync(join(dataDir, "models"), { recursive: true });
 
-/**
- * The hosted redirect page (redirect-page/ in this repo) that every platform sends sign-ins back to.
- * Set this to its https address once it is deployed; users then register this one address with every
- * platform and never need a tunnel. Empty = sign-ins return straight to BASE_URL/callback/<platform>.
- */
-export const BUILT_IN_REDIRECT_PAGE = "https://freeposter.pages.dev";
-
 /** Every key the setup screen may write to .env. Secrets are never sent back to the browser. */
 export const SETTINGS = {
   PORT: { secret: false },
   BASE_URL: { secret: false },
   REDIRECT_PAGE_URL: { secret: false },
+  SITE_OWNER_NAME: { secret: false },
+  SITE_CONTACT_EMAIL: { secret: false },
   APP_PASSWORD: { secret: true },
   FFMPEG_PATH: { secret: false },
   FFPROBE_PATH: { secret: false },
@@ -79,7 +74,11 @@ function build() {
     port,
     baseUrl: setting("BASE_URL", `http://localhost:${port}`).replace(/\/$/, ""),
     appPassword: setting("APP_PASSWORD"),
-    redirectPage: normalizePage(setting("REDIRECT_PAGE_URL", BUILT_IN_REDIRECT_PAGE)),
+    // Each user's own redirect page (made in setup's first step, from redirect-page/). "off" = BASE_URL callbacks.
+    redirectPage: normalizePage(setting("REDIRECT_PAGE_URL")),
+    redirectOff: setting("REDIRECT_PAGE_URL").toLowerCase() === "off",
+    siteOwner: setting("SITE_OWNER_NAME"),
+    siteEmail: setting("SITE_CONTACT_EMAIL"),
     ffmpeg: setting("FFMPEG_PATH", "ffmpeg"),
     ffprobe: setting("FFPROBE_PATH", "ffprobe"),
     anthropicKey: setting("ANTHROPIC_API_KEY"),
@@ -131,6 +130,8 @@ export function saveSettings(values: Partial<Record<SettingKey, string>>) {
 }
 
 export const isLocalUrl = (url: string) => /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(url);
+/** No redirect page yet, and the tunnel route isn't chosen: accounts can't be connected until setup's first step is done. */
+export const needsRedirectPage = () => !config.redirectPage && !config.redirectOff;
 export const redirectUri = (platform: Platform) => config.redirectPage || `${config.baseUrl}/callback/${platform}`;
 export const isConfigured = (platform: Platform) =>
   Boolean(config.credentials[platform].id && config.credentials[platform].secret);
