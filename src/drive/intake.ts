@@ -1,14 +1,15 @@
 // What happens to a video dropped in the watched Drive folder: read the posting time from its name (or its upload day),
 // download it, transcribe it, edit it (auto-approved) while Claude writes its title and caption, then
-// schedule it to the Drive accounts. A Drive video is never posted unedited: the post waits for the edit,
+// schedule it to FreePoster's default accounts. A Drive video is never posted unedited: the post waits for the edit,
 // even past its time. Every step is saved, so a restart picks up where it stopped.
 import type { Readable } from "node:stream";
+import { defaultAccounts, defaultTikTok } from "../accounts.ts";
 import type { Store } from "../db.ts";
 import { DEFAULT_EDIT } from "../edit/settings.ts";
 import type { Transcript } from "../edit/transcribe.ts";
 import type { Publisher } from "../platforms/base.ts";
 import { saveUpload } from "../posts.ts";
-import type { Account, DriveFileRecord, Platform, TikTokOptions } from "../types.ts";
+import type { Account, DriveFileRecord, Platform } from "../types.ts";
 import { uploadedAt, type DriveFile } from "./client.ts";
 import { parseDriveName } from "./filename.ts";
 
@@ -18,13 +19,6 @@ export interface IntakeDeps {
   transcribe: (sourcePath: string, sha256: string) => Promise<Transcript>;
   writeCaption: (input: { topic: string; transcript: string; accounts: Account[] }) => Promise<{ title: string; caption: string }>;
   now?: () => number;
-}
-
-/** Drive settings kept in prefs. Privacy is not among them: Drive posts go to TikTok as "Only me". */
-export interface DriveTikTokPrefs {
-  allowComment?: boolean;
-  allowDuet?: boolean;
-  allowStitch?: boolean;
 }
 
 const GRACE_MS = 30 * 60_000;
@@ -198,25 +192,13 @@ export class Intake {
     return parseDriveName(f.name, f.uploadedAt ?? f.createdAt);
   }
 
-  /** The accounts Drive videos go to (Drive settings). */
+  /** Where FreePoster posts Drive videos: its default accounts. */
   accounts(): Account[] {
-    return (this.store.pref<number[]>("drive.accounts") ?? []).map((id) => this.store.account(id)).filter((a): a is Account => Boolean(a));
-  }
-
-  private tiktok(): TikTokOptions {
-    const t = this.store.pref<DriveTikTokPrefs>("drive.tiktok") ?? {};
-    return {
-      privacyLevel: "SELF_ONLY",
-      disableComment: t.allowComment === false,
-      disableDuet: t.allowDuet === false,
-      disableStitch: t.allowStitch === false,
-      brandContent: false,
-      brandOrganic: false,
-    };
+    return defaultAccounts(this.store);
   }
 
   private captionProblems(text: { title: string; caption: string }): string[] {
-    const post = { id: 0, createdAt: 0, sourcePath: "", sha256: "", tiktok: this.tiktok(), ...text };
+    const post = { id: 0, createdAt: 0, sourcePath: "", sha256: "", tiktok: defaultTikTok(this.store), ...text };
     return this.accounts().flatMap((a) => {
       const reason = this.publishers[a.platform].validate(post, a);
       return reason ? [`${this.publishers[a.platform].label} (${a.name}): ${reason}`] : [];
@@ -231,8 +213,8 @@ export class Intake {
     const notes: string[] = [];
     const chosen = this.accounts();
     if (!chosen.length) {
-      // Not set up yet: wait, and post as soon as accounts are chosen.
-      this.store.upsertDriveFile(f.driveId, { note: "choose the accounts Drive videos go to in Settings" });
+      // Not set up yet: wait, and post as soon as default accounts are chosen.
+      this.store.upsertDriveFile(f.driveId, { note: "Choose default accounts in FreePoster" });
       return;
     }
     const to = chosen.filter((a) => {
@@ -262,7 +244,7 @@ export class Intake {
       title: f.title ?? "",
       sourcePath: f.sourcePath!,
       sha256: f.sha256!,
-      tiktok: to.some((a) => a.platform === "tiktok") ? this.tiktok() : null,
+      tiktok: to.some((a) => a.platform === "tiktok") ? defaultTikTok(this.store) : null,
       scheduledAt: at,
       editId: edit.id,
       requireEdit: true,

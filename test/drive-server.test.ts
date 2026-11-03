@@ -28,34 +28,35 @@ function setup() {
   return { store, app, x, tiktok, intake, polls, put, patch };
 }
 
-test("drive settings round-trip", async () => {
-  const { store, app, x, tiktok, polls, put } = setup();
+test("drive settings round-trip; Drive no longer picks accounts", async () => {
+  const { store, app, polls, put } = setup();
   assert.equal((await put({ folder: "https://drive.google.com/drive/folders/1gz2qTGVjYyDM9vTB8Ik0DmaBWyMAISry" })).statusCode, 400, "connect first");
   store.saveDriveTokens({ accessToken: "a", refreshToken: "r", expiresAt: null }, "me@example.com");
-  const res = await put({
-    folder: "https://drive.google.com/drive/folders/1gz2qTGVjYyDM9vTB8Ik0DmaBWyMAISry?usp=sharing",
-    accounts: [x.id, tiktok.id],
-    tiktok: { allowComment: false, allowDuet: true, allowStitch: true },
-  });
+  const res = await put({ folder: "https://drive.google.com/drive/folders/1gz2qTGVjYyDM9vTB8Ik0DmaBWyMAISry?usp=sharing" });
   assert.equal(res.statusCode, 200, res.body);
   const view = (await app.inject("/api/drive")).json();
   assert.equal(view.connected, true);
   assert.equal(view.email, "me@example.com");
   assert.equal(view.folderId, "1gz2qTGVjYyDM9vTB8Ik0DmaBWyMAISry");
-  assert.deepEqual(view.accounts, [x.id, tiktok.id]);
-  assert.deepEqual(view.tiktok, { allowComment: false, allowDuet: true, allowStitch: true });
-  assert.equal(view.tiktokPrivacy, "SELF_ONLY");
+  assert.equal(view.accounts, undefined);
+  assert.equal(view.tiktok, undefined);
   assert.ok(polls.length >= 1, "a new folder is checked right away");
   assert.equal((await put({ folder: "not a folder" })).statusCode, 400);
-  assert.equal((await put({ accounts: [999] })).statusCode, 400);
 });
 
-test("tiktok privacy cannot be set for drive", async () => {
-  const { store, put } = setup();
-  store.saveDriveTokens({ accessToken: "a", refreshToken: "r", expiresAt: null }, "me@example.com");
-  const res = await put({ tiktok: { privacyLevel: "PUBLIC_TO_EVERYONE" } });
-  assert.equal(res.statusCode, 400);
-  assert.match(res.json().error, /Only me/);
+test("default accounts and their TikTok options are FreePoster settings", async () => {
+  const { app, x, tiktok } = setup();
+  const putDefaults = (body: unknown) => app.inject({ method: "PUT", url: "/api/defaults", payload: body as object });
+  const status = async () => (await app.inject("/api/status")).json();
+  assert.deepEqual((await status()).accounts.filter((a: any) => a.isDefault).map((a: any) => a.id).sort(), [x.id, tiktok.id].sort(), "first account per platform");
+  assert.equal((await putDefaults({ accounts: [x.id], tiktok: { allowComment: false, allowDuet: true, allowStitch: true } })).statusCode, 200);
+  const s = await status();
+  assert.deepEqual(s.accounts.filter((a: any) => a.isDefault).map((a: any) => a.id), [x.id]);
+  assert.deepEqual(s.defaultTikTok, { allowComment: false, allowDuet: true, allowStitch: true });
+  assert.equal((await putDefaults({ accounts: [999] })).statusCode, 400);
+  const privacy = await putDefaults({ tiktok: { privacyLevel: "PUBLIC_TO_EVERYONE" } });
+  assert.equal(privacy.statusCode, 400);
+  assert.match(privacy.json().error, /Only me/);
 });
 
 test("drive file list shows state and notes; retry and caption release go to the intake", async () => {

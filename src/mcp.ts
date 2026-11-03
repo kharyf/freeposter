@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { pipeline } from "node:stream/promises";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { defaultAccountIds, sharedFrom } from "./accounts.ts";
 import { config, isConfigured } from "./config.ts";
 import type { Store } from "./db.ts";
 import type { Publisher } from "./platforms/base.ts";
@@ -123,10 +124,11 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
     {
       name: "list_accounts",
       title: "List accounts",
-      description: "Lists the connected accounts (with the ids publish_video takes) and each platform's video length limits, plus which platforms are set up. Platforms without keys are set up in the FreePoster window; accounts are connected by opening connect_url in a browser.",
+      description: "Lists the connected accounts (with the ids publish_video takes; default marks where FreePoster posts on its own, and shared_from marks an account Meta shares another account's posts to, which can't be posted to directly) and each platform's video length limits, plus which platforms are set up. Platforms without keys are set up in the FreePoster window; accounts are connected by opening connect_url in a browser.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
       annotations: { readOnlyHint: true, openWorldHint: false },
       async run() {
+        const defaults = defaultAccountIds(store);
         return {
           accounts: store.accounts().map((a) => ({
             id: a.id,
@@ -135,6 +137,9 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
             minDurationSec: publishers[a.platform].minDurationSec,
             maxDurationSec: publishers[a.platform].maxDurationSec(a),
             needsReconnectSoon: a.refreshExpiresAt !== null && a.refreshExpiresAt - Date.now() < 14 * 86_400_000,
+            default: defaults.includes(a.id),
+            // Meta shares that account's posts here; publishing to this one is refused.
+            shared_from: sharedFrom(store, a)?.id ?? null,
           })),
           platforms: PLATFORMS.map((p) => ({
             platform: p,

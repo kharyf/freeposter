@@ -24,7 +24,7 @@ const words: Transcript = { words: [{ text: "Gatekeeping", start: 0.2, end: 0.9 
 function setup(opts: { transcript?: Transcript; caption?: () => Promise<{ title: string; caption: string }>; platforms?: ("x" | "tiktok" | "facebook")[] } = {}) {
   const store = newStore();
   const accts = (opts.platforms ?? ["x", "tiktok"]).map((p) => store.upsertAccount(account(p)));
-  store.setPref("drive.accounts", accts.map((a) => a.id));
+  store.setPref("defaults.accounts", accts.map((a) => a.id));
   const clock = { now: new Date().setSeconds(0, 0) };
   const deps: IntakeDeps = {
     download: async () => createReadStream(clip),
@@ -73,7 +73,7 @@ test("valid file becomes a scheduled post at the filename time with SELF_ONLY Ti
 
 test("TikTok interaction settings come from the Drive settings, privacy never does", async () => {
   const { store, clock, intake, file, finishEdit } = setup();
-  store.setPref("drive.tiktok", { allowComment: false, allowDuet: true, allowStitch: false, privacyLevel: "PUBLIC_TO_EVERYONE" });
+  store.setPref("defaults.tiktok", { allowComment: false, allowDuet: true, allowStitch: false, privacyLevel: "PUBLIC_TO_EVERYONE" });
   await intake.handle(file(driveName("T", clock.now + 60 * MIN)));
   finishEdit("f1");
   await intake.tick();
@@ -219,13 +219,13 @@ test("no accounts left fails with the reasons", async () => {
 
 test("a file waits for Drive accounts to be chosen instead of failing", async () => {
   const { store, accts, clock, intake, file, finishEdit, posts } = setup();
-  store.setPref("drive.accounts", []);
+  store.setPref("defaults.accounts", []);
   await intake.handle(file(driveName("Early", clock.now + 60 * MIN)));
   finishEdit("f1");
   await intake.tick();
   assert.equal(store.driveFile("f1")!.state, "processing");
-  assert.match(store.driveFile("f1")!.note!, /choose the accounts/);
-  store.setPref("drive.accounts", accts.map((a) => a.id));
+  assert.match(store.driveFile("f1")!.note!, /Choose default accounts/);
+  store.setPref("defaults.accounts", accts.map((a) => a.id));
   await intake.tick();
   assert.equal(posts(), 1);
 });

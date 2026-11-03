@@ -34,7 +34,12 @@
   .platform-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-top: 1px solid var(--line); gap: 8px; }
   .platform-row:first-of-type { border-top: 0; }
   .acct { display: flex; align-items: center; gap: 8px; font-size: 14px; padding: 4px 0 4px 18px; }
-  .acct button { padding: 2px 8px; font-size: 12px; margin-left: auto; }
+  .acct button { padding: 2px 8px; font-size: 12px; }
+  .acct .check, .share, .defaults-tiktok .check { display: flex; gap: 6px; align-items: center; font-weight: 400; font-size: 13px; margin: 0; }
+  .acct .check { margin-left: auto; }
+  .acct .check input, .share input, .defaults-tiktok .check input { width: auto; margin: 0; }
+  .share { padding: 2px 0 2px 36px; color: var(--muted); }
+  .defaults-tiktok { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px; }
   .counters { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); margin-top: 4px; }
   .over { color: var(--bad); font-weight: 600; }
   video { width: 100%; max-height: 320px; background: #000; border-radius: 8px; margin-top: 8px; display: none; }
@@ -231,19 +236,44 @@ async function loadStatus() {
     ${byPlatform(p.platform).map((a) => `
       <div class="acct">${esc(a.name)}
         ${a.reconnectSoon ? `<span class="over">reconnect soon</span>` : ""}
+        <label class="check" title="${a.sharedFrom ? esc(sharedNote(a)) : "FreePoster posts Drive videos to its default accounts"}">
+          <input type="checkbox" data-default="${a.id}" ${a.isDefault && !a.sharedFrom ? "checked" : ""} ${a.sharedFrom ? "disabled" : ""}> Default</label>
         <button type="button" data-remove="${a.id}">Remove</button>
-      </div>`).join("")}
-  `).join("");
+      </div>
+      ${sharingBoxes(a)}`).join("")}
+  `).join("") + defaultTikTokHtml();
   const prev = new Set(selectedIds());
   $("targets").innerHTML = status.accounts.length
     ? status.accounts.map((a) => `
-      <label class="row" style="font-weight:400;margin:4px 0">
-        <input type="checkbox" value="${a.id}" data-platform="${a.platform}" ${prev.has(a.id) ? "checked" : ""}>
+      <label class="row" style="font-weight:400;margin:4px 0" ${a.sharedFrom ? `title="${esc(sharedNote(a))}"` : ""}>
+        <input type="checkbox" value="${a.id}" data-platform="${a.platform}" ${prev.has(a.id) && !a.sharedFrom ? "checked" : ""} ${a.sharedFrom ? "disabled" : ""}>
         <span class="dot" style="background:${COLORS[a.platform]}"></span>
         ${esc(status.platforms.find((p) => p.platform === a.platform).label)} — ${esc(a.name)}
+        ${a.sharedFrom ? `<span class="muted">${esc(sharedNote(a))}</span>` : ""}
       </label>`).join("")
     : "Connect an account first.";
   checkDuration();
+}
+
+const accountById = (id) => status.accounts.find((a) => a.id === id);
+const sharedNote = (a) => `Meta shares this from ${accountById(a.sharedFrom)?.name ?? "its linked account"}`;
+
+/** Under an Instagram account whose Page is connected too: what Meta shares between the two. */
+function sharingBoxes(a) {
+  const pair = status.sharingPairs.find((p) => p.instagramId === a.id);
+  if (!pair) return "";
+  const ig = esc(a.name), page = esc(accountById(pair.facebookId).name);
+  const box = (value, text) => `<label class="check share"><input type="checkbox" data-sharing="${esc(pair.pageId)}" value="${value}" ${pair.sharing === value ? "checked" : ""}> ${text}</label>`;
+  return box("ig_to_fb", `Meta shares ${ig}'s posts to "${page}"`) + box("fb_to_ig", `Meta shares "${page}"'s posts to ${ig}`);
+}
+
+/** TikTok options for the posts FreePoster makes on its own; they always go out as Only me. */
+function defaultTikTokHtml() {
+  if (!status.accounts.some((a) => a.platform === "tiktok" && a.isDefault)) return "";
+  const t = status.defaultTikTok;
+  const box = (key, label) => `<label class="check"><input type="checkbox" data-default-tiktok="${key}" ${t[key] ? "checked" : ""}> ${label}</label>`;
+  return `<div class="defaults-tiktok"><div class="muted">Drive videos go to the default accounts. On TikTok they post as <strong>Only me</strong>; make them public in the TikTok app.</div>
+    ${box("allowComment", "Allow comments")}${box("allowDuet", "Allow duets")}${box("allowStitch", "Allow stitches")}</div>`;
 }
 
 const selectedIds = () => [...document.querySelectorAll("#targets input:checked")].map((i) => Number(i.value));
@@ -381,7 +411,7 @@ const SETUP_PLATFORMS = {
       `In Facebook Login for Business → Settings, add <strong>both</strong> of these as <strong>Valid OAuth Redirect URIs</strong>:`,
       `From <em>App settings → Basic</em>, copy the <strong>App ID</strong> and <strong>App secret</strong> into the boxes below.`,
     ],
-    note: "Facebook posts go to a Page, not a personal profile. Instagram must be a Business or Creator account linked to that Facebook Page.",
+    note: "Facebook posts go to a Page, not a personal profile. Instagram must be a Business or Creator account linked to that Facebook Page. If Meta automatically shares your posts between the two, tick that next to the Instagram account once both are connected, so FreePoster doesn't post twice.",
   },
   x: {
     title: "X", short: "X", uris: ["x"],
@@ -809,6 +839,22 @@ async function loadPosts() {
     </div>`).join("");
 }
 
+// Default accounts, Meta sharing and the default TikTok options save as soon as they're ticked.
+$("accounts").addEventListener("change", async (e) => {
+  const put = async (url, body) => {
+    const res = await fetch(url, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    if (!res.ok) banner("err", (await res.json()).error);
+  };
+  if (e.target.dataset.default) {
+    await put("/api/defaults", { accounts: [...document.querySelectorAll("[data-default]:checked")].map((c) => Number(c.dataset.default)) });
+  } else if (e.target.dataset.sharing) {
+    await put("/api/sharing", { pageId: e.target.dataset.sharing, sharing: e.target.checked ? e.target.value : null });
+  } else if (e.target.dataset.defaultTiktok) {
+    await put("/api/defaults", { tiktok: Object.fromEntries([...document.querySelectorAll("[data-default-tiktok]")].map((c) => [c.dataset.defaultTiktok, c.checked])) });
+  } else return;
+  loadStatus();
+});
+
 document.addEventListener("click", async (e) => {
   const remove = e.target.closest("[data-remove]");
   if (remove && confirm("Disconnect this account? Its post history here is removed; live posts are not touched.")) {
@@ -938,20 +984,13 @@ function renderDrive(v, haveKey) {
       <a href="/connect/drive"><button type="button">Connect Google Drive</button></a>`;
     return;
   }
-  const accts = status.accounts.map((a) => `<label class="check"><input type="checkbox" data-drive-account="${a.id}" ${v.accounts.includes(a.id) ? "checked" : ""}>
-    <span class="dot" style="background:${COLORS[a.platform]}"></span>${esc(a.name)}</label>`).join("") || `<span class="muted">Connect an account first.</span>`;
-  const tt = (key, label) => `<label class="check"><input type="checkbox" data-drive-tiktok="${key}" ${v.tiktok[key] ? "checked" : ""}> ${label}</label>`;
   body.innerHTML = `
     ${v.error ? `<div class="banner err" style="margin:0 0 10px">${esc(v.error)} <a href="/connect/drive">Reconnect</a></div>` : ""}
     <div class="muted">Signed in as ${esc(v.email)}</div>
     <label for="driveFolder">Folder link</label>
     <input id="driveFolder" type="text" placeholder="https://drive.google.com/drive/folders/…" value="${esc(v.folderUrl ?? "")}">
     <div class="muted">Name each video <code>name_m.d.yy_h.mm.am</code>, like <code>Gatekeeping_11.1.26_5.30.pm</code>. Leave off the time to post as soon as possible that day; leave off the date to use the day it was uploaded. Videos already in the folder when you add it are left alone.</div>
-    <label>Post Drive videos to</label>
-    ${accts}
-    ${status.accounts.some((a) => a.platform === "tiktok") ? `<label>TikTok</label>
-      <div class="muted">Drive videos go to TikTok as <strong>Only me</strong>; make them public in the TikTok app.</div>
-      ${tt("allowComment", "Allow comments")}${tt("allowDuet", "Allow duets")}${tt("allowStitch", "Allow stitches")}` : ""}
+    <div class="muted" style="margin-top:8px">Drive videos post to the accounts ticked <strong>Default</strong> under Accounts.</div>
     <label for="anthropicKey">Anthropic API key <span class="muted">(Claude writes each video's title and caption from what's said in it)</span></label>
     <input id="anthropicKey" type="password" autocomplete="off" placeholder="${haveKey ? "saved; type a new one to replace it" : "sk-ant-…"}">
     <div class="actions"><button type="button" id="driveSave">Save</button><button type="button" id="driveDisconnect">Disconnect</button></div>`;
@@ -959,12 +998,7 @@ function renderDrive(v, haveKey) {
 
 async function saveDrive() {
   banner();
-  const body = {
-    folder: $("driveFolder").value,
-    accounts: [...document.querySelectorAll("[data-drive-account]:checked")].map((c) => Number(c.dataset.driveAccount)),
-  };
-  const ttBoxes = [...document.querySelectorAll("[data-drive-tiktok]")];
-  if (ttBoxes.length) body.tiktok = Object.fromEntries(ttBoxes.map((c) => [c.dataset.driveTiktok, c.checked]));
+  const body = { folder: $("driveFolder").value };
   if (!body.folder.trim()) delete body.folder;
   const res = await fetch("/api/drive", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   if (!res.ok) return banner("err", (await res.json()).error);

@@ -4,6 +4,7 @@ import { timingSafeEqual } from "node:crypto";
 import { execFile } from "node:child_process";
 import { createReadStream, existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { defaultAccountIds, defaultTikTokPrefs, noteConnected, noteRemoving, setDefaultAccounts, setDefaultTikTokPrefs, setSharing, sharedFrom, sharingPairs, type Sharing } from "./accounts.ts";
 import { codeDir, config, dataDir, envFile, isConfigured, isLocalUrl, redirectUri, saveSettings, setting, SETTINGS, type SettingKey } from "./config.ts";
 import { randomToken } from "./crypto.ts";
 import type { SignIn, Store } from "./db.ts";
@@ -11,7 +12,7 @@ import { registerMcp } from "./mcp.ts";
 import type { Publisher } from "./platforms/base.ts";
 import { creatorInfo } from "./platforms/tiktok.ts";
 import { driveAuthorizeUrl, driveRedirectUri, exchangeDriveCode, folderIdFrom } from "./drive/client.ts";
-import type { DriveTikTokPrefs, Intake } from "./drive/intake.ts";
+import type { Intake } from "./drive/intake.ts";
 import { parseEditSettings } from "./edit/settings.ts";
 import { checkDraft, DuplicateError, editView, parseSchedule, postView, saveUpload, type Draft } from "./posts.ts";
 import type { Runner } from "./runner.ts";
@@ -78,21 +79,29 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   /** Lets a second launch of the desktop app find this one instead of starting another. */
   app.get("/api/ping", async () => ({ app: "freeposter" }));
 
-  app.get("/api/status", async () => ({
-    desktop: Boolean(options.onQuit),
-    pendingJobs: store.pendingJobCount(),
-    setupComplete: existsSync(setupMarker()),
-    platforms: PLATFORMS.map((p) => ({ platform: p, label: publishers[p].label, configured: isConfigured(p) })),
-    accounts: store.accounts().map((a) => ({
-      id: a.id,
-      platform: a.platform,
-      name: a.name,
-      expiresAt: a.expiresAt,
-      // Long-lived refresh tokens (TikTok: 1 year) need a manual reconnect before they run out.
-      reconnectSoon: a.refreshExpiresAt !== null && a.refreshExpiresAt - Date.now() < 14 * 86_400_000,
-      maxDurationSec: publishers[a.platform].maxDurationSec(a),
-    })),
-  }));
+  app.get("/api/status", async () => {
+    const defaults = defaultAccountIds(store);
+    return {
+      desktop: Boolean(options.onQuit),
+      pendingJobs: store.pendingJobCount(),
+      setupComplete: existsSync(setupMarker()),
+      platforms: PLATFORMS.map((p) => ({ platform: p, label: publishers[p].label, configured: isConfigured(p) })),
+      accounts: store.accounts().map((a) => ({
+        id: a.id,
+        platform: a.platform,
+        name: a.name,
+        expiresAt: a.expiresAt,
+        // Long-lived refresh tokens (TikTok: 1 year) need a manual reconnect before they run out.
+        reconnectSoon: a.refreshExpiresAt !== null && a.refreshExpiresAt - Date.now() < 14 * 86_400_000,
+        maxDurationSec: publishers[a.platform].maxDurationSec(a),
+        isDefault: defaults.includes(a.id),
+        // Meta shares posts to this account from that one, so FreePoster never posts to it itself.
+        sharedFrom: sharedFrom(store, a)?.id ?? null,
+      })),
+      sharingPairs: sharingPairs(store).map((p) => ({ pageId: p.pageId, instagramId: p.instagram.id, facebookId: p.facebook.id, sharing: p.sharing })),
+      defaultTikTok: { allowComment: true, allowDuet: true, allowStitch: true, ...defaultTikTokPrefs(store) },
+    };
+  });
 
   // ---- OAuth ----
 
@@ -148,7 +157,9 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
         return back({ connected: `Google Drive: ${email}` });
       }
       const accounts = await publishers[platform].exchangeCode(q.code, verifier);
+      const hadAccounts = store.accounts().some((a) => a.platform === platform);
       for (const a of accounts) store.upsertAccount(a);
+      noteConnected(store, platform, hadAccounts);
       return back({ connected: `${publishers[platform].label}: ${accounts.map((a) => a.name).join(", ")}` });
     } catch (err) {
       return back({ error: `${platform}: ${(err as Error).message}` });
@@ -156,7 +167,39 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   }
 
   app.delete<{ Params: { id: string } }>("/api/accounts/:id", async (req) => {
+    const account = store.account(Number(req.params.id));
+    if (account) noteRemoving(store, account);
     store.deleteAccount(Number(req.params.id));
+    return { ok: true };
+  });
+
+  // Where FreePoster posts on its own (Drive videos), and the TikTok options those posts use.
+  app.put<{ Body: { accounts?: unknown; tiktok?: Record<string, unknown> } }>("/api/defaults", async (req, reply) => {
+    const body = req.body ?? {};
+    if (body.accounts !== undefined) {
+      const ids = Array.isArray(body.accounts) ? body.accounts.map(Number) : [];
+      if (!Array.isArray(body.accounts) || ids.some((id) => !store.account(id))) return reply.code(400).send({ error: "unknown account selected" });
+      setDefaultAccounts(store, ids);
+    }
+    if (body.tiktok !== undefined) {
+      const t = body.tiktok ?? {};
+      if ("privacyLevel" in t) return reply.code(400).send({ error: "TikTok posts FreePoster makes on its own always go out as Only me" });
+      const allowed = ["allowComment", "allowDuet", "allowStitch"];
+      if (Object.keys(t).some((k) => !allowed.includes(k)) || Object.values(t).some((v) => typeof v !== "boolean")) {
+        return reply.code(400).send({ error: "tiktok takes allowComment, allowDuet and allowStitch (true or false)" });
+      }
+      setDefaultTikTokPrefs(store, t);
+    }
+    return { ok: true };
+  });
+
+  // What the user set up on Meta's side: Meta shares one account's posts to the other in a linked pair.
+  app.put<{ Body: { pageId?: unknown; sharing?: unknown } }>("/api/sharing", async (req, reply) => {
+    const pageId = String(req.body?.pageId ?? "");
+    const sharing = req.body?.sharing ?? null;
+    if (!sharingPairs(store).some((p) => p.pageId === pageId)) return reply.code(400).send({ error: "no connected Instagram account and Facebook Page pair for that Page" });
+    if (sharing !== null && sharing !== "ig_to_fb" && sharing !== "fb_to_ig") return reply.code(400).send({ error: "sharing is ig_to_fb, fb_to_ig or null" });
+    setSharing(store, pageId, sharing as Sharing | null);
     return { ok: true };
   });
 
@@ -390,7 +433,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     return { ok: true };
   });
 
-  // ---- Google Drive: the watched folder, where its videos go, and what became of each ----
+  // ---- Google Drive: the watched folder, and what became of each file in it ----
 
   const driveView = () => {
     const conn = store.driveConnection();
@@ -401,9 +444,6 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
       folderId: conn?.folderId ?? null,
       folderUrl: conn?.folderId ? `https://drive.google.com/drive/folders/${conn.folderId}` : null,
       error: conn?.error ?? null,
-      accounts: store.pref<number[]>("drive.accounts") ?? [],
-      tiktok: { allowComment: true, allowDuet: true, allowStitch: true, ...store.pref<DriveTikTokPrefs>("drive.tiktok") },
-      tiktokPrivacy: "SELF_ONLY",
       files: store.driveFiles(30).map((f) => ({
         id: f.driveId, name: f.name, state: f.state, scheduledAt: f.scheduledAt, note: f.note,
         postId: f.postId, editId: f.editId, title: f.title, caption: f.caption, createdAt: f.createdAt,
@@ -413,27 +453,13 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
 
   app.get("/api/drive", async () => driveView());
 
-  app.put<{ Body: { folder?: unknown; accounts?: unknown; tiktok?: Record<string, unknown> } }>("/api/drive", async (req, reply) => {
+  app.put<{ Body: { folder?: unknown } }>("/api/drive", async (req, reply) => {
     const body = req.body ?? {};
     if (body.folder !== undefined) {
       if (!store.driveConnection()) return reply.code(400).send({ error: "connect Google Drive first" });
       const folderId = folderIdFrom(String(body.folder ?? ""));
       if (!folderId) return reply.code(400).send({ error: "paste the folder's link, like https://drive.google.com/drive/folders/…" });
       store.setDriveFolder(folderId);
-    }
-    if (body.accounts !== undefined) {
-      const ids = Array.isArray(body.accounts) ? body.accounts.map(Number) : [];
-      if (!Array.isArray(body.accounts) || ids.some((id) => !store.account(id))) return reply.code(400).send({ error: "unknown account selected" });
-      store.setPref("drive.accounts", ids);
-    }
-    if (body.tiktok !== undefined) {
-      const t = body.tiktok ?? {};
-      if ("privacyLevel" in t) return reply.code(400).send({ error: "TikTok posts from Drive always go out as Only me" });
-      const allowed = ["allowComment", "allowDuet", "allowStitch"];
-      if (Object.keys(t).some((k) => !allowed.includes(k)) || Object.values(t).some((v) => typeof v !== "boolean")) {
-        return reply.code(400).send({ error: "tiktok takes allowComment, allowDuet and allowStitch (true or false)" });
-      }
-      store.setPref("drive.tiktok", t);
     }
     if (body.folder !== undefined) void drive?.poll().catch((err) => console.error(`drive poll: ${(err as Error).message}`));
     return driveView();

@@ -4,6 +4,7 @@ import { createWriteStream, unlinkSync } from "node:fs";
 import { extname, join } from "node:path";
 import { Transform, type Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { sharedFrom } from "./accounts.ts";
 import { dataDir } from "./config.ts";
 import { randomToken } from "./crypto.ts";
 import type { Store } from "./db.ts";
@@ -54,7 +55,7 @@ export interface Draft {
 export class DuplicateError extends Error {}
 
 /**
- * Rejects everything knowable before upload (unknown accounts, caption limits, durations, TikTok rules,
+ * Rejects everything knowable before upload (unknown accounts, accounts Meta shares to, caption limits, durations, TikTok rules,
  * and unless allowed, a repeat of the same file), so nothing is half-posted because of a caption problem.
  */
 export async function checkDraft(store: Store, publishers: Record<Platform, Publisher>, d: Draft, allowDuplicate = false) {
@@ -74,6 +75,8 @@ export async function checkDraft(store: Store, publishers: Record<Platform, Publ
   const problems: string[] = [];
   for (const a of accounts as Account[]) {
     const p = publishers[a.platform];
+    const head = sharedFrom(store, a);
+    if (head) problems.push(`${p.label} (${a.name}): Meta shares posts from ${head.name} to this account, so post to ${head.name} instead`);
     const reason = p.validate({ ...d, id: 0, createdAt: 0 }, a);
     if (reason) problems.push(`${p.label} (${a.name}): ${reason}`);
     const max = p.maxDurationSec(a);
