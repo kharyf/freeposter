@@ -87,6 +87,8 @@ export interface DriveConnection {
   email: string;
   folderId: string | null;
   baselineDone: boolean;
+  /** Where Drive's change feed left off (null until the first look, and after the folder changes) */
+  changesToken: string | null;
   error: string | null;
 }
 

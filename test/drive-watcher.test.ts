@@ -10,7 +10,9 @@ const FOLDER = "1gz2qTGVjYyDM9vTB8Ik0DmaBWyMAISry";
 function drive(store = newStore()) {
   store.saveDriveTokens({ accessToken: "at-1", refreshToken: "rt-1", expiresAt: Date.now() + 3_600_000 }, "me@example.com");
   store.setDriveFolder(FOLDER);
-  const state = { files: [] as Partial<DriveFile>[], tokenStatus: 200, folder: FOLDER };
+  // `changes` is what the change feed reports on its next read (then it's empty again); `feed` 410s an old token.
+  const state = { files: [] as Partial<DriveFile>[], changes: [] as any[], feedStatus: 200, tokenStatus: 200, folder: FOLDER, tokens: 0 };
+  const asDrive = (f: Partial<DriveFile>) => ({ mimeType: "video/mp4", createdTime: "2026-11-01T10:00:00Z", ...f, size: String(f.size ?? 0) });
   const fake = mockFetch((url) => {
     if (url.startsWith("https://oauth2.googleapis.com/token")) {
       return state.tokenStatus === 200 ? json({ access_token: "at-2", expires_in: 3600 }) : json({ error: "invalid_grant" }, state.tokenStatus);
@@ -20,7 +22,14 @@ function drive(store = newStore()) {
       assert.match(q, new RegExp(`'${state.folder}' in parents`));
       assert.match(q, /trashed=false/);
       assert.match(q, /mimeType contains 'video\/'/);
-      return json({ files: state.files.map((f) => ({ mimeType: "video/mp4", createdTime: "2026-11-01T10:00:00Z", ...f, size: String(f.size ?? 0) })) });
+      return json({ files: state.files.map(asDrive) });
+    }
+    if (url.startsWith("https://www.googleapis.com/drive/v3/changes/startPageToken")) return json({ startPageToken: `t${++state.tokens}` });
+    if (url.startsWith("https://www.googleapis.com/drive/v3/changes?")) {
+      if (state.feedStatus !== 200) return json({ error: { message: "Invalid page token" } }, state.feedStatus);
+      const changes = state.changes.map((c) => ({ ...c, file: c.file && { parents: [state.folder], ...asDrive(c.file) } }));
+      state.changes = [];
+      return json({ changes, newStartPageToken: `t${++state.tokens}` });
     }
     return new Response("not found", { status: 404 });
   });
@@ -40,20 +49,63 @@ test("existing files at connect are ignored", async (t) => {
   assert.match(store.driveFile("old")!.note!, /already in the folder/);
 });
 
-test("file not picked up until size stable", async (t) => {
+test("file not picked up until its upload finishes", async (t) => {
   const { state, fake, handed, watcher, store } = drive();
   t.after(fake.restore);
   await watcher.poll(); // baseline: empty folder
+  state.changes = [{ file: { id: "new", name: "New_11.2.26_9.00.am.mp4", size: 100 } }];
   state.files = [{ id: "new", name: "New_11.2.26_9.00.am.mp4", size: 100 }];
   await watcher.poll();
+  assert.equal(handed.length, 0, "no checksum yet: still uploading");
+  assert.equal(store.driveFile("new")!.state, "pending");
   state.files = [{ id: "new", name: "New_11.2.26_9.00.am.mp4", size: 200, md5Checksum: "m" }];
-  await watcher.poll();
-  assert.equal(handed.length, 0, "size still changing");
-  await watcher.poll();
+  await watcher.poll(); // the folder is listed while an upload is finishing, even if the feed is quiet
   assert.equal(handed.length, 1);
   assert.equal(handed[0].id, "new");
   assert.equal(handed[0].size, 200);
   assert.equal(store.driveFile("new")!.uploadedAt, Date.parse("2026-11-01T10:00:00Z"), "Drive's upload time is kept");
+});
+
+test("a finished upload is found from the change feed on the next poll, without listing the folder", async (t) => {
+  const { state, fake, handed, watcher } = drive();
+  t.after(fake.restore);
+  await watcher.poll(); // baseline
+  const before = fake.calls.filter((c) => c.url.includes("/drive/v3/files?")).length;
+  state.changes = [{ file: { id: "up", name: "Gatekeepers.mov", mimeType: "video/quicktime", size: 5, md5Checksum: "m" } }];
+  await watcher.poll();
+  assert.deepEqual(handed.map((f) => f.id), ["up"]);
+  assert.equal(handed[0].mimeType, "video/quicktime");
+  assert.equal(fake.calls.filter((c) => c.url.includes("/drive/v3/files?")).length, before, "only the change feed was read");
+  const feed = fake.calls.filter((c) => c.url.includes("/drive/v3/changes?")).map((c) => new URL(c.url).searchParams.get("pageToken"));
+  await watcher.poll();
+  const next = fake.calls.filter((c) => c.url.includes("/drive/v3/changes?")).map((c) => new URL(c.url).searchParams.get("pageToken"));
+  assert.notEqual(next.at(-1), feed.at(-1), "each poll reads on from where the last one stopped");
+});
+
+test("changes elsewhere in Drive are ignored", async (t) => {
+  const { state, fake, handed, watcher } = drive();
+  t.after(fake.restore);
+  await watcher.poll();
+  state.changes = [
+    { file: { id: "other", name: "o.mp4", size: 5, md5Checksum: "m", parents: ["someOtherFolder"] } },
+    { file: { id: "doc", name: "notes", mimeType: "application/vnd.google-apps.document", size: 0 } },
+    { file: { id: "bin", name: "b.mp4", size: 5, md5Checksum: "m", trashed: true } },
+    { removed: true, fileId: "gone" },
+  ];
+  await watcher.poll();
+  assert.deepEqual(handed, []);
+});
+
+test("a change token Drive no longer accepts falls back to listing the folder", async (t) => {
+  const { state, fake, handed, watcher, store } = drive();
+  t.after(fake.restore);
+  await watcher.poll();
+  state.feedStatus = 410;
+  state.files = [{ id: "f", name: "F.mp4", size: 5, md5Checksum: "m" }];
+  await watcher.poll();
+  assert.deepEqual(handed.map((f) => f.id), ["f"]);
+  assert.equal(store.driveConnection()!.error, null, "not reported to the user");
+  assert.ok(store.driveConnection()!.changesToken, "a fresh token to read on from");
 });
 
 test("each drive file handed over once", async (t) => {
@@ -61,7 +113,10 @@ test("each drive file handed over once", async (t) => {
   t.after(fake.restore);
   await watcher.poll();
   state.files = [{ id: "f", name: "F_11.2.26_9.00.am.mp4", size: 5, md5Checksum: "m" }];
-  for (let i = 0; i < 5; i++) await watcher.poll();
+  for (let i = 0; i < 5; i++) {
+    state.changes = [{ file: state.files[0] }];
+    await watcher.poll();
+  }
   assert.equal(handed.length, 1);
 });
 
@@ -95,6 +150,7 @@ test("changing the folder starts a new baseline", async (t) => {
   state.folder = "another";
   state.files = [{ id: "there", name: "T_11.2.26_9.00.am.mp4", size: 5, md5Checksum: "m" }];
   await watcher.poll();
+  state.changes = [{ file: state.files[0] }];
   await watcher.poll();
   assert.deepEqual(handed, []);
 });
@@ -103,7 +159,8 @@ test("a folder FreePoster can't open is reported, and fixing the link clears it"
   const store = newStore();
   store.saveDriveTokens({ accessToken: "at-1", refreshToken: "rt-1", expiresAt: Date.now() + 3_600_000 }, "me@example.com");
   store.setDriveFolder("missingFolder123");
-  const fake = mockFetch(() => json({ error: { code: 404, message: "File not found: ." } }, 404));
+  const fake = mockFetch((url) =>
+    url.includes("/changes/startPageToken") ? json({ startPageToken: "t1" }) : json({ error: { code: 404, message: "File not found: ." } }, 404));
   t.after(fake.restore);
   await new DriveWatcher(store, () => {}).poll();
   assert.match(store.driveConnection()!.error!, /folder/i);

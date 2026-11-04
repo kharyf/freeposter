@@ -105,6 +105,40 @@ export async function listFolder(token: string, folderId: string): Promise<Drive
   return files;
 }
 
+/** Where Drive's change feed is now; changes after this point are what `folderChanges` reports. */
+export async function startPageToken(token: string): Promise<string> {
+  const r = await requestJson(`${API}/changes/startPageToken?supportsAllDrives=true`, { headers: { authorization: `Bearer ${token}` } });
+  return r.startPageToken;
+}
+
+/**
+ * Videos added to or changed in the folder since `pageToken`, and the token to ask from next time.
+ * One small request when nothing changed, so it's cheap to ask every few seconds.
+ */
+export async function folderChanges(token: string, folderId: string, pageToken: string): Promise<{ files: DriveFile[]; next: string }> {
+  const files: DriveFile[] = [];
+  let page: any;
+  do {
+    const q = new URLSearchParams({
+      pageToken,
+      fields: "nextPageToken,newStartPageToken,changes(removed,file(id,name,mimeType,size,md5Checksum,createdTime,parents,trashed))",
+      pageSize: "1000",
+      spaces: "drive",
+      supportsAllDrives: "true",
+      includeItemsFromAllDrives: "true",
+    });
+    page = await requestJson(`${API}/changes?${q}`, { headers: { authorization: `Bearer ${token}` } });
+    for (const c of page.changes ?? []) {
+      const f = c.file;
+      if (c.removed || !f || f.trashed || !f.parents?.includes(folderId) || !String(f.mimeType).startsWith("video/")) continue;
+      const { parents, trashed, ...rest } = f;
+      files.push({ ...rest, size: Number(f.size ?? 0) });
+    }
+    pageToken = page.nextPageToken;
+  } while (!page.newStartPageToken);
+  return { files, next: page.newStartPageToken };
+}
+
 export async function downloadFile(token: string, id: string): Promise<Readable> {
   const res = await request(`${API}/files/${encodeURIComponent(id)}?alt=media&supportsAllDrives=true`, {
     headers: { authorization: `Bearer ${token}` },

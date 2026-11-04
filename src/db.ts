@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS drive_connection (
   email TEXT NOT NULL DEFAULT '',
   folder_id TEXT,
   baseline_done INTEGER NOT NULL DEFAULT 0,
+  changes_token TEXT,
   error TEXT
 );
 CREATE TABLE IF NOT EXISTS drive_files (
@@ -116,6 +117,8 @@ export class Store {
     if (!postColumns.some((c) => c.name === "require_edit")) this.db.exec("ALTER TABLE posts ADD COLUMN require_edit INTEGER NOT NULL DEFAULT 0");
     const driveColumns = this.db.prepare("PRAGMA table_info(drive_files)").all() as { name: string }[];
     if (!driveColumns.some((c) => c.name === "uploaded_at")) this.db.exec("ALTER TABLE drive_files ADD COLUMN uploaded_at INTEGER");
+    const connColumns = this.db.prepare("PRAGMA table_info(drive_connection)").all() as { name: string }[];
+    if (!connColumns.some((c) => c.name === "changes_token")) this.db.exec("ALTER TABLE drive_connection ADD COLUMN changes_token TEXT");
     // A crash mid-run leaves jobs "running"; their progress checkpoint lets them resume safely.
     this.db.prepare("UPDATE jobs SET state = 'retry' WHERE state = 'running'").run();
   }
@@ -493,6 +496,7 @@ export class Store {
       email: r.email,
       folderId: r.folder_id,
       baselineDone: Boolean(r.baseline_done),
+      changesToken: r.changes_token,
       error: r.error,
     };
   }
@@ -510,11 +514,15 @@ export class Store {
 
   /** A new folder starts with a fresh baseline: what's already in it is never posted. */
   setDriveFolder(folderId: string | null) {
-    this.db.prepare("UPDATE drive_connection SET folder_id = ?, baseline_done = 0, error = NULL WHERE id = 1 AND COALESCE(folder_id, '') != COALESCE(?, '')").run(folderId, folderId);
+    this.db.prepare("UPDATE drive_connection SET folder_id = ?, baseline_done = 0, changes_token = NULL, error = NULL WHERE id = 1 AND COALESCE(folder_id, '') != COALESCE(?, '')").run(folderId, folderId);
   }
 
   setDriveError(error: string | null) {
     this.db.prepare("UPDATE drive_connection SET error = ? WHERE id = 1").run(error);
+  }
+
+  setDriveChangesToken(token: string | null) {
+    this.db.prepare("UPDATE drive_connection SET changes_token = ? WHERE id = 1").run(token);
   }
 
   markDriveBaseline() {
