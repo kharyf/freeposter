@@ -4,7 +4,7 @@ import { timingSafeEqual } from "node:crypto";
 import { execFile } from "node:child_process";
 import { createReadStream, existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { accountSets, defaultAccountIds, defaultTikTokPrefs, noteConnected, noteRemoving, setDefaultAccounts, renameAccountSet, setDefaultTikTokPrefs, setSharing, sharedFrom, sharingPairs, type Sharing } from "./accounts.ts";
+import { accountSets, createAccountSet, defaultAccountIds, deleteAccountSet, noteSignInSet, placeInSet, takeSignInSet, defaultTikTokPrefs, noteConnected, noteRemoving, setDefaultAccounts, renameAccountSet, setDefaultTikTokPrefs, setSharing, sharedFrom, sharingPairs, type Sharing } from "./accounts.ts";
 import { findClaude } from "./claude.ts";
 import { codeDir, config, dataDir, envFile, isConfigured, isLocalUrl, needsRedirectPage, redirectUri, saveSettings, setting, SETTINGS, type SettingKey } from "./config.ts";
 import { randomToken } from "./crypto.ts";
@@ -15,7 +15,7 @@ import { creatorInfo } from "./platforms/tiktok.ts";
 import { driveAuthorizeUrl, driveRedirectUri, exchangeDriveCode, folderIdFrom } from "./drive/client.ts";
 import type { Intake } from "./drive/intake.ts";
 import { parseEditSettings } from "./edit/settings.ts";
-import { checkDraft, DuplicateError, editView, parseSchedule, postView, saveUpload, type Draft } from "./posts.ts";
+import { captionTopicFor, checkDraft, DuplicateError, editView, parseSchedule, postView, saveUpload, type Draft } from "./posts.ts";
 import { acceptRedirect, addTikTokFile, checkRedirect, folderPath, makeFolder, redirectDone, tiktokFiles } from "./redirect-page.ts";
 import type { Runner } from "./runner.ts";
 import { PLATFORMS, type Platform } from "./types.ts";
@@ -125,7 +125,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     return reply.redirect(driveAuthorizeUrl(state, verifier));
   });
 
-  app.get<{ Params: { platform: string } }>("/connect/:platform", async (req, reply) => {
+  app.get<{ Params: { platform: string }; Querystring: { set?: string } }>("/connect/:platform", async (req, reply) => {
     const { platform } = req.params;
     if (!isPlatform(platform)) return reply.code(404).send("unknown platform");
     if (!isConfigured(platform)) return reply.code(400).send(`${platform} credentials are missing; add them in Setup`);
@@ -134,6 +134,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     const state = `${config.port}.${randomToken(24)}`;
     const verifier = randomToken(48);
     store.putOAuthState(state, platform, verifier);
+    if (req.query.set) noteSignInSet(store, state, Number(req.query.set));
     return reply.redirect(publishers[platform].authorizeUrl(state, verifier));
   });
 
@@ -168,9 +169,13 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
         store.saveDriveTokens(tokens, email);
         return back({ connected: `Google Drive: ${email}` });
       }
+      const setId = takeSignInSet(store, q.state);
       const accounts = await publishers[platform].exchangeCode(q.code, verifier);
+      const before = new Set(store.accounts().map((a) => a.id));
       const hadAccounts = store.accounts().some((a) => a.platform === platform);
-      for (const a of accounts) store.upsertAccount(a);
+      const saved = accounts.map((a) => store.upsertAccount(a));
+      // New accounts join the set the sign-in started from; reconnected ones stay in their own set.
+      if (setId !== undefined) placeInSet(store, setId, saved.filter((a) => !before.has(a.id)).map((a) => a.id));
       noteConnected(store, platform, hadAccounts);
       return back({ connected: `${publishers[platform].label}: ${accounts.map((a) => a.name).join(", ")}` });
     } catch (err) {
@@ -205,9 +210,25 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     return { ok: true };
   });
 
+  const setName = (body: { name?: unknown } | undefined) => {
+    const name = typeof body?.name === "string" ? body.name.trim() : "";
+    return name && name.length <= 80 ? name : null;
+  };
+
+  app.post<{ Body: { name?: unknown } }>("/api/account-sets", async (req, reply) => {
+    const name = setName(req.body);
+    if (!name) return reply.code(400).send({ error: "a set name is 1 to 80 characters" });
+    return createAccountSet(store, name);
+  });
+
+  app.delete<{ Params: { id: string } }>("/api/account-sets/:id", async (req, reply) => {
+    const error = deleteAccountSet(store, Number(req.params.id));
+    return error ? reply.code(400).send({ error }) : { ok: true };
+  });
+
   app.put<{ Params: { id: string }; Body: { name?: unknown } }>("/api/account-sets/:id", async (req, reply) => {
-    const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
-    if (!name || name.length > 80) return reply.code(400).send({ error: "a set name is 1 to 80 characters" });
+    const name = setName(req.body);
+    if (!name) return reply.code(400).send({ error: "a set name is 1 to 80 characters" });
     if (!renameAccountSet(store, Number(req.params.id), name)) return reply.code(404).send({ error: "no such account set" });
     return { ok: true };
   });
@@ -353,9 +374,11 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   app.post("/api/posts", async (req, reply) => {
     const fields: Record<string, string> = {};
     let saved: { path: string; sha256: string } | undefined;
+    let filename = "";
     try {
       for await (const part of req.parts()) {
         if (part.type === "file") {
+          filename = part.filename;
           saved = await saveUpload(part.file, part.filename);
           if (part.file.truncated) throw new Error("file is larger than 4 GB");
         } else {
@@ -377,6 +400,8 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
         accountIds: JSON.parse(fields.accounts || "[]").map(Number),
         tiktok: fields.tiktok ? JSON.parse(fields.tiktok) : null,
         scheduledAt: parseSchedule(fields.scheduledAt),
+        // A blank caption is written by Claude (see Captioner) before the post goes out.
+        captionTopic: captionTopicFor(fields.caption ?? "", fields.title ?? "", filename),
       };
       await checkDraft(store, publishers, draft, fields.allowDuplicate === "true");
       const postId = store.createPost(draft, draft.accountIds);
@@ -455,7 +480,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     if (!post) return reply.code(404).send({ error: "no such post" });
     const body = req.body ?? {};
     if (body.useOriginal === true) {
-      if (post.requireEdit) return reply.code(409).send({ error: "Drive videos are never posted unedited" });
+      if (post.requireEdit) return reply.code(409).send({ error: "this Drive video posts its edit; to post a Drive video as uploaded, end its name with _RAW" });
       if (!store.setPostEdit(id, null)) return reply.code(409).send({ error: "this post has already started going out" });
       return { ok: true };
     }
@@ -551,16 +576,6 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     if (store.driveFile(req.params.id)?.state !== "edit_failed") return reply.code(409).send({ error: "only files whose edit failed can be retried" });
     void drive?.intake.retryEdit(req.params.id);
     return { ok: true };
-  });
-
-  app.put<{ Params: { id: string }; Body: { title?: unknown; caption?: unknown } }>("/api/drive/files/:id/caption", async (req, reply) => {
-    if (!drive) return reply.code(503).send({ error: "Drive isn't running" });
-    try {
-      await drive.intake.releaseCaption(req.params.id, String(req.body?.title ?? "").trim(), String(req.body?.caption ?? "").trim());
-      return { ok: true };
-    } catch (err) {
-      return reply.code(400).send({ error: (err as Error).message });
-    }
   });
 
   registerMcp(app, store, runner, publishers);

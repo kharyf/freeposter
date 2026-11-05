@@ -115,6 +115,8 @@ export class Store {
     // ...and before edits.
     if (!postColumns.some((c) => c.name === "edit_id")) this.db.exec("ALTER TABLE posts ADD COLUMN edit_id INTEGER REFERENCES edits(id)");
     if (!postColumns.some((c) => c.name === "require_edit")) this.db.exec("ALTER TABLE posts ADD COLUMN require_edit INTEGER NOT NULL DEFAULT 0");
+    // ...and before captions were written for posts made with a blank one.
+    if (!postColumns.some((c) => c.name === "caption_topic")) this.db.exec("ALTER TABLE posts ADD COLUMN caption_topic TEXT");
     const driveColumns = this.db.prepare("PRAGMA table_info(drive_files)").all() as { name: string }[];
     if (!driveColumns.some((c) => c.name === "uploaded_at")) this.db.exec("ALTER TABLE drive_files ADD COLUMN uploaded_at INTEGER");
     const connColumns = this.db.prepare("PRAGMA table_info(drive_connection)").all() as { name: string }[];
@@ -252,8 +254,8 @@ export class Store {
 
   private insertPost(p: Omit<Post, "id" | "createdAt">, accountIds: number[]): number {
     const { lastInsertRowid } = this.db
-      .prepare("INSERT INTO posts (caption, title, source_path, sha256, tiktok, created_at, scheduled_at, edit_id, require_edit) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(p.caption, p.title, p.sourcePath, p.sha256, p.tiktok ? JSON.stringify(p.tiktok) : null, Date.now(), p.scheduledAt ?? null, p.editId ?? null, p.requireEdit ? 1 : 0);
+      .prepare("INSERT INTO posts (caption, title, source_path, sha256, tiktok, created_at, scheduled_at, edit_id, require_edit, caption_topic) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(p.caption, p.title, p.sourcePath, p.sha256, p.tiktok ? JSON.stringify(p.tiktok) : null, Date.now(), p.scheduledAt ?? null, p.editId ?? null, p.requireEdit ? 1 : 0, p.captionTopic ?? null);
     const postId = Number(lastInsertRowid);
     const insertJob = this.db.prepare(
       "INSERT INTO jobs (post_id, account_id, platform, state, next_run_at, updated_at) VALUES (?, ?, ?, 'queued', ?, ?)",
@@ -293,7 +295,25 @@ export class Store {
       scheduledAt: r.scheduled_at,
       editId: r.edit_id ?? null,
       requireEdit: Boolean(r.require_edit),
+      captionTopic: r.caption_topic ?? null,
     };
+  }
+
+  /** Posts made with a blank caption whose caption Claude hasn't written yet. */
+  postsAwaitingCaption(): Post[] {
+    const rows = this.db.prepare("SELECT id FROM posts WHERE caption_topic IS NOT NULL ORDER BY id").all() as { id: number }[];
+    return rows.map(({ id }) => this.post(id)!);
+  }
+
+  /**
+   * The written caption (and title, unless the post already has one), which lets its jobs go. Ignored when the
+   * post isn't waiting any more, because the user typed their own meanwhile. Returns whether it was used.
+   */
+  fillCaption(postId: number, caption: string, title: string): boolean {
+    const { changes } = this.db
+      .prepare("UPDATE posts SET caption = ?, title = CASE WHEN title = '' THEN ? ELSE title END, caption_topic = NULL WHERE id = ? AND caption_topic IS NOT NULL")
+      .run(caption, title, postId);
+    return changes > 0;
   }
 
   /** The latest posts, plus every post still waiting to go out, however old. */
@@ -318,7 +338,7 @@ export class Store {
     return row ? toJob(row) : undefined;
   }
 
-  /** Atomically claims the next due job, skipping platforms already busy. */
+  /** Atomically claims the next due job, skipping platforms already busy and posts still waiting for their caption. */
   claimNextJob(busy: Set<Platform>): Job | undefined {
     const placeholders = [...busy].map(() => "?").join(",");
     const row = this.db
@@ -327,6 +347,7 @@ export class Store {
          WHERE id = (
            SELECT id FROM jobs
            WHERE state IN ('queued', 'retry', 'waiting_quota') AND next_run_at <= ?
+           AND post_id NOT IN (SELECT id FROM posts WHERE caption_topic IS NOT NULL)
            ${busy.size ? `AND platform NOT IN (${placeholders})` : ""}
            ORDER BY next_run_at LIMIT 1)
          RETURNING *`,
@@ -412,7 +433,7 @@ export class Store {
     return used("SELECT 1 FROM posts WHERE source_path = ?") || used("SELECT 1 FROM edits WHERE source_path = ?") || used("SELECT 1 FROM drive_files WHERE source_path = ?");
   }
 
-  /** Points an unstarted post at an edit (or back to the original). Drive posts can't go back to the original. */
+  /** Points an unstarted post at an edit (or back to the original). Edited Drive posts can't go back to the original. */
   setPostEdit(postId: number, editId: number | null): number {
     if (editId === null && this.post(postId)?.requireEdit) return 0;
     if (!this.allUnstarted(postId)) return 0;
@@ -420,10 +441,15 @@ export class Store {
     return this.jobsForPost(postId).length;
   }
 
-  /** Changes the caption and title of a post that hasn't started going out anywhere. */
+  /**
+   * Changes the caption and title of a post that hasn't started going out anywhere. A caption the user types
+   * replaces one Claude is still writing; leaving it blank keeps Claude writing it.
+   */
   updatePostText(postId: number, caption: string, title: string): number {
     if (!this.allUnstarted(postId)) return 0;
-    this.db.prepare("UPDATE posts SET caption = ?, title = ? WHERE id = ?").run(caption, title, postId);
+    this.db
+      .prepare("UPDATE posts SET caption = ?, title = ?, caption_topic = CASE WHEN ? = '' THEN caption_topic ELSE NULL END WHERE id = ?")
+      .run(caption, title, caption.trim(), postId);
     return this.jobsForPost(postId).length;
   }
 

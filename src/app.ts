@@ -3,10 +3,12 @@ import { config, dataDir, isConfigured, isLocalUrl } from "./config.ts";
 import { loadKey } from "./crypto.ts";
 import { Store } from "./db.ts";
 import { writeCaption } from "./caption.ts";
+import { Captioner } from "./captioner.ts";
 import { downloadFile } from "./drive/client.ts";
 import { Intake } from "./drive/intake.ts";
 import { DriveWatcher } from "./drive/watcher.ts";
 import { EditWorker } from "./edit/worker.ts";
+import { sampleFrames } from "./media.ts";
 import { publishers } from "./platforms/index.ts";
 import { Runner } from "./runner.ts";
 import { buildServer, type ServerOptions } from "./server.ts";
@@ -47,8 +49,15 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
     },
     transcribe: (sourcePath, sha256) => editor.speechFor({ sourcePath, sha256 }),
     writeCaption: (input) => writeCaption(input, publishers),
+    frames: (sourcePath) => sampleFrames(sourcePath),
   });
   watcher = new DriveWatcher(store, (f) => void intake.handle(f).catch((err) => console.error(`drive intake: ${(err as Error).message}`)));
+  // Posts made on the page or through MCP with a blank caption get one written the same way.
+  const captioner = new Captioner(store, {
+    transcribe: (sourcePath, sha256) => editor.speechFor({ sourcePath, sha256 }),
+    writeCaption: (input) => writeCaption(input, publishers),
+    frames: (sourcePath) => sampleFrames(sourcePath),
+  });
   const app = buildServer(store, runner, publishers, options, { intake, poll: () => watcher.poll(), sync: () => watcher.sync() });
 
   try {
@@ -59,6 +68,7 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
   }
   runner.start();
   editor.start();
+  captioner.start();
   void intake.resume().catch((err) => console.error(`drive resume: ${(err as Error).message}`));
   const intakeTimer = setInterval(() => void intake.tick().catch((err) => console.error(`drive tick: ${(err as Error).message}`)), 10_000);
   watcher.start();
@@ -72,6 +82,7 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
     async stop() {
       runner.stop();
       editor.stop();
+      captioner.stop();
       watcher.stop();
       clearInterval(intakeTimer);
       await app.close();

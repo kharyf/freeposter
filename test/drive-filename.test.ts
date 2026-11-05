@@ -67,12 +67,48 @@ test("no date or time: as soon as possible on the upload date", () => {
 });
 
 test("a mistyped date or time is never mistaken for part of the name", () => {
-  bad("Gatekeeping_11.1.26_5.30pm.mp4", /time/);
-  bad("Gatekeeping_5.30pm.mp4", /time/);
+  bad("Gatekeeping_11.1.26_5.3pm.mp4", /time/);
+  bad("Gatekeeping_5:30:pm.mp4", /time/);
   bad("Gatekeeping_5.30.mp4", /date/);
   bad("Gatekeeping_11.1.2026.mp4", /date/);
   bad("Gatekeeping_5.30.pm_11.1.26.mp4", /name_m\.d\.yy_h\.mm\.am/);
   bad("Gatekeeping_11.1.26_v2.mp4", /name_m\.d\.yy_h\.mm\.am/);
   bad("_5.30.pm.mp4", /name/);
   bad("11.1.26.mp4", /name/);
+});
+
+test("a trailing _RAW, in any case, marks a video already edited elsewhere", () => {
+  const r = ok("Gatekeeping_11.1.26_5.30.pm_RAW.mp4");
+  assert.equal(r.name, "Gatekeeping");
+  assert.equal(r.at, new Date(2026, 10, 1, 17, 30).getTime());
+  assert.equal(r.raw, true);
+  assert.equal(ok("Gatekeeping_11.1.26_5.30.pm.mp4").raw, false);
+  for (const name of ["Gatekeeping_11.1.26_5.30.pm_raw.mp4", "Gatekeeping_11.1.26_5:30pm_Raw", "Gatekeeping_11.1.26_raw.mov", "Gatekeeping_5pm_RAW", "Gatekeeping_RAW.mp4", "Gatekeeping_raw"]) {
+    const n = ok(name);
+    assert.equal(n.raw, true, name);
+    assert.equal(n.name, "Gatekeeping", name);
+  }
+  assert.equal(ok("Gatekeeping_RAW.mp4").at, new Date(2026, 10, 1).getTime(), "no date or time: the upload day, as usual");
+  // Only the last part counts, and a name of just RAW is a name.
+  assert.equal(ok("My_Raw_Footage_11.1.26.mp4").name, "My_Raw_Footage");
+  assert.equal(ok("My_Raw_Footage_11.1.26.mp4").raw, false);
+  assert.equal(ok("RAW.mp4").raw, false);
+  bad("_RAW.mp4", /name/);
+  // RAW before the date or time is a misplaced flag, not part of the name.
+  bad("Gatekeeping_RAW_11.1.26.mp4", /_RAW goes at the end/);
+  bad("Gatekeeping_raw_11.1.26_5.30.pm.mp4", /_RAW goes at the end/);
+});
+
+test("the time may be written with a colon, without dots, or as a bare hour", () => {
+  const at = (h: number, m: number) => new Date(2026, 10, 1, h, m).getTime();
+  for (const [name, h, m] of [
+    ["Everyday_7:33AM", 7, 33], ["Everyday_7:33AM.mp4", 7, 33], ["Everyday_7:33 pm.mov", 19, 33],
+    ["Everyday_7.33am", 7, 33], ["Everyday_7.33am.mp4", 7, 33], ["Everyday_11.1.26_7pm", 19, 0], ["Everyday_12am.mp4", 0, 0],
+  ] as const) {
+    const r = ok(name);
+    assert.equal(r.name, "Everyday", name);
+    assert.equal(r.at, at(h, m), name);
+  }
+  bad("Everyday_7:3AM", /not a time/);
+  bad("Everyday_13:00pm", /not a valid time/);
 });

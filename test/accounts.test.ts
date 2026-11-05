@@ -1,7 +1,7 @@
 import "./isolated-home.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { accountSets, defaultAccountIds, defaultAccounts, noteConnected, noteRemoving, renameAccountSet, setDefaultAccounts, setSharing, sharedFrom, sharingPairs } from "../src/accounts.ts";
+import { accountSets, createAccountSet, defaultAccountIds, deleteAccountSet, noteSignInSet, placeInSet, takeSignInSet, defaultAccounts, noteConnected, noteRemoving, renameAccountSet, setDefaultAccounts, setSharing, sharedFrom, sharingPairs } from "../src/accounts.ts";
 import { publishers } from "../src/platforms/index.ts";
 import { checkDraft } from "../src/posts.ts";
 import { Runner } from "../src/runner.ts";
@@ -140,5 +140,69 @@ test("/api/account-sets renames a set and refuses empty names and unknown sets",
   const sets = (await status()).accountSets;
   assert.equal(sets[0].name, "My Brand");
   assert.equal(sets[0].accountIds.length, 2);
+  await app.close();
+});
+
+test("a new set starts empty; only an empty set that isn't the last can be deleted", () => {
+  const { store, ig } = metaPair();
+  const client = createAccountSet(store, "Client A");
+  assert.deepEqual(client, { id: 2, name: "Client A", accountIds: [] });
+  assert.equal(deleteAccountSet(store, 1), "remove the accounts in this set first");
+  placeInSet(store, client.id, [ig.id]);
+  assert.ok(!accountSets(store)[0].accountIds.includes(ig.id));
+  assert.deepEqual(accountSets(store)[1].accountIds, [ig.id]);
+  assert.equal(deleteAccountSet(store, client.id), "remove the accounts in this set first");
+  placeInSet(store, 1, [ig.id]);
+  assert.equal(deleteAccountSet(store, client.id), null);
+  assert.equal(accountSets(store).length, 1);
+  store.accounts().forEach((a) => store.deleteAccount(a.id));
+  assert.equal(deleteAccountSet(store, 1), "there must be at least one account set");
+});
+
+test("a sign-in remembers the set it started from, once", () => {
+  const store = newStore();
+  const set = createAccountSet(store, "Client A");
+  noteSignInSet(store, "s1", set.id);
+  noteSignInSet(store, "s2", 99);
+  assert.equal(takeSignInSet(store, "s2"), undefined, "an unknown set is not remembered");
+  assert.equal(takeSignInSet(store, "s1"), set.id);
+  assert.equal(takeSignInSet(store, "s1"), undefined);
+});
+
+test("/api/account-sets creates and deletes sets", async () => {
+  const { store } = metaPair();
+  const app = buildServer(store, new Runner(store, publishers, tmp()), publishers);
+  assert.equal((await app.inject({ method: "POST", url: "/api/account-sets", payload: { name: "" } })).statusCode, 400);
+  const created = (await app.inject({ method: "POST", url: "/api/account-sets", payload: { name: "Client A" } })).json();
+  assert.equal(created.name, "Client A");
+  assert.deepEqual((await app.inject("/api/status")).json().accountSets.map((s: any) => s.name), ["Personal Brand", "Client A"]);
+  assert.equal((await app.inject({ method: "DELETE", url: "/api/account-sets/1" })).statusCode, 400);
+  assert.equal((await app.inject({ method: "DELETE", url: `/api/account-sets/${created.id}` })).statusCode, 200);
+  assert.equal((await app.inject("/api/status")).json().accountSets.length, 1);
+  await app.close();
+});
+
+test("an account signed in from a set joins that set; a reconnected one stays where it was", async () => {
+  const { writeFileSync } = await import("node:fs");
+  const { envFile, reloadConfig } = await import("../src/config.ts");
+  writeFileSync(envFile, "YOUTUBE_CLIENT_ID=yt-id\nYOUTUBE_CLIENT_SECRET=yt-secret\nREDIRECT_PAGE_URL=https://relay.example\n");
+  reloadConfig();
+  const store = newStore();
+  const old = store.upsertAccount(account("youtube", { externalId: "old", name: "Old channel" }));
+  const set = createAccountSet(store, "Client A");
+  let returned = [account("youtube", { externalId: "new", name: "New channel" }), account("youtube", { externalId: "old", name: "Old channel" })];
+  const fake = { ...publishers, youtube: { ...publishers.youtube, exchangeCode: async () => returned } };
+  const app = buildServer(store, new Runner(store, fake, tmp()), fake);
+  const signIn = async (url: string) => {
+    const state = new URL((await app.inject(url)).headers.location as string).searchParams.get("state")!;
+    await app.inject(`/callback?${new URLSearchParams({ state, code: "c" })}`);
+  };
+  await signIn(`/connect/youtube?set=${set.id}`);
+  const fresh = store.accounts().find((a) => a.externalId === "new")!;
+  assert.deepEqual(accountSets(store).map((s) => s.accountIds), [[old.id], [fresh.id]]);
+  returned = [account("youtube", { externalId: "third" })];
+  await signIn("/connect/youtube");
+  const third = store.accounts().find((a) => a.externalId === "third")!;
+  assert.deepEqual(accountSets(store).map((s) => s.accountIds), [[old.id, third.id], [fresh.id]], "no set: the first set");
   await app.close();
 });

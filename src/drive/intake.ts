@@ -1,23 +1,26 @@
 // What happens to a video dropped in the watched Drive folder: read the posting time from its name (or its upload day),
 // download it, transcribe it, edit it (auto-approved) while Claude writes its title and caption, then
-// schedule it to FreePoster's default accounts. A Drive video is never posted unedited: the post waits for the edit,
-// even past its time. Every step is saved, so a restart picks up where it stopped.
+// schedule it to FreePoster's default accounts. The post waits for the edit, even past its time. A name ending in
+// _RAW was already edited elsewhere: it skips the edit and posts as uploaded (still transcribed for its caption).
+// Nothing waits for the user: a video with no speech is captioned from its frames, and when that (or Claude) fails
+// it gets the caption #fyp. Every step is saved, so a restart picks up where it stopped.
 import type { Readable } from "node:stream";
 import { defaultAccounts, defaultTikTok } from "../accounts.ts";
+import { captionVideo, transcriptText, type CaptionDeps } from "../caption.ts";
 import type { Store } from "../db.ts";
 import { DEFAULT_EDIT } from "../edit/settings.ts";
 import type { Transcript } from "../edit/transcribe.ts";
+import { probe } from "../media.ts";
 import type { Publisher } from "../platforms/base.ts";
 import { saveUpload } from "../posts.ts";
 import type { Account, DriveFileRecord, Platform } from "../types.ts";
 import { uploadedAt, type DriveFile } from "./client.ts";
 import { parseDriveName } from "./filename.ts";
 
-export interface IntakeDeps {
+export interface IntakeDeps extends CaptionDeps {
   download: (driveId: string) => Promise<Readable>;
   /** shared with the edit, so each video is transcribed once */
   transcribe: (sourcePath: string, sha256: string) => Promise<Transcript>;
-  writeCaption: (input: { topic: string; transcript: string; accounts: Account[] }) => Promise<{ title: string; caption: string }>;
   now?: () => number;
 }
 
@@ -50,25 +53,31 @@ export class Intake {
 
   /** After a restart: carry on with every file that was part-way through. */
   async resume() {
+    // Older versions held files without a caption for the user to write one; caption them now instead.
+    for (const f of this.store.driveFilesIn(["needs_caption"])) this.store.upsertDriveFile(f.driveId, { state: "processing", caption: null, title: null, note: null });
     const open = this.store.driveFilesIn(["queued", "downloading", "transcribing"]);
     // A caption that was being written when FreePoster stopped is written again.
     const uncaptioned = this.store.driveFilesIn(["processing"]).filter((f) => f.caption === null);
     await Promise.all([...open, ...uncaptioned].map((f) => this.advance(f.driveId)));
   }
 
-  /** Runs every few seconds: posts files whose edit and caption are both ready, and retries failed downloads. */
+  /** Runs every few seconds: posts files whose edit (if they get one) and caption are ready, and retries failed downloads. */
   async tick() {
     for (const f of this.store.driveFilesIn(["downloading"])) {
       if (!this.busy.has(f.driveId) && this.now() - f.updatedAt > DOWNLOAD_RETRY_MS) void this.advance(f.driveId);
     }
-    for (const f of this.store.driveFilesIn(["processing", "needs_caption"])) {
+    for (const f of this.store.driveFilesIn(["processing"])) {
       if (this.busy.has(f.driveId)) continue;
+      if (this.isRaw(f)) {
+        if (f.state === "processing" && f.caption !== null) await this.schedule(f);
+        continue;
+      }
       const edit = f.editId ? this.store.edit(f.editId) : undefined;
       if (!edit || edit.state === "failed") {
         this.store.upsertDriveFile(f.driveId, { state: "edit_failed", note: `the edit failed: ${edit?.error ?? "it is missing"}` });
         continue;
       }
-      if (f.state === "processing" && f.caption !== null && edit.state === "ready") this.schedule(f);
+      if (f.state === "processing" && f.caption !== null && edit.state === "ready") await this.schedule(f);
     }
   }
 
@@ -81,20 +90,11 @@ export class Intake {
     } else if (f.editId === null) {
       this.store.upsertDriveFile(driveId, { state: "transcribing", note: null });
     } else {
+      // "processing" writes the caption too, if it was never written.
       const edit = this.store.createEdit(f.sourcePath, f.sha256, DEFAULT_EDIT);
-      this.store.upsertDriveFile(driveId, { state: f.caption === null ? "needs_caption" : "processing", editId: edit.id, note: f.caption === null ? "needs a caption" : null });
-      return;
+      this.store.upsertDriveFile(driveId, { state: "processing", editId: edit.id, note: null });
     }
     await this.advance(driveId);
-  }
-
-  /** The user's own title and caption for a file that couldn't get one written. */
-  async releaseCaption(driveId: string, title: string, caption: string) {
-    const f = this.store.driveFile(driveId);
-    if (!f || f.state !== "needs_caption") throw new Error("this file isn't waiting for a caption");
-    const problems = this.captionProblems({ title, caption });
-    if (problems.length) throw new Error(problems.join("\n"));
-    this.store.upsertDriveFile(driveId, { state: "processing", title, caption, note: null });
   }
 
   private async advance(driveId: string) {
@@ -153,12 +153,17 @@ export class Intake {
           log(f, "transcribing");
           transcript = await this.deps.transcribe(f.sourcePath!, f.sha256!);
         } catch (err) {
-          this.store.upsertDriveFile(id, { state: "edit_failed", note: (err as Error).message });
-          return false;
+          // The edit needs the transcript; a _RAW video only wanted it for the caption, so it goes on without.
+          if (!this.isRaw(f)) {
+            this.store.upsertDriveFile(id, { state: "edit_failed", note: (err as Error).message });
+            return false;
+          }
+          log(f, `transcription failed, captioning from frames: ${(err as Error).message}`);
+          transcript = { words: [], language: null };
         }
-        // The edit worker picks this up and runs alongside the caption writing below.
-        const edit = this.store.createEdit(f.sourcePath!, f.sha256!, DEFAULT_EDIT);
-        this.store.upsertDriveFile(id, { state: "processing", editId: edit.id });
+        // The edit worker picks this up and runs alongside the caption writing below. A _RAW video gets no edit.
+        const editId = this.isRaw(f) ? null : this.store.createEdit(f.sourcePath!, f.sha256!, DEFAULT_EDIT).id;
+        this.store.upsertDriveFile(id, { state: "processing", editId });
         await this.caption(this.store.driveFile(id)!, transcript);
         return false;
       }
@@ -170,21 +175,18 @@ export class Intake {
     }
   }
 
+  /**
+   * Always ends with a title and caption: from the speech, or from the frames when nobody speaks, or else the
+   * fallback (#fyp), with a note saying why. The text can still be changed under Upcoming before it posts.
+   */
   private async caption(f: DriveFileRecord, transcript: Transcript) {
-    const text = transcript.words.map((w) => w.text).join(" ").trim();
-    if (!text) {
-      this.store.upsertDriveFile(f.driveId, { state: "needs_caption", note: "no speech to write a caption from; add a title and caption" });
-      return;
-    }
-    try {
-      log(f, "writing the caption");
-      const parsed = this.parse(f);
-      const topic = parsed.ok ? parsed.name : f.name;
-      const { title, caption } = await this.deps.writeCaption({ topic, transcript: text, accounts: this.accounts() });
-      this.store.upsertDriveFile(f.driveId, { title, caption });
-    } catch (err) {
-      this.store.upsertDriveFile(f.driveId, { state: "needs_caption", note: `${(err as Error).message}; add a title and caption` });
-    }
+    const parsed = this.parse(f);
+    const text = await captionVideo(
+      { topic: parsed.ok ? parsed.name : f.name, transcript: transcriptText(transcript), sourcePath: f.sourcePath!, accounts: this.accounts() },
+      this.deps,
+      (m) => log(f, m),
+    );
+    this.store.upsertDriveFile(f.driveId, text);
   }
 
   /** The posting time in the name; a name without a date posts on the day it was uploaded. */
@@ -192,31 +194,43 @@ export class Intake {
     return parseDriveName(f.name, f.uploadedAt ?? f.createdAt);
   }
 
+  /** The name ends in _RAW: already edited elsewhere, so it posts as uploaded. */
+  private isRaw(f: DriveFileRecord) {
+    const parsed = this.parse(f);
+    return parsed.ok && parsed.raw;
+  }
+
   /** Where FreePoster posts Drive videos: its default accounts. */
   accounts(): Account[] {
     return defaultAccounts(this.store);
   }
 
-  private captionProblems(text: { title: string; caption: string }): string[] {
-    const post = { id: 0, createdAt: 0, sourcePath: "", sha256: "", tiktok: defaultTikTok(this.store), ...text };
-    return this.accounts().flatMap((a) => {
-      const reason = this.publishers[a.platform].validate(post, a);
-      return reason ? [`${this.publishers[a.platform].label} (${a.name}): ${reason}`] : [];
-    });
-  }
-
-  /** Creates the post: the edit is ready and approved, never the original. */
-  private schedule(f: DriveFileRecord) {
-    const edit = this.store.edit(f.editId!)!;
-    this.store.approveEdit(edit.id); // Drive videos go out without the user's preview (their decision)
-    const sec = edit.durationSec ?? 0;
-    const notes: string[] = [];
+  /** Creates the post: the ready, approved edit, or for a _RAW name the video as uploaded. */
+  private async schedule(f: DriveFileRecord) {
     const chosen = this.accounts();
     if (!chosen.length) {
       // Not set up yet: wait, and post as soon as default accounts are chosen.
       this.store.upsertDriveFile(f.driveId, { note: "Choose default accounts in FreePoster" });
       return;
     }
+    const raw = this.isRaw(f);
+    const edit = raw ? null : this.store.edit(f.editId!)!;
+    let sec: number;
+    if (edit) {
+      this.store.approveEdit(edit.id); // Drive videos go out without the user's preview (their decision)
+      sec = edit.durationSec ?? 0;
+    } else {
+      this.busy.add(f.driveId);
+      try {
+        sec = (await probe(f.sourcePath!)).durationSec;
+      } catch (err) {
+        this.store.upsertDriveFile(f.driveId, { state: "failed", note: (err as Error).message });
+        return;
+      } finally {
+        this.busy.delete(f.driveId);
+      }
+    }
+    const notes: string[] = [];
     const to = chosen.filter((a) => {
       const p = this.publishers[a.platform];
       if (this.store.alreadyPublished(f.sha256!, a.id)) {
@@ -224,7 +238,7 @@ export class Intake {
         return false;
       }
       if (sec > p.maxDurationSec(a) + 0.05 || sec < p.minDurationSec) {
-        notes.push(`${p.label} (${a.name}): takes ${p.minDurationSec}–${p.maxDurationSec(a)}s; the edited video is ${sec.toFixed(1)}s`);
+        notes.push(`${p.label} (${a.name}): takes ${p.minDurationSec}–${p.maxDurationSec(a)}s; the ${edit ? "edited " : ""}video is ${sec.toFixed(1)}s`);
         return false;
       }
       return true;
@@ -238,7 +252,7 @@ export class Intake {
     // A name with no time is on time until its day ends.
     const parsed = this.parse(f);
     const latest = parsed.ok ? parsed.latest : f.scheduledAt;
-    if (latest !== null && now - latest > 60_000) notes.unshift("the edit finished after the scheduled time; posted late");
+    if (latest !== null && now - latest > 60_000) notes.unshift(`${edit ? "the edit" : "the caption"} finished after the scheduled time; posted late`);
     const postId = this.store.createDrivePost(f.driveId, {
       caption: f.caption!,
       title: f.title ?? "",
@@ -246,8 +260,8 @@ export class Intake {
       sha256: f.sha256!,
       tiktok: to.some((a) => a.platform === "tiktok") ? defaultTikTok(this.store) : null,
       scheduledAt: at,
-      editId: edit.id,
-      requireEdit: true,
+      editId: edit?.id ?? null,
+      requireEdit: !raw,
     }, to.map((a) => a.id), notes.join("; ") || null);
     if (postId) log(f, `scheduled as post ${postId} for ${new Date(at).toLocaleString()}`);
   }

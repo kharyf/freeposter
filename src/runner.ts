@@ -128,13 +128,13 @@ export class Runner {
     }
   }
 
-  /** The approved edit when the post has one; Drive posts never fall back to the original. */
+  /** The approved edit when the post has one; Drive posts that were edited don't fall back to the original. */
   renderFor(post: Post) {
     const edit = post.editId ? this.store.edit(post.editId) : undefined;
     if (edit?.state === "ready" && edit.approvedAt && edit.outputPath && existsSync(edit.outputPath)) {
       return render(edit.outputPath, edit.key, this.rendersDir);
     }
-    if (post.requireEdit) throw new FatalError("the edited video isn't available; FreePoster never posts Drive videos unedited");
+    if (post.requireEdit) throw new FatalError("the edited video isn't available, and this Drive video posts only its edit (end its name with _RAW to post a video as uploaded)");
     return render(post.sourcePath, post.sha256, this.rendersDir);
   }
 

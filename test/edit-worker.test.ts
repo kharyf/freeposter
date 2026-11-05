@@ -105,7 +105,7 @@ test("runner never posts the original for a requireEdit post", async () => {
   assert.deepEqual(published, []);
   const [job] = store.jobsForPost(postId);
   assert.equal(job.state, "failed");
-  assert.match(job.error!, /never posts Drive videos unedited/);
+  assert.match(job.error!, /posts only its edit/);
 });
 
 test("setPostEdit and updatePostText only touch unstarted posts, and requireEdit posts keep their edit", () => {

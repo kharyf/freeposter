@@ -45,7 +45,12 @@
   .acct-set > summary::-webkit-details-marker { display: none; }
   .acct-set > summary::before { content: "▸"; color: var(--muted); width: 12px; }
   .acct-set[open] > summary::before { content: "▾"; }
-  .acct-set > summary button { margin-left: auto; padding: 2px 8px; font-size: 12px; }
+  .acct-set > summary .set-actions { margin-left: auto; display: flex; gap: 6px; }
+  .acct-set > summary button { padding: 2px 8px; font-size: 12px; }
+  .section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .section-head h2 { margin: 0; }
+  .icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; }
+  .icon-btn svg { width: 14px; height: 14px; stroke: currentColor; stroke-width: 2; stroke-linecap: round; fill: none; }
   .acct-set .platform-row:first-of-type { border-top: 1px solid var(--line); }
   .acct-set .platform-row, .acct-set .acct, .acct-set .share { margin-left: 12px; }
   .rename-set { margin: 4px 0 8px 12px; }
@@ -129,7 +134,7 @@
 <main>
   <div>
     <section>
-      <h2>Accounts</h2>
+      <div class="section-head"><h2>Accounts</h2><button type="button" class="icon-btn" id="addSet" title="Add Account Set" aria-label="Add Account Set"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg></button></div>
       <div id="accounts" class="muted">Loading…</div>
     </section>
     <section id="agents">
@@ -167,8 +172,8 @@
         <label for="title">Title <span class="muted">(YouTube; defaults to the caption's first line)</span></label>
         <input id="title" type="text" maxlength="100">
 
-        <label for="caption">Caption</label>
-        <textarea id="caption"></textarea>
+        <label for="caption">Caption <span class="muted">(leave blank and Claude writes it, and the title if that's blank too)</span></label>
+        <textarea id="caption" placeholder="Blank: Claude writes it from what's said, or from the on-screen text, before it posts"></textarea>
         <div class="counters" id="counters"></div>
 
         <label>Post to</label>
@@ -265,6 +270,9 @@ async function loadStatus() {
   checkDuration();
 }
 
+const PLUS = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>`;
+const ADD_ACCOUNT = `<button type="button" class="icon-btn" title="Add Account" aria-label="Add Account">${PLUS}</button>`;
+
 /** Set ids the user collapsed, kept across reloads. */
 const closedSets = new Set(JSON.parse(localStorage.getItem("closedSets") || "[]"));
 let renamingSet = null;
@@ -277,7 +285,8 @@ function accountSetHtml(set) {
   return `<details class="acct-set" data-set="${set.id}" ${open ? "open" : ""}>
     <summary><strong class="set-name">${esc(set.name)}</strong>
       <span class="muted">${inSet.length} account${inSet.length === 1 ? "" : "s"}</span>
-      <button type="button" data-rename-set="${set.id}">Rename</button></summary>
+      <span class="set-actions"><button type="button" data-rename-set="${set.id}">Rename</button>${!inSet.length && status.accountSets.length > 1
+        ? `<button type="button" data-delete-set="${set.id}">Delete</button>` : ""}</span></summary>
     ${renamingSet === set.id ? `<form class="rename-set row" data-set="${set.id}">
       <input type="text" name="name" value="${esc(set.name)}" maxlength="80" required aria-label="Account set name">
       <button type="submit">Save</button><button type="button" data-cancel-rename>Cancel</button></form>` : ""}
@@ -286,7 +295,7 @@ function accountSetHtml(set) {
       <div class="row">${icon(p.platform)}<strong>${esc(p.label)}</strong></div>
       ${!p.configured ? `<button type="button" data-setup="${p.platform === "instagram" ? "facebook" : p.platform}">Set up</button>`
         : status.needsRedirectPage ? `<button type="button" data-setup="redirect">Set up redirect URI</button>`
-        : `<a href="/connect/${p.platform}"><button type="button">${byPlatform(p.platform).length ? "Add / reconnect" : "Connect"}</button></a>`}
+        : `<a href="/connect/${p.platform}?set=${set.id}">${byPlatform(p.platform).length ? ADD_ACCOUNT : `<button type="button">Connect</button>`}</a>`}
     </div>
     ${byPlatform(p.platform).map((a) => `
       <div class="acct">${esc(a.name)}
@@ -314,10 +323,25 @@ $("accounts").addEventListener("click", (e) => {
     e.preventDefault(); // a button in a <summary> would otherwise fold the set
     renamingSet = Number(rename.dataset.renameSet);
     loadStatus().then(() => { const input = document.querySelector(".rename-set input"); input?.focus(); input?.select(); });
+  } else if (e.target.closest("[data-delete-set]")) {
+    e.preventDefault();
+    fetch(`/api/account-sets/${e.target.closest("[data-delete-set]").dataset.deleteSet}`, { method: "DELETE" })
+      .then(async (res) => { if (!res.ok) banner("err", (await res.json()).error); loadStatus(); });
   } else if (e.target.closest("[data-cancel-rename]")) {
     renamingSet = null;
     loadStatus();
   }
+});
+
+// A new set starts with a placeholder name, open and ready to rename.
+$("addSet").addEventListener("click", async () => {
+  const res = await fetch("/api/account-sets", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "New Account Set" }) });
+  if (!res.ok) return banner("err", (await res.json()).error);
+  renamingSet = (await res.json()).id;
+  closedSets.delete(renamingSet);
+  await loadStatus();
+  const input = document.querySelector(".rename-set input");
+  input?.focus(); input?.select();
 });
 
 $("accounts").addEventListener("submit", async (e) => {
@@ -647,7 +671,7 @@ function stepHtml(step) {
         ${accts.length ? `<div class="muted">${accts.map((a) => esc(a.name)).join(", ")}</div>` : ""}</div>
       ${!settings.configured[p.platform] ? `<span class="muted">no keys</span>`
         : settings.needsRedirectPage ? `<button type="button" data-setup="redirect">Set up redirect URI</button>`
-        : `<a href="/connect/${p.platform}"><button type="button">${accts.length ? "Add / reconnect" : "Connect"}</button></a>`}</div>`;
+        : `<a href="/connect/${p.platform}">${accts.length ? ADD_ACCOUNT : `<button type="button">Connect</button>`}</a>`}</div>`;
   }).join("");
   return `<h1>Connect accounts</h1>
     ${$("banner").innerHTML /* the result of the sign-in you just came back from */}
@@ -889,9 +913,10 @@ async function submit(allowDuplicate = false) {
       return;
     }
     if (!res.ok) return banner("err", body.error);
-    banner("ok", scheduledAt
+    const writing = !fd.get("caption").trim() ? " Claude is writing its caption first." : "";
+    banner("ok", (scheduledAt
       ? `Scheduled for ${new Date(scheduledAt).toLocaleString()}. It's listed under Upcoming, where you can change the time or cancel it.`
-      : "Queued. Each platform's status updates below.");
+      : "Queued. Each platform's status updates below.") + writing);
     $("form").reset(); $("preview").style.display = "none"; videoDuration = null; checkDuration();
     $("editBox").hidden = true; resetEdit();
     $("tiktokBox").style.display = "none";
@@ -940,6 +965,10 @@ function scheduledTime() {
 
 const isUpcoming = (p) => p.jobs.some((j) => j.state === "queued" && j.nextRunAt > Date.now());
 
+const captionText = (p) => p.captionPending
+  ? "<span class='muted'>Claude is writing the caption; it posts once that's done.</span>"
+  : esc(p.caption) || "<span class='muted'>(no caption)</span>";
+
 function renderUpcoming(posts) {
   // Don't redraw under someone who is picking a new time.
   if ($("upcoming").contains(document.activeElement)) return;
@@ -949,7 +978,7 @@ function renderUpcoming(posts) {
     <div class="post">
       <div><span class="when-at">${new Date(p.scheduledAt).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>${p.title ? ` <span class="muted">· ${esc(p.title)}</span>` : ""}
         ${p.editId ? ` <a class="badge" href="/api/edits/${p.editId}/video" target="_blank" rel="noopener">${p.requireEdit ? "From Drive · edited" : "Edited"} ▶</a>` : ""}</div>
-      <div class="cap">${esc(p.caption) || "<span class='muted'>(no caption)</span>"}</div>
+      <div class="cap">${captionText(p)}</div>
       <div data-text-editor="${p.id}" hidden>
         <input type="text" maxlength="100" data-edit-title value="${esc(p.title)}" aria-label="Title">
         <textarea data-edit-caption aria-label="Caption">${esc(p.caption)}</textarea>
@@ -989,7 +1018,7 @@ async function loadPosts() {
   $("posts").innerHTML = history.map((p) => `
     <div class="post">
       <div class="muted">${new Date(p.scheduledAt ?? p.createdAt).toLocaleString()}${p.scheduledAt ? " (scheduled)" : ""}${p.title ? ` · ${esc(p.title)}` : ""}</div>
-      <div class="cap">${esc(p.caption) || "<span class='muted'>(no caption)</span>"}</div>
+      <div class="cap">${captionText(p)}</div>
       ${p.jobs.map((j) => `
         <div class="job">
           <div class="row">${icon(j.platform)}${esc(j.account)}</div>
@@ -1025,7 +1054,7 @@ document.addEventListener("click", async (e) => {
   // The desktop app opens sign-ins in the system browser (platforms block them in app windows).
   const connect = e.target.closest('a[href^="/connect/"]');
   if (connect && status.desktop) {
-    const label = status.platforms.find((p) => connect.getAttribute("href") === `/connect/${p.platform}`)?.label ?? "the platform";
+    const label = status.platforms.find((p) => new URL(connect.href).pathname === `/connect/${p.platform}`)?.label ?? "the platform";
     const note = `Your browser opened so you can sign in to ${label}. FreePoster updates here as soon as you're done.`;
     if ($("setup").classList.contains("open")) $("setupError").innerHTML = `<div class="banner ok" style="margin:16px 0 0">${esc(note)}</div>`;
     else banner("ok", note);
@@ -1069,17 +1098,6 @@ document.addEventListener("click", async (e) => {
   if (retryEdit) {
     const res = await fetch(`/api/drive/files/${encodeURIComponent(retryEdit.dataset.retryEdit)}/retry-edit`, { method: "POST" });
     if (!res.ok) banner("err", (await res.json()).error);
-    loadDrive();
-  }
-  const release = e.target.closest("[data-release]");
-  if (release) {
-    const box = release.closest(".dfile");
-    const res = await fetch(`/api/drive/files/${encodeURIComponent(release.dataset.release)}/caption`, {
-      method: "PUT", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ title: box.querySelector("[data-release-title]").value, caption: box.querySelector("[data-release-caption]").value }),
-    });
-    if (!res.ok) return banner("err", (await res.json()).error);
-    banner("ok", "Thanks. It will be scheduled as soon as its edit is ready.");
     loadDrive();
   }
   const driveSync = e.target.closest("#driveSync");
@@ -1174,9 +1192,9 @@ function renderDrive(v) {
     <div class="muted">Signed in as ${esc(v.email)}</div>
     <label for="driveFolder">Folder link</label>
     <input id="driveFolder" type="text" placeholder="https://drive.google.com/drive/folders/…" value="${esc(v.folderUrl ?? "")}">
-    <div class="muted">Name each video <code>name_m.d.yy_h.mm.am</code>, like <code>Gatekeeping_11.1.26_5.30.pm</code>. Leave off the time to post as soon as possible that day; leave off the date to use the day it was uploaded. Videos already in the folder when you add it are left alone.</div>
+    <div class="muted">Name each video <code>name_m.d.yy_h.mm.am</code>, like <code>Gatekeeping_11.1.26_5.30.pm</code>. Leave off the time to post as soon as possible that day; leave off the date to use the day it was uploaded. Add <code>_RAW</code> at the end (<code>Gatekeeping_11.1.26_5.30.pm_RAW</code>) for a video you've already edited: FreePoster posts it as it is, with no edit of its own. Videos already in the folder when you add it are left alone.</div>
     <div class="muted" style="margin-top:8px">Drive videos post to the accounts ticked <strong>Default</strong> under Accounts.</div>
-    <div class="muted" style="margin-top:8px">Claude writes each video's title and caption from what's said in it, using your Claude plan through <a href="https://claude.com/claude-code" target="_blank" rel="noopener">Claude Code</a>. Install it and run <code>claude</code> once to sign in.</div>
+    <div class="muted" style="margin-top:8px">Claude writes each video's title and caption from what's said in it, or, when nobody speaks, from its on-screen text and what it shows (a few still frames are sent to Claude). If it can't tell what a video is about, the caption is <code>#fyp</code>; you can change it under Upcoming before it posts. Claude runs on your Claude plan through <a href="https://claude.com/claude-code" target="_blank" rel="noopener">Claude Code</a>. Install it and run <code>claude</code> once to sign in.</div>
     <div class="actions"><button type="button" id="driveSave">Save</button><button type="button" id="driveDisconnect">Disconnect</button></div>`;
 }
 
@@ -1201,10 +1219,6 @@ function renderDriveFiles(files, watching) {
       ${f.title ? `<div>${esc(f.title)}</div>` : ""}
       ${f.note ? `<div class="muted">${esc(f.note)}</div>` : ""}
       ${f.state === "edit_failed" ? `<div class="actions" style="margin-top:6px"><button type="button" data-retry-edit="${esc(f.id)}">Retry edit</button></div>` : ""}
-      ${f.state === "needs_caption" ? `
-        <input type="text" maxlength="100" data-release-title placeholder="Title" aria-label="Title">
-        <textarea data-release-caption placeholder="Caption" aria-label="Caption"></textarea>
-        <button type="button" data-release="${esc(f.id)}">Post with this caption</button>` : ""}
     </div>`).join("");
 }
 

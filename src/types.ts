@@ -47,8 +47,13 @@ export interface Post {
   scheduledAt?: number | null;
   /** the edit to publish instead of the original, once it is ready and approved */
   editId?: number | null;
-  /** Drive posts: never fall back to the original */
+  /** Drive posts that were edited: never fall back to the original */
   requireEdit?: boolean;
+  /**
+   * Set while Claude writes the caption of a post made with a blank one: what the video is called (its title or
+   * file name). Its jobs wait until the caption is in. Null/absent once it has a caption.
+   */
+  captionTopic?: string | null;
 }
 
 export type DriveFileState =
@@ -56,7 +61,8 @@ export type DriveFileState =
   | "queued" // handed to the intake
   | "ignored" | "invalid" | "late"
   | "downloading" | "transcribing" | "processing"
-  | "scheduled" | "needs_caption" | "edit_failed" | "failed"
+  | "scheduled" | "edit_failed" | "failed"
+  | "needs_caption" // only in older databases; resume() captions these
   | "cancelled" // its post was cancelled in FreePoster
   | "removed"; // deleted from the Drive folder; found by Sync and taken off the list
 

@@ -5,3 +5,13 @@ build/
 dist/
 demo/
 local_support/
+
+# Local tool folders
+.superpowers/
+.wrangler/
+
+# Maintainer-only files, not part of the project
+redirect-page/tiktok*.txt
+redirect-page/terms/
+docs/superpowers/
+TTlogo.jpg

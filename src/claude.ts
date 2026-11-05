@@ -55,25 +55,56 @@ const run: ClaudeRun = (cmd, args, stdin) => new Promise((resolve, reject) => {
   child.stdin.end(stdin);
 });
 
-/** One question to Claude with no tools, answered as JSON matching `schema`. */
+/** The final `result` message: the whole of a json reply, or the last result line of a stream-json one. */
+function resultMessage(stdout: string): any {
+  try {
+    return JSON.parse(stdout);
+  } catch {}
+  for (const line of stdout.trim().split(/\r?\n/).reverse()) {
+    try {
+      const msg = JSON.parse(line);
+      if (msg?.type === "result") return msg;
+    } catch {}
+  }
+  throw new SyntaxError("no result");
+}
+
+/** One question to Claude with no tools, answered as JSON matching `schema`. `images` are JPEGs shown with the prompt. */
 export async function askClaude<T>(
-  q: { system: string; prompt: string; schema: object; effort?: "low" | "medium" | "high" },
+  q: { system: string; prompt: string; schema: object; effort?: "low" | "medium" | "high"; images?: Buffer[] },
   opts: { run?: ClaudeRun; claudePath?: string } = {},
 ): Promise<T> {
   const cmd = opts.claudePath ?? findClaude();
   if (!cmd) throw new Error(NOT_INSTALLED);
+  const images = q.images ?? [];
+  // A plain-text prompt can't carry images; a stream-json user message can (and needs stream-json output).
+  const io = images.length
+    ? ["--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
+    : ["--output-format", "json"];
+  const stdin = images.length
+    ? JSON.stringify({
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: q.prompt },
+          ...images.map((img) => ({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: img.toString("base64") } })),
+        ],
+      },
+    }) + "\n"
+    : q.prompt;
   const args = [
-    "-p", "--output-format", "json", "--no-session-persistence",
+    "-p", ...io, "--no-session-persistence",
     "--model", CLAUDE_MODEL, "--effort", q.effort ?? "low",
     // No tools, MCP servers, slash commands or user settings: a plain question, and few tokens off the plan's limit.
     "--tools", "", "--strict-mcp-config", "--disable-slash-commands", "--setting-sources", "",
     "--system-prompt", q.system,
     "--json-schema", JSON.stringify(q.schema),
   ];
-  const { code, stdout, stderr } = await (opts.run ?? run)(cmd, args, q.prompt);
+  const { code, stdout, stderr } = await (opts.run ?? run)(cmd, args, stdin);
   let out: { is_error?: boolean; result?: string; stop_reason?: string; structured_output?: T };
   try {
-    out = JSON.parse(stdout);
+    out = resultMessage(stdout);
   } catch {
     const said = (stderr || stdout).trim().split("\n").slice(-3).join(" ").slice(0, 300);
     throw new Error(`Claude Code failed${code ? ` (exit ${code})` : ""}${said ? `: ${said}` : ""}`);

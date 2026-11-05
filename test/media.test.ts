@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { probe, render, specProblems } from "../src/media.ts";
+import { probe, render, sampleFrames, specProblems } from "../src/media.ts";
 import { landscape60, sha256, tmp, verticalSilent } from "./helpers.ts";
 
 // Edge cases from the acceptance set: wrong aspect ratio + 60 fps + 44.1 kHz audio, and a silent clip.
@@ -31,4 +31,10 @@ test("non-video input is rejected with a clear reason", async () => {
   const { writeFileSync } = await import("node:fs");
   writeFileSync(`${dir}/notes.mp4`, "this is not a video");
   await assert.rejects(probe(`${dir}/notes.mp4`), /not a readable video file/);
+});
+
+test("sampleFrames takes small JPEG stills spread through the video", async () => {
+  const frames = await sampleFrames(landscape60(tmp()), 4);
+  assert.equal(frames.length, 4);
+  for (const f of frames) assert.equal(f.subarray(0, 2).toString("hex"), "ffd8", "a JPEG");
 });

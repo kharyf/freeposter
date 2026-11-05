@@ -59,16 +59,16 @@ test("default accounts and their TikTok options are FreePoster settings", async 
   assert.match(privacy.json().error, /Only me/);
 });
 
-test("drive file list shows state and notes; retry and caption release go to the intake", async () => {
+test("drive file list shows state and notes; retry goes to the intake", async () => {
   const { store, app } = setup();
   store.upsertDriveFile("a", { name: "Bad_2.30.26_5.30.pm.mp4", state: "invalid", note: '"2.30.26" is not a real date' });
   store.upsertDriveFile("b", { name: "Old.mp4", state: "ignored" });
-  store.upsertDriveFile("c", { name: "Quiet_11.2.26_9.00.am.mp4", state: "needs_caption", sourcePath: clip, sha256: sha256(clip), editId: store.createEdit(clip, sha256(clip), DEFAULT_EDIT).id, note: "no speech" });
+  store.upsertDriveFile("c", { name: "Quiet_11.2.26_9.00.am.mp4", state: "processing", sourcePath: clip, sha256: sha256(clip), editId: store.createEdit(clip, sha256(clip), DEFAULT_EDIT).id, caption: "#fyp", note: "no speech, and its frames didn't show what it's about; captioned #fyp" });
   const files = (await app.inject("/api/drive")).json().files;
   assert.deepEqual(files.map((f: any) => f.id).sort(), ["a", "c"], "ignored files aren't listed");
-  const res = await app.inject({ method: "PUT", url: "/api/drive/files/c/caption", payload: { title: "Quiet", caption: "Listen. #quiet" } });
-  assert.equal(res.statusCode, 200, res.body);
-  assert.equal(store.driveFile("c")!.state, "processing");
+  assert.match(files.find((f: any) => f.id === "c").note, /#fyp/);
+  const gone = await app.inject({ method: "PUT", url: "/api/drive/files/c/caption", payload: { title: "Quiet", caption: "Listen. #quiet" } });
+  assert.equal(gone.statusCode, 404, "captions are never waited on, so there's nothing to release");
   const bad = await app.inject({ method: "POST", url: "/api/drive/files/a/retry-edit" });
   assert.equal(bad.statusCode, 409);
 });
@@ -101,7 +101,7 @@ test("drive post refuses use original", async () => {
   const id = postWith(store, [x.id], true);
   const res = await patch(id, { useOriginal: true });
   assert.equal(res.statusCode, 409);
-  assert.match(res.json().error, /never posted unedited/);
+  assert.match(res.json().error, /posts its edit.*_RAW/);
   assert.ok(store.post(id)!.editId);
 });
 

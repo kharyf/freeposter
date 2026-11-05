@@ -21,7 +21,9 @@ function driveName(name: string, at: number) {
 
 const words: Transcript = { words: [{ text: "Gatekeeping", start: 0.2, end: 0.9 }, { text: "matters.", start: 1.0, end: 1.6 }], language: null };
 
-function setup(opts: { transcript?: Transcript; caption?: () => Promise<{ title: string; caption: string }>; platforms?: ("x" | "tiktok" | "facebook")[] } = {}) {
+type Caption = (input: Parameters<IntakeDeps["writeCaption"]>[0]) => Promise<{ title: string; caption: string } | null>;
+
+function setup(opts: { transcript?: Transcript; caption?: Caption; frames?: IntakeDeps["frames"]; platforms?: ("x" | "tiktok" | "facebook")[] } = {}) {
   const store = newStore();
   const accts = (opts.platforms ?? ["x", "tiktok"]).map((p) => store.upsertAccount(account(p)));
   store.setPref("defaults.accounts", accts.map((a) => a.id));
@@ -30,6 +32,7 @@ function setup(opts: { transcript?: Transcript; caption?: () => Promise<{ title:
     download: async () => createReadStream(clip),
     transcribe: async () => opts.transcript ?? words,
     writeCaption: opts.caption ?? (async () => ({ title: "Why gatekeeping matters", caption: "Gatekeeping matters. #gatekeeping" })),
+    frames: opts.frames ?? (async () => [Buffer.from("a frame")]),
     now: () => clock.now,
   };
   const intake = new Intake(store, publishers, deps);
@@ -69,6 +72,64 @@ test("valid file becomes a scheduled post at the filename time with SELF_ONLY Ti
   assert.ok(store.edit(done.editId!)!.approvedAt, "Drive edits are approved automatically");
   assert.equal(store.jobsForPost(post.id).length, 2);
   assert.equal(store.jobsForPost(post.id)[0].nextRunAt, at);
+});
+
+test("a _RAW file skips the edit and posts the video as uploaded", async () => {
+  const { store, clock, intake, file, posts } = setup();
+  const at = clock.now + 2 * 60 * MIN;
+  await intake.handle(file(driveName("Gatekeeping", at).replace(".mp4", "_RAW.mp4")));
+  const rec = store.driveFile("f1")!;
+  assert.equal(rec.state, "processing", rec.note ?? "");
+  assert.equal(rec.editId, null, "no edit is made");
+  assert.equal(rec.title, "Why gatekeeping matters", "the caption is still written from the transcript");
+  await intake.tick();
+  assert.equal(posts(), 1);
+  const done = store.driveFile("f1")!;
+  assert.equal(done.state, "scheduled", done.note ?? "");
+  assert.equal(done.note, null);
+  const post = store.post(done.postId!)!;
+  assert.equal(post.scheduledAt, at);
+  assert.equal(post.editId, null);
+  assert.equal(post.requireEdit, false);
+  assert.equal(post.sourcePath, done.sourcePath);
+  assert.equal(store.jobsForPost(post.id).length, 2);
+});
+
+test("a _RAW file is checked against each platform's limits at its own length", async () => {
+  const { store, clock, intake, file } = setup({ platforms: ["x", "facebook"] });
+  await intake.handle(file(driveName("Short", clock.now + 60 * MIN).replace(".mp4", "_raw.mp4")));
+  await intake.tick();
+  const rec = store.driveFile("f1")!;
+  assert.equal(rec.state, "scheduled", rec.note ?? "");
+  assert.deepEqual(store.jobsForPost(rec.postId!).map((j) => j.platform).sort(), ["facebook", "x"], "the 4 s clip fits both");
+});
+
+test("a _RAW file with no speech is captioned from its frames and posts as uploaded", async () => {
+  const seen: Parameters<Caption>[0][] = [];
+  const { store, intake, file } = setup({
+    transcript: { words: [], language: null },
+    caption: async (input) => (seen.push(input), { title: "Sleep tips", caption: "Sleep better. #sleep" }),
+  });
+  await intake.handle(file("Music_RAW.mp4"));
+  assert.equal(seen[0].transcript, "");
+  assert.equal(seen[0].frames!.length, 1);
+  await intake.tick();
+  const rec = store.driveFile("f1")!;
+  assert.equal(rec.state, "scheduled", rec.note ?? "");
+  const post = store.post(rec.postId!)!;
+  assert.equal(post.editId, null);
+  assert.equal(post.caption, "Sleep better. #sleep");
+});
+
+test("a _RAW file whose transcription fails is still captioned and posted", async () => {
+  const { store, deps, file } = setup();
+  deps.transcribe = async () => { throw new Error("transcription failed: no model"); };
+  const intake = new Intake(store, publishers, deps);
+  await intake.handle(file("Clip_RAW.mp4"));
+  await intake.tick();
+  const rec = store.driveFile("f1")!;
+  assert.equal(rec.state, "scheduled", rec.note ?? "");
+  assert.equal(rec.caption, "Gatekeeping matters. #gatekeeping");
 });
 
 test("TikTok interaction settings come from the Drive settings, privacy never does", async () => {
@@ -147,28 +208,70 @@ test("transcription failure holds edit_failed", async () => {
   assert.match(store.driveFile("f1")!.note!, /no model/);
 });
 
-test("empty transcript holds needs_caption", async () => {
-  const { store, clock, intake, file, finishEdit, posts } = setup({ transcript: { words: [], language: null } });
+test("no speech: the caption is written from the video's frames", async () => {
+  const seen: Parameters<Caption>[0][] = [];
+  const { store, clock, intake, file, finishEdit } = setup({
+    transcript: { words: [], language: null },
+    caption: async (input) => (seen.push(input), { title: "5 tips for better sleep", caption: "Sleep better tonight. #sleep" }),
+  });
   await intake.handle(file(driveName("Music", clock.now + 60 * MIN)));
+  assert.deepEqual(seen[0].frames, [Buffer.from("a frame")]);
   const rec = store.driveFile("f1")!;
-  assert.equal(rec.state, "needs_caption");
-  assert.match(rec.note!, /no speech/);
+  assert.equal(rec.state, "processing");
+  assert.equal(rec.caption, "Sleep better tonight. #sleep");
   assert.ok(rec.editId, "the edit still runs");
   finishEdit("f1");
   await intake.tick();
-  assert.equal(posts(), 0);
-  // the user writes one: it goes out like any other Drive video
-  await intake.releaseCaption("f1", "My title", "My caption #music");
-  await intake.tick();
   assert.equal(store.driveFile("f1")!.state, "scheduled");
-  assert.equal(store.post(store.driveFile("f1")!.postId!)!.caption, "My caption #music");
 });
 
-test("caption failure holds needs_caption", async () => {
-  const { store, clock, intake, file } = setup({ caption: async () => { throw new Error("caption writing failed: X allows 280"); } });
+test("no speech and frames that don't say what it's about: #fyp, without waiting", async () => {
+  const { store, clock, intake, file, finishEdit } = setup({ transcript: { words: [], language: null }, caption: async () => null });
+  await intake.handle(file(driveName("Music", clock.now + 60 * MIN)));
+  const rec = store.driveFile("f1")!;
+  assert.equal(rec.state, "processing");
+  assert.equal(rec.caption, "#fyp");
+  assert.equal(rec.title, "Music", "the title is the file's name");
+  assert.match(rec.note!, /frames didn't show/);
+  finishEdit("f1");
+  await intake.tick();
+  const done = store.driveFile("f1")!;
+  assert.equal(done.state, "scheduled", done.note ?? "");
+  assert.equal(store.post(done.postId!)!.caption, "#fyp");
+});
+
+test("no speech and no readable frames: #fyp", async () => {
+  const { store, clock, intake, file } = setup({ transcript: { words: [], language: null }, caption: async () => null, frames: async () => { throw new Error("ffmpeg"); } });
+  await intake.handle(file(driveName("Music", clock.now + 60 * MIN)));
+  assert.equal(store.driveFile("f1")!.caption, "#fyp");
+  assert.match(store.driveFile("f1")!.note!, /no frames/);
+});
+
+test("caption failure falls back to #fyp instead of waiting", async () => {
+  const { store, clock, intake, file, finishEdit } = setup({ caption: async () => { throw new Error("caption writing failed: X allows 280"); } });
   await intake.handle(file(driveName("Wordy", clock.now + 60 * MIN)));
-  assert.equal(store.driveFile("f1")!.state, "needs_caption");
-  assert.match(store.driveFile("f1")!.note!, /280/);
+  const rec = store.driveFile("f1")!;
+  assert.equal(rec.state, "processing");
+  assert.equal(rec.caption, "#fyp");
+  assert.match(rec.note!, /280.*#fyp/);
+  finishEdit("f1");
+  await intake.tick();
+  assert.equal(store.driveFile("f1")!.state, "scheduled");
+});
+
+test("files an older version held for a caption are captioned on restart", async () => {
+  const { store, clock, deps, file, finishEdit, posts } = setup();
+  const intake = new Intake(store, publishers, deps);
+  await intake.handle(file(driveName("Held", clock.now + 60 * MIN)));
+  store.upsertDriveFile("f1", { state: "needs_caption", caption: null, title: null, note: "no speech to write a caption from; add a title and caption" });
+  await new Intake(store, publishers, deps).resume();
+  const rec = store.driveFile("f1")!;
+  assert.equal(rec.state, "processing");
+  assert.equal(rec.caption, "Gatekeeping matters. #gatekeeping");
+  assert.equal(rec.note, null);
+  finishEdit("f1");
+  await intake.tick();
+  assert.equal(posts(), 1);
 });
 
 test("restart mid-pipeline creates exactly one post", async () => {

@@ -153,3 +153,48 @@ export function renameAccountSet(store: Store, id: number, name: string): boolea
   store.setPref(SETS_PREF, sets);
   return true;
 }
+
+export function createAccountSet(store: Store, name: string): AccountSet {
+  const sets = accountSets(store);
+  const set = { id: Math.max(...sets.map((s) => s.id)) + 1, name, accountIds: [] };
+  store.setPref(SETS_PREF, [...sets, set]);
+  return set;
+}
+
+/** Only an empty set, and never the last one. Null when it was deleted, else why not. */
+export function deleteAccountSet(store: Store, id: number): string | null {
+  const sets = accountSets(store);
+  const set = sets.find((s) => s.id === id);
+  if (!set) return "no such account set";
+  if (set.accountIds.length) return "remove the accounts in this set first";
+  if (sets.length === 1) return "there must be at least one account set";
+  store.setPref(SETS_PREF, sets.filter((s) => s.id !== id));
+  return null;
+}
+
+/** Moves the accounts into the set, out of whichever set they were in. */
+export function placeInSet(store: Store, setId: number, accountIds: number[]) {
+  const sets = accountSets(store);
+  const target = sets.find((s) => s.id === setId);
+  if (!target || !accountIds.length) return;
+  for (const s of sets) s.accountIds = s.accountIds.filter((id) => !accountIds.includes(id));
+  target.accountIds.push(...accountIds);
+  store.setPref(SETS_PREF, sets);
+}
+
+const SIGN_IN_SETS_PREF = "accounts.signInSets";
+
+/** Which set a sign-in was started from, keyed by its OAuth state, so the accounts it adds land there. */
+export function noteSignInSet(store: Store, state: string, setId: number) {
+  if (!accountSets(store).some((s) => s.id === setId)) return;
+  store.setPref(SIGN_IN_SETS_PREF, { ...store.pref<Record<string, number>>(SIGN_IN_SETS_PREF), [state]: setId });
+}
+
+export function takeSignInSet(store: Store, state: string): number | undefined {
+  const saved = { ...store.pref<Record<string, number>>(SIGN_IN_SETS_PREF) };
+  const setId = saved[state];
+  if (setId === undefined) return undefined;
+  delete saved[state];
+  store.setPref(SIGN_IN_SETS_PREF, saved);
+  return setId;
+}

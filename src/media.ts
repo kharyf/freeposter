@@ -50,6 +50,26 @@ export async function probe(path: string): Promise<Probe> {
   };
 }
 
+/**
+ * `count` JPEG stills spread evenly through the video (never the very first or last frame), at most 540 px wide,
+ * for Claude to look at when a video has no speech. Times that can't be read are skipped.
+ */
+export async function sampleFrames(path: string, count = 6): Promise<Buffer[]> {
+  const { durationSec } = await probe(path);
+  const frames: Buffer[] = [];
+  for (let i = 0; i < count; i++) {
+    const at = (durationSec * (i + 0.5)) / count;
+    try {
+      const { stdout } = await run(config.ffmpeg, [
+        "-v", "error", "-ss", at.toFixed(2), "-i", path, "-frames:v", "1",
+        "-vf", "scale='min(540,iw)':-2", "-q:v", "4", "-f", "image2pipe", "-c:v", "mjpeg", "pipe:1",
+      ], { encoding: "buffer", maxBuffer: 16 * 1024 * 1024 });
+      if (stdout.length) frames.push(stdout);
+    } catch {}
+  }
+  return frames;
+}
+
 /** True when the MP4 index (moov) precedes the media data, which streaming uploads expect. */
 async function moovAtStart(path: string): Promise<boolean> {
   const { open } = await import("node:fs/promises");

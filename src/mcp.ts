@@ -12,7 +12,7 @@ import type { Store } from "./db.ts";
 import type { Publisher } from "./platforms/base.ts";
 import { creatorInfo } from "./platforms/tiktok.ts";
 import { parseEditSettings } from "./edit/settings.ts";
-import { checkDraft, DuplicateError, editView, parseSchedule, postView, saveUpload, type Draft } from "./posts.ts";
+import { captionTopicFor, checkDraft, DuplicateError, editView, parseSchedule, postView, saveUpload, type Draft } from "./posts.ts";
 import type { Runner } from "./runner.ts";
 import { PLATFORMS, type Platform, type TikTokOptions } from "./types.ts";
 
@@ -23,7 +23,7 @@ const INSTRUCTIONS = `FreePoster publishes one short vertical video to the user'
 
 Start with list_accounts to get account ids. publish_video queues the post and returns at once; each account becomes a job that renders, uploads and publishes in the background, so follow it with get_post until every job is "published" (with the post's url) or "failed" (with the platform's reason). "retry" and "waiting_quota" jobs go out later by themselves.
 
-Posting is public and hard to undo: only post what the user asked for, to the accounts they chose. For TikTok, call get_tiktok_creator_info first and let the user pick the privacy level from privacy_level_options; TikTok requires that choice to be the user's, never a default. Use dry_run to check a post without queueing it.
+Posting is public and hard to undo: only post what the user asked for, to the accounts they chose. For TikTok, call get_tiktok_creator_info first and let the user pick the privacy level from privacy_level_options; TikTok requires that choice to be the user's, never a default. Use dry_run to check a post without queueing it. With no caption, Claude writes the title and caption from the video (or "#fyp" when it can't tell what it's about) before it posts.
 
 create_edit makes an edited cut (pauses and filler words cut, captions, speaker framing, even sound) in the background; follow it with get_edit. Only the user can approve an edit, by previewing it in the FreePoster window; publish_video with edit_id is refused until they have.`;
 
@@ -186,7 +186,7 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
           video_path: { type: "string", description: "Absolute path of the video file on this computer. Not needed with edit_id." },
           edit_id: { type: "integer", description: "Post this edit (from create_edit) instead of the original file. The user must have approved it in FreePoster." },
           account_ids: { type: "array", items: { type: "integer" }, minItems: 1, description: "Account ids from list_accounts." },
-          caption: { type: "string", description: "The post's text: the tweet on X, the description on YouTube, the caption elsewhere." },
+          caption: { type: "string", description: "The post's text: the tweet on X, the description on YouTube, the caption elsewhere. Leave it out (or blank) and Claude writes it from what's said in the video, or from its on-screen text when nobody speaks, else \"#fyp\"; the post waits for it (get_post shows captionPending until it's in)." },
           title: { type: "string", description: "YouTube title (up to 100 characters); defaults to the caption's first line." },
           schedule_at: SCHEDULE_PROP,
           tiktok: TIKTOK_PROP,
@@ -215,6 +215,7 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
           tiktok,
           scheduledAt: when(args, "schedule_at"),
           editId: edit?.id ?? null,
+          captionTopic: captionTopicFor(str(args, "caption"), str(args, "title"), edit ? "" : videoPath),
         };
         if (edit) {
           // The edit keeps its own copy of the video.
@@ -232,7 +233,7 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
         try {
           const { accounts, durationSec } = await checkDraft(store, publishers, draft, bool(args, "allow_duplicate"));
           const to = accounts.map((a) => ({ id: a.id, platform: a.platform, name: a.name }));
-          if (dryRun) return { ok: true, dryRun: true, durationSec, accounts: to, scheduledAt: iso(draft.scheduledAt) };
+          if (dryRun) return { ok: true, dryRun: true, durationSec, accounts: to, scheduledAt: iso(draft.scheduledAt), captionWrittenByClaude: Boolean(draft.captionTopic) };
           const postId = store.createPost(draft, draft.accountIds);
           runner.tick();
           return { ...post(postId), next: "Call get_post with this id to follow each account's progress." };

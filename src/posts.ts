@@ -1,7 +1,8 @@
 // Creating and showing posts: shared by the web page's upload route and the MCP endpoint.
 import { createHash } from "node:crypto";
 import { createWriteStream, unlinkSync } from "node:fs";
-import { extname, join } from "node:path";
+import { basename, extname, join } from "node:path";
+import { FALLBACK_CAPTION, fallbackText } from "./caption.ts";
 import { Transform, type Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { sharedFrom } from "./accounts.ts";
@@ -49,6 +50,17 @@ export interface Draft {
   /** publish this approved edit instead of the original */
   editId?: number | null;
   requireEdit?: boolean;
+  /** set (see captionTopicFor) when the caption was left blank: Claude writes it before the post goes out */
+  captionTopic?: string | null;
+}
+
+/**
+ * Null when the user wrote a caption. Otherwise what Claude is told the video is called, and the title if it
+ * can't caption it: the user's title, else the file's name without its extension, else "Video".
+ */
+export function captionTopicFor(caption: string, title: string, filename = ""): string | null {
+  if (caption.trim()) return null;
+  return title.trim() || basename(filename.replace(/\\/g, "/")).replace(/\.[^.]{1,5}$/, "").trim() || "Video";
 }
 
 /** Thrown when the same file already went, or is due to go, to some of the chosen accounts. */
@@ -72,12 +84,14 @@ export async function checkDraft(store: Store, publishers: Record<Platform, Publ
     durationSec = (await probe(edit.outputPath)).durationSec;
   }
 
+  // A caption Claude will write is checked as its fallback; whatever Claude writes is checked against these accounts.
+  const text = d.captionTopic ? { caption: FALLBACK_CAPTION, title: d.title || fallbackText(d.captionTopic).title } : {};
   const problems: string[] = [];
   for (const a of accounts as Account[]) {
     const p = publishers[a.platform];
     const head = sharedFrom(store, a);
     if (head) problems.push(`${p.label} (${a.name}): Meta shares posts from ${head.name} to this account, so post to ${head.name} instead`);
-    const reason = p.validate({ ...d, id: 0, createdAt: 0 }, a);
+    const reason = p.validate({ ...d, ...text, id: 0, createdAt: 0 }, a);
     if (reason) problems.push(`${p.label} (${a.name}): ${reason}`);
     const max = p.maxDurationSec(a);
     if (durationSec > max + 0.05) problems.push(`${p.label} (${a.name}): accepts up to ${max}s; the video is ${durationSec.toFixed(1)}s`);
@@ -129,6 +143,8 @@ export function postView(store: Store, { post, jobs }: { post: Post; jobs: Job[]
     scheduledAt: post.scheduledAt,
     editId: post.editId ?? null,
     requireEdit: Boolean(post.requireEdit),
+    /** Claude is still writing the caption; the post goes out once it's in */
+    captionPending: Boolean(post.captionTopic),
     jobs: jobs.map((j) => ({
       id: j.id,
       platform: j.platform,
