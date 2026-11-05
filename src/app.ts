@@ -45,7 +45,7 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
       if (!token) throw new Error("Google Drive isn't connected");
       return downloadFile(token, id);
     },
-    transcribe: (sourcePath, sha256) => editor.transcriptFor({ sourcePath, sha256 }),
+    transcribe: (sourcePath, sha256) => editor.speechFor({ sourcePath, sha256 }),
     writeCaption: (input) => writeCaption(input, publishers),
   });
   watcher = new DriveWatcher(store, (f) => void intake.handle(f).catch((err) => console.error(`drive intake: ${(err as Error).message}`)));

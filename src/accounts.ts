@@ -121,3 +121,35 @@ export function defaultTikTok(store: Store): TikTokOptions {
     brandOrganic: false,
   };
 }
+
+/** A named group of connected accounts, shown together under Accounts. Every account is in exactly one set. */
+export interface AccountSet {
+  id: number;
+  name: string;
+  accountIds: number[];
+}
+
+const SETS_PREF = "accounts.sets";
+const FIRST_SET_NAME = "Personal Brand";
+
+/** The sets as saved; the first time, one "Personal Brand" set. Accounts in no set (just connected) join the first. */
+export function accountSets(store: Store): AccountSet[] {
+  const saved = store.pref<AccountSet[]>(SETS_PREF);
+  const sets = saved?.length ? saved.map((s) => ({ ...s, accountIds: [...s.accountIds] })) : [{ id: 1, name: FIRST_SET_NAME, accountIds: [] }];
+  const ids = store.accounts().map((a) => a.id);
+  for (const s of sets) s.accountIds = s.accountIds.filter((id) => ids.includes(id));
+  const placed = new Set(sets.flatMap((s) => s.accountIds));
+  sets[0].accountIds.push(...ids.filter((id) => !placed.has(id)));
+  if (JSON.stringify(sets) !== JSON.stringify(saved)) store.setPref(SETS_PREF, sets);
+  return sets;
+}
+
+/** False when there is no set with that id. */
+export function renameAccountSet(store: Store, id: number, name: string): boolean {
+  const sets = accountSets(store);
+  const set = sets.find((s) => s.id === id);
+  if (!set) return false;
+  set.name = name;
+  store.setPref(SETS_PREF, sets);
+  return true;
+}

@@ -1,7 +1,7 @@
 import "./isolated-home.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { defaultAccountIds, defaultAccounts, noteConnected, noteRemoving, setDefaultAccounts, setSharing, sharedFrom, sharingPairs } from "../src/accounts.ts";
+import { accountSets, defaultAccountIds, defaultAccounts, noteConnected, noteRemoving, renameAccountSet, setDefaultAccounts, setSharing, sharedFrom, sharingPairs } from "../src/accounts.ts";
 import { publishers } from "../src/platforms/index.ts";
 import { checkDraft } from "../src/posts.ts";
 import { Runner } from "../src/runner.ts";
@@ -112,5 +112,33 @@ test("the window and agents see defaults and sharing; /api/sharing only takes cl
   const listed = mcp.json().result.structuredContent.accounts;
   assert.equal(listed.find((a: any) => a.id === page.id).shared_from, ig.id);
   assert.equal(listed.find((a: any) => a.id === ig.id).default, true);
+  await app.close();
+});
+
+test("connected accounts start in one Personal Brand set; new ones join it and removed ones leave", () => {
+  const { store, page, ig } = metaPair();
+  assert.deepEqual(accountSets(store), [{ id: 1, name: "Personal Brand", accountIds: store.accounts().map((a) => a.id) }]);
+  assert.deepEqual([...accountSets(store)[0].accountIds].sort(), [page.id, ig.id].sort());
+  const tiktok = store.upsertAccount(account("tiktok"));
+  assert.ok(accountSets(store)[0].accountIds.includes(tiktok.id));
+  store.deleteAccount(page.id);
+  assert.ok(!accountSets(store)[0].accountIds.includes(page.id));
+  assert.equal(renameAccountSet(store, 1, "Client A"), true);
+  assert.equal(renameAccountSet(store, 99, "Nope"), false);
+  assert.equal(accountSets(store)[0].name, "Client A");
+});
+
+test("/api/account-sets renames a set and refuses empty names and unknown sets", async () => {
+  const { store } = metaPair();
+  const app = buildServer(store, new Runner(store, publishers, tmp()), publishers);
+  const rename = (id: number, body: unknown) => app.inject({ method: "PUT", url: `/api/account-sets/${id}`, payload: body as object });
+  const status = async () => (await app.inject("/api/status")).json();
+  assert.equal((await status()).accountSets[0].name, "Personal Brand");
+  assert.equal((await rename(1, { name: "  " })).statusCode, 400);
+  assert.equal((await rename(7, { name: "Other" })).statusCode, 404);
+  assert.equal((await rename(1, { name: " My Brand " })).statusCode, 200);
+  const sets = (await status()).accountSets;
+  assert.equal(sets[0].name, "My Brand");
+  assert.equal(sets[0].accountIds.length, 2);
   await app.close();
 });

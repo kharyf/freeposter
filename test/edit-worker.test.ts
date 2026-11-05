@@ -21,7 +21,7 @@ const words = [{ text: "hi", start: 0.5, end: 0.9 }, { text: "there", start: 3.0
 
 test("worker turns a queued edit into a ready one", async () => {
   const store = newStore();
-  const worker = new EditWorker(store, { dir: tmp(), transcribe: async () => ({ words, language: null }) });
+  const worker = new EditWorker(store, { dir: tmp(), findLyrics: async () => [], transcribe: async () => ({ words, language: null }) });
   const edit = store.createEdit(video, sha256(video), DEFAULT_EDIT);
   assert.equal(edit.state, "queued");
   await worker.tick();
@@ -35,7 +35,7 @@ test("worker turns a queued edit into a ready one", async () => {
 
 test("a failed edit records the reason", async () => {
   const store = newStore();
-  const worker = new EditWorker(store, { dir: tmp(), transcribe: async () => { throw new Error("no ffmpeg whisper"); } });
+  const worker = new EditWorker(store, { dir: tmp(), findLyrics: async () => [], transcribe: async () => { throw new Error("no ffmpeg whisper"); } });
   const edit = store.createEdit(video, sha256(video), DEFAULT_EDIT);
   await worker.tick();
   assert.equal(store.edit(edit.id)!.state, "failed");
@@ -53,7 +53,7 @@ test("crashed edit restarts", () => {
   const store = newStore();
   const edit = store.createEdit(video, sha256(video), DEFAULT_EDIT);
   store.updateEdit(edit.id, { state: "editing", progress: 0.4 });
-  new EditWorker(store, { dir: tmp() });
+  new EditWorker(store, { dir: tmp(), findLyrics: async () => [] });
   assert.equal(store.edit(edit.id)!.state, "queued");
 });
 

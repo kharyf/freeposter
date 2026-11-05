@@ -23,8 +23,14 @@ export function parseEditSettings(raw: unknown): EditSettings {
   return out;
 }
 
+/**
+ * Bump when the editing itself changes, so earlier results aren't reused.
+ * 2: sound tags like "(upbeat music)" and song lyrics no longer count as speech.
+ */
+const EDIT_VERSION = 2;
+
 /** Source hash plus a hash of the settings: the same file with the same settings is edited once. */
 export function editKey(sourceSha: string, s: EditSettings): string {
-  const canonical = JSON.stringify(Object.keys(DEFAULT_EDIT).sort().map((k) => [k, s[k as keyof EditSettings]]));
+  const canonical = JSON.stringify([EDIT_VERSION, ...Object.keys(DEFAULT_EDIT).sort().map((k) => [k, s[k as keyof EditSettings]])]);
   return `${sourceSha}-${createHash("sha256").update(canonical).digest("hex").slice(0, 16)}`;
 }

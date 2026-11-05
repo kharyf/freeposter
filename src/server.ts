@@ -4,7 +4,7 @@ import { timingSafeEqual } from "node:crypto";
 import { execFile } from "node:child_process";
 import { createReadStream, existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { defaultAccountIds, defaultTikTokPrefs, noteConnected, noteRemoving, setDefaultAccounts, setDefaultTikTokPrefs, setSharing, sharedFrom, sharingPairs, type Sharing } from "./accounts.ts";
+import { accountSets, defaultAccountIds, defaultTikTokPrefs, noteConnected, noteRemoving, setDefaultAccounts, renameAccountSet, setDefaultTikTokPrefs, setSharing, sharedFrom, sharingPairs, type Sharing } from "./accounts.ts";
 import { findClaude } from "./claude.ts";
 import { codeDir, config, dataDir, envFile, isConfigured, isLocalUrl, needsRedirectPage, redirectUri, saveSettings, setting, SETTINGS, type SettingKey } from "./config.ts";
 import { randomToken } from "./crypto.ts";
@@ -107,6 +107,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
         // Meta shares posts to this account from that one, so FreePoster never posts to it itself.
         sharedFrom: sharedFrom(store, a)?.id ?? null,
       })),
+      accountSets: accountSets(store),
       sharingPairs: sharingPairs(store).map((p) => ({ pageId: p.pageId, instagramId: p.instagram.id, facebookId: p.facebook.id, sharing: p.sharing })),
       defaultTikTok: { allowComment: true, allowDuet: true, allowStitch: true, ...defaultTikTokPrefs(store) },
     };
@@ -201,6 +202,13 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
       }
       setDefaultTikTokPrefs(store, t);
     }
+    return { ok: true };
+  });
+
+  app.put<{ Params: { id: string }; Body: { name?: unknown } }>("/api/account-sets/:id", async (req, reply) => {
+    const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+    if (!name || name.length > 80) return reply.code(400).send({ error: "a set name is 1 to 80 characters" });
+    if (!renameAccountSet(store, Number(req.params.id), name)) return reply.code(404).send({ error: "no such account set" });
     return { ok: true };
   });
 

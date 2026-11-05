@@ -39,6 +39,17 @@
   .acct .check { margin-left: auto; }
   .acct .check input, .share input, .defaults-tiktok .check input { width: auto; margin: 0; }
   .share { padding: 2px 0 2px 36px; color: var(--muted); }
+  .acct-set { border-top: 1px solid var(--line); padding: 6px 0; }
+  .acct-set:first-child { border-top: 0; padding-top: 0; }
+  .acct-set > summary { display: flex; align-items: center; gap: 8px; padding: 6px 0; cursor: pointer; list-style: none; }
+  .acct-set > summary::-webkit-details-marker { display: none; }
+  .acct-set > summary::before { content: "▸"; color: var(--muted); width: 12px; }
+  .acct-set[open] > summary::before { content: "▾"; }
+  .acct-set > summary button { margin-left: auto; padding: 2px 8px; font-size: 12px; }
+  .acct-set .platform-row:first-of-type { border-top: 1px solid var(--line); }
+  .acct-set .platform-row, .acct-set .acct, .acct-set .share { margin-left: 12px; }
+  .rename-set { margin: 4px 0 8px 12px; }
+  .rename-set input { flex: 1; }
   .defaults-tiktok { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px; }
   .counters { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); margin-top: 4px; }
   .over { color: var(--bad); font-weight: 600; }
@@ -240,8 +251,37 @@ async function loadStatus() {
   status = await (await fetch("/api/status")).json();
   $("redirectBanner").innerHTML = status.needsRedirectPage && status.setupComplete
     ? `<div class="banner err">Set up your own redirect URI to connect or reconnect accounts. <a href="#" class="link" data-setup="redirect">Open setup</a></div>` : "";
-  const byPlatform = (p) => status.accounts.filter((a) => a.platform === p);
-  $("accounts").innerHTML = status.platforms.map((p) => `
+  $("accounts").innerHTML = status.accountSets.map(accountSetHtml).join("") + defaultTikTokHtml();
+  const prev = new Set(selectedIds());
+  $("targets").innerHTML = status.accounts.length
+    ? status.accounts.map((a) => `
+      <label class="row" style="font-weight:400;margin:4px 0" ${a.sharedFrom ? `title="${esc(sharedNote(a))}"` : ""}>
+        <input type="checkbox" value="${a.id}" data-platform="${a.platform}" ${prev.has(a.id) && !a.sharedFrom ? "checked" : ""} ${a.sharedFrom ? "disabled" : ""}>
+        ${icon(a.platform)}
+        ${esc(status.platforms.find((p) => p.platform === a.platform).label)} — ${esc(a.name)}
+        ${a.sharedFrom ? `<span class="muted">${esc(sharedNote(a))}</span>` : ""}
+      </label>`).join("")
+    : "Connect an account first.";
+  checkDuration();
+}
+
+/** Set ids the user collapsed, kept across reloads. */
+const closedSets = new Set(JSON.parse(localStorage.getItem("closedSets") || "[]"));
+let renamingSet = null;
+
+/** One collapsible account set: each platform's connect button and the set's accounts on it. */
+function accountSetHtml(set) {
+  const inSet = status.accounts.filter((a) => set.accountIds.includes(a.id));
+  const byPlatform = (p) => inSet.filter((a) => a.platform === p);
+  const open = renamingSet === set.id || !closedSets.has(set.id);
+  return `<details class="acct-set" data-set="${set.id}" ${open ? "open" : ""}>
+    <summary><strong class="set-name">${esc(set.name)}</strong>
+      <span class="muted">${inSet.length} account${inSet.length === 1 ? "" : "s"}</span>
+      <button type="button" data-rename-set="${set.id}">Rename</button></summary>
+    ${renamingSet === set.id ? `<form class="rename-set row" data-set="${set.id}">
+      <input type="text" name="name" value="${esc(set.name)}" maxlength="80" required aria-label="Account set name">
+      <button type="submit">Save</button><button type="button" data-cancel-rename>Cancel</button></form>` : ""}
+    ${status.platforms.map((p) => `
     <div class="platform-row">
       <div class="row">${icon(p.platform)}<strong>${esc(p.label)}</strong></div>
       ${!p.configured ? `<button type="button" data-setup="${p.platform === "instagram" ? "facebook" : p.platform}">Set up</button>`
@@ -256,19 +296,44 @@ async function loadStatus() {
         <button type="button" data-remove="${a.id}">Remove</button>
       </div>
       ${sharingBoxes(a)}`).join("")}
-  `).join("") + defaultTikTokHtml();
-  const prev = new Set(selectedIds());
-  $("targets").innerHTML = status.accounts.length
-    ? status.accounts.map((a) => `
-      <label class="row" style="font-weight:400;margin:4px 0" ${a.sharedFrom ? `title="${esc(sharedNote(a))}"` : ""}>
-        <input type="checkbox" value="${a.id}" data-platform="${a.platform}" ${prev.has(a.id) && !a.sharedFrom ? "checked" : ""} ${a.sharedFrom ? "disabled" : ""}>
-        ${icon(a.platform)}
-        ${esc(status.platforms.find((p) => p.platform === a.platform).label)} — ${esc(a.name)}
-        ${a.sharedFrom ? `<span class="muted">${esc(sharedNote(a))}</span>` : ""}
-      </label>`).join("")
-    : "Connect an account first.";
-  checkDuration();
+  `).join("")}
+  </details>`;
 }
+
+// Remembers which sets are collapsed (the list is re-rendered on every status load).
+$("accounts").addEventListener("toggle", (e) => {
+  const id = Number(e.target.dataset?.set);
+  if (!id) return;
+  if (e.target.open) closedSets.delete(id); else closedSets.add(id);
+  localStorage.setItem("closedSets", JSON.stringify([...closedSets]));
+}, true);
+
+$("accounts").addEventListener("click", (e) => {
+  const rename = e.target.closest("[data-rename-set]");
+  if (rename) {
+    e.preventDefault(); // a button in a <summary> would otherwise fold the set
+    renamingSet = Number(rename.dataset.renameSet);
+    loadStatus().then(() => { const input = document.querySelector(".rename-set input"); input?.focus(); input?.select(); });
+  } else if (e.target.closest("[data-cancel-rename]")) {
+    renamingSet = null;
+    loadStatus();
+  }
+});
+
+$("accounts").addEventListener("submit", async (e) => {
+  if (!e.target.matches(".rename-set")) return;
+  e.preventDefault();
+  const res = await fetch(`/api/account-sets/${e.target.dataset.set}`, {
+    method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: e.target.elements.name.value }),
+  });
+  if (!res.ok) return banner("err", (await res.json()).error);
+  renamingSet = null;
+  loadStatus();
+});
+
+$("accounts").addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && e.target.closest(".rename-set")) { renamingSet = null; loadStatus(); }
+});
 
 const accountById = (id) => status.accounts.find((a) => a.id === id);
 const sharedNote = (a) => `Meta shares this from ${accountById(a.sharedFrom)?.name ?? "its linked account"}`;
