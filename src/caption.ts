@@ -1,11 +1,11 @@
 // Writes a Drive video's title and caption with Claude. Only the transcript text and the filename's name
-// are sent; the video itself never leaves this computer.
-import Anthropic from "@anthropic-ai/sdk";
+// are sent; the video itself never leaves this computer. Claude runs through the user's own Claude Code,
+// on their Claude plan (see claude.ts).
+import { askClaude, type ClaudeRun } from "./claude.ts";
 import { config } from "./config.ts";
 import type { Publisher } from "./platforms/base.ts";
 import type { Account, Platform, Post } from "./types.ts";
 
-export const CAPTION_MODEL = "claude-opus-5-5";
 const RETRIES = 2;
 
 const SCHEMA = {
@@ -45,42 +45,30 @@ function problems(text: { title: string; caption: string }, accounts: Account[],
 export async function writeCaption(
   input: { topic: string; transcript: string; accounts: Account[] },
   publishers: Record<Platform, Publisher>,
-  opts: { fetch?: typeof fetch } = {},
+  opts: { run?: ClaudeRun; claudePath?: string } = {},
 ): Promise<{ title: string; caption: string }> {
-  if (!config.anthropicKey) throw new Error("add an Anthropic API key in Setup to write captions");
   if (!input.transcript.trim()) throw new Error("no speech to write a caption from");
-  const client = new Anthropic({ apiKey: config.anthropicKey, ...(opts.fetch ? { fetch: opts.fetch } : {}) });
   const platforms = [...new Set(input.accounts.map((a) => publishers[a.platform].label))];
   const limit = input.accounts.some((a) => a.platform === "x") ? config.xMaxChars : 2200;
-  const messages: Anthropic.Beta.BetaMessageParam[] = [
-    { role: "user", content: `Topic (from the file name): ${input.topic}\n\nTranscript:\n${input.transcript.trim()}` },
-  ];
+  const request = `Topic (from the file name): ${input.topic}\n\nTranscript:\n${input.transcript.trim()}`;
+  // Each try is a fresh `claude -p`, so earlier answers and what was wrong with them are carried in the prompt.
+  const history: string[] = [];
 
   let last: string[] = [];
   for (let attempt = 0; attempt <= RETRIES; attempt++) {
-    const res = await client.beta.messages.create({
-      model: CAPTION_MODEL,
-      max_tokens: 4000,
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default",
-      output_config: { effort: "low", format: { type: "json_schema", schema: SCHEMA } },
-      system: system(platforms, limit),
-      messages,
-    });
-    if (res.stop_reason === "refusal") throw new Error("caption writing failed: Claude declined to write this caption");
-    const block = res.content.find((b) => b.type === "text");
     let text: { title: string; caption: string };
     try {
-      text = JSON.parse(block && block.type === "text" ? block.text : "");
-    } catch {
-      throw new Error(`caption writing failed: the reply wasn't the expected JSON (${res.stop_reason})`);
+      text = await askClaude<{ title: string; caption: string }>(
+        { system: system(platforms, limit), prompt: [request, ...history].join("\n\n"), schema: SCHEMA },
+        opts,
+      );
+    } catch (err) {
+      throw new Error(`caption writing failed: ${(err as Error).message}`);
     }
-    text = { title: String(text.title ?? "").trim(), caption: String(text.caption ?? "").trim() };
+    text = { title: String(text?.title ?? "").trim(), caption: String(text?.caption ?? "").trim() };
     last = problems(text, input.accounts, publishers);
     if (!last.length) return text;
-    // Append (never rewrite) the conversation: the answer as given, then what to fix.
-    messages.push({ role: "assistant", content: res.content as Anthropic.Beta.BetaContentBlockParam[] });
-    messages.push({ role: "user", content: `That doesn't fit: ${last.join("; ")}. Write it again so it does.` });
+    history.push(`Your earlier answer:\n${JSON.stringify(text)}\n\nThat doesn't fit: ${last.join("; ")}. Write it again so it does.`);
   }
   throw new Error(`caption writing failed: ${last.join("; ")}`);
 }

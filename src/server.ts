@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { createReadStream, existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { defaultAccountIds, defaultTikTokPrefs, noteConnected, noteRemoving, setDefaultAccounts, setDefaultTikTokPrefs, setSharing, sharedFrom, sharingPairs, type Sharing } from "./accounts.ts";
+import { findClaude } from "./claude.ts";
 import { codeDir, config, dataDir, envFile, isConfigured, isLocalUrl, needsRedirectPage, redirectUri, saveSettings, setting, SETTINGS, type SettingKey } from "./config.ts";
 import { randomToken } from "./crypto.ts";
 import type { SignIn, Store } from "./db.ts";
@@ -24,9 +25,9 @@ const isPlatform = (p: string): p is Platform => (PLATFORMS as readonly string[]
 const setupMarker = () => join(dataDir, "setup-complete");
 
 /** Resolves to the tool's version line, or null when it can't be run. */
-const toolVersion = (bin: string) =>
+const toolVersion = (bin: string, flag = "-version") =>
   new Promise<string | null>((done) =>
-    execFile(bin, ["-version"], { timeout: 10_000, windowsHide: true }, (err, stdout) => done(err ? null : stdout.split("\n")[0].trim())),
+    !bin ? done(null) : execFile(bin, [flag], { timeout: 10_000, windowsHide: true }, (err, stdout) => done(err ? null : stdout.split("\n")[0].trim())),
   );
 
 export interface ServerOptions {
@@ -59,6 +60,8 @@ export interface DriveServices {
   intake: Intake;
   /** checks the folder now (after it changes) */
   poll: () => Promise<void>;
+  /** the Sync button: matches the list to what's in the folder now (null = not connected / folder unreadable) */
+  sync: () => Promise<{ removed: string[]; cancelledPosts: number; busy: string[] } | null>;
 }
 
 export function buildServer(store: Store, runner: Runner, publishers: Record<Platform, Publisher>, options: ServerOptions = {}, drive?: DriveServices): FastifyInstance {
@@ -225,7 +228,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   // ---- setup ----
 
   const settingsView = async () => {
-    const [ffmpeg, ffprobe] = await Promise.all([toolVersion(config.ffmpeg), toolVersion(config.ffprobe)]);
+    const [ffmpeg, ffprobe, claude] = await Promise.all([toolVersion(config.ffmpeg), toolVersion(config.ffprobe), toolVersion(findClaude(), "--version")]);
     const keys = Object.keys(SETTINGS) as SettingKey[];
     return {
       envFile,
@@ -241,7 +244,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
       port: config.port,
       redirectUris: { ...Object.fromEntries(PLATFORMS.map((p) => [p, redirectUri(p)])), drive: driveRedirectUri() },
       configured: Object.fromEntries(PLATFORMS.map((p) => [p, isConfigured(p)])),
-      tools: { ffmpeg, ffprobe },
+      tools: { ffmpeg, ffprobe, claude },
       values: Object.fromEntries(keys.filter((k) => !SETTINGS[k].secret).map((k) => [k, setting(k)])),
       secretsSet: Object.fromEntries(keys.filter((k) => SETTINGS[k].secret).map((k) => [k, Boolean(setting(k))])),
     };
@@ -522,6 +525,18 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   app.delete("/api/drive", async () => {
     store.deleteDriveConnection();
     return { ok: true };
+  });
+
+  app.post("/api/drive/sync", async (_req, reply) => {
+    if (!drive) return reply.code(503).send({ error: "Drive isn't running" });
+    if (!store.driveConnection()?.folderId) return reply.code(400).send({ error: "connect Google Drive and add a folder first" });
+    try {
+      const result = await drive.sync();
+      if (!result) return reply.code(502).send({ error: store.driveConnection()?.error ?? "FreePoster couldn't read the Drive folder; try again in a moment" });
+      return { ...result, view: driveView() };
+    } catch (err) {
+      return reply.code(502).send({ error: `couldn't reach Google Drive: ${(err as Error).message}` });
+    }
   });
 
   app.post<{ Params: { id: string } }>("/api/drive/files/:id/retry-edit", async (req, reply) => {

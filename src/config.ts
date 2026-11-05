@@ -37,7 +37,7 @@ export const SETTINGS = {
   FFMPEG_PATH: { secret: false },
   FFPROBE_PATH: { secret: false },
   WHISPER_MODEL_PATH: { secret: false },
-  ANTHROPIC_API_KEY: { secret: true },
+  CLAUDE_CODE_PATH: { secret: false },
   YOUTUBE_CLIENT_ID: { secret: false },
   YOUTUBE_CLIENT_SECRET: { secret: true },
   TIKTOK_CLIENT_KEY: { secret: false },
@@ -81,9 +81,9 @@ function build() {
     siteEmail: setting("SITE_CONTACT_EMAIL"),
     ffmpeg: setting("FFMPEG_PATH", "ffmpeg"),
     ffprobe: setting("FFPROBE_PATH", "ffprobe"),
-    anthropicKey: setting("ANTHROPIC_API_KEY"),
     whisperModel: setting("WHISPER_MODEL_PATH", join(dataDir, "models", "ggml-base.bin")),
-    graphVersion: setting("META_GRAPH_VERSION", "v24.0"),
+    // Meta's URLs need the "v" ("/v24.0/..."); "24.0" alone gives Facebook's "Request Couldn't be Processed".
+    graphVersion: setting("META_GRAPH_VERSION", "v24.0").replace(/^(?=\d)/, "v"),
     credentials: {
       youtube: { id: setting("YOUTUBE_CLIENT_ID"), secret: setting("YOUTUBE_CLIENT_SECRET") },
       tiktok: { id: setting("TIKTOK_CLIENT_KEY"), secret: setting("TIKTOK_CLIENT_SECRET") },

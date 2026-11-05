@@ -35,7 +35,7 @@ export const instagram: Publisher = {
     const linked = pages.filter((p) => p.instagram_business_account);
     if (!linked.length) {
       throw new FatalError(
-        "none of the granted Facebook Pages has a linked Instagram Business/Creator account. Link it in Instagram → Settings → Account type and tools, then reconnect.",
+        "none of the granted Facebook Pages has a linked Instagram Business/Creator account. Make the Instagram account Professional (Creator or Business), link it to a Page (Facebook Page → Settings → Linked accounts → Instagram), then reconnect and tick that Page when Facebook asks which Pages to allow.",
       );
     }
     return linked.map((p) => ({

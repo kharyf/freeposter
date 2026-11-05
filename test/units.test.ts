@@ -39,6 +39,27 @@ test("TikTok chunk plan follows the 5/64/128 MB rules", () => {
   assert.equal(next, 47 * MB + 123);
 });
 
+test("TikTok chunk plan sends a single chunk as the whole file", () => {
+  // 15,607,164 bytes was rejected as "The chunk size is invalid" when planned as one 10 MB chunk.
+  assert.deepEqual(chunkPlan(15_607_164), { chunkSize: 15_607_164, count: 1 });
+  assert.deepEqual(chunkPlan(19 * MB), { chunkSize: 19 * MB, count: 1 });
+  assert.deepEqual(chunkPlan(20 * MB), { chunkSize: 10 * MB, count: 2 });
+  // a single chunk may not exceed 64 MB, so a large file with a large preferred size splits in two
+  const big = chunkPlan(100 * MB, 64 * MB);
+  assert.deepEqual(big, { chunkSize: 50 * MB, count: 2 });
+  for (const size of [5 * MB + 1, 12 * MB, 15_607_164, 63 * MB, 64 * MB, 65 * MB, 127 * MB, 300 * MB + 7]) {
+    for (const preferred of [5 * MB, 10 * MB, 64 * MB]) {
+      const p = chunkPlan(size, preferred);
+      if (p.count === 1) assert.equal(p.chunkSize, size, `${size}/${preferred}: one chunk must be the whole file`);
+      assert.ok(p.chunkSize >= 5 * MB && p.chunkSize <= 64 * MB, `${size}/${preferred}: chunk size in range`);
+      assert.equal(p.count, Math.floor(size / p.chunkSize), `${size}/${preferred}: count = floor(size / chunk)`);
+      const last = chunkRange(size, p, p.count - 1);
+      assert.equal(last.end, size - 1);
+      assert.ok(last.end - last.start + 1 <= 128 * MB);
+    }
+  }
+});
+
 test("X length counts URLs as 23 and wide characters as 2", () => {
   assert.equal(xLength("hello"), 5);
   assert.equal(xLength("see https://example.com/a/very/long/path?q=1"), 4 + 23);

@@ -11,7 +11,15 @@ export class RetryableError extends Error {
     this.retryAfterMs = retryAfterMs;
   }
 }
-export class FatalError extends Error {}
+export interface GraphError {
+  code?: number;
+  error_subcode?: number;
+  is_transient?: boolean;
+}
+export class FatalError extends Error {
+  /** the Meta Graph `error` object, when the response carried one */
+  graph?: GraphError;
+}
 export class AuthError extends FatalError {}
 
 export interface RequestOptions {
@@ -56,7 +64,9 @@ export async function request(url: string, opts: RequestOptions = {}): Promise<R
   if (graphError?.is_transient || [1, 2, 4, 17, 32, 341].includes(graphError?.code ?? -1)) {
     throw new RetryableError(detail);
   }
-  throw new FatalError(detail);
+  const fatal = new FatalError(detail);
+  fatal.graph = graphError;
+  throw fatal;
 }
 
 export async function requestJson<T = any>(url: string, opts: RequestOptions = {}): Promise<T> {
@@ -65,7 +75,7 @@ export async function requestJson<T = any>(url: string, opts: RequestOptions = {
   return (text ? JSON.parse(text) : {}) as T;
 }
 
-function parseGraphError(text: string): { code?: number; is_transient?: boolean } | undefined {
+function parseGraphError(text: string): GraphError | undefined {
   try {
     return JSON.parse(text)?.error;
   } catch {

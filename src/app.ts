@@ -49,7 +49,7 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
     writeCaption: (input) => writeCaption(input, publishers),
   });
   watcher = new DriveWatcher(store, (f) => void intake.handle(f).catch((err) => console.error(`drive intake: ${(err as Error).message}`)));
-  const app = buildServer(store, runner, publishers, options, { intake, poll: () => watcher.poll() });
+  const app = buildServer(store, runner, publishers, options, { intake, poll: () => watcher.poll(), sync: () => watcher.sync() });
 
   try {
     await app.listen({ port: config.port, host: "127.0.0.1" });

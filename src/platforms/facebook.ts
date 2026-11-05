@@ -7,6 +7,9 @@ import { graph, metaAuthorizeUrl, metaPages } from "./meta.ts";
 // Docs: https://developers.facebook.com/docs/video-api/guides/reels-publishing
 // Facebook only allows API publishing to Pages; personal profiles are not reachable.
 
+/** how long a just-finished reel may be reported as nonexistent before we believe it */
+const NOT_FOUND_GRACE_MS = 5 * 60_000;
+
 export const facebook: Publisher = {
   platform: "facebook",
   label: "Facebook Page Reels",
@@ -88,7 +91,18 @@ export const facebook: Publisher = {
     }
 
     const v = await pollUntil("Facebook processing", async () => {
-      const r = await status();
+      let r;
+      try {
+        r = await status();
+      } catch (err) {
+        // For a short while after "finish", Graph can report the new reel as nonexistent (code 100,
+        // subcode 33) even though it is publishing. Keep polling; give up only if it stays missing.
+        if (!(err instanceof FatalError && err.graph?.code === 100 && err.graph.error_subcode === 33)) throw err;
+        progress.notFoundSince ??= Date.now();
+        ctx.save(progress);
+        if (Date.now() - progress.notFoundSince > NOT_FOUND_GRACE_MS) throw err;
+        return undefined;
+      }
       const st = r.status ?? {};
       for (const phase of ["uploading_phase", "processing_phase", "publishing_phase"]) {
         if (st[phase]?.status === "error") {

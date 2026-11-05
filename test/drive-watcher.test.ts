@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DriveWatcher } from "../src/drive/watcher.ts";
 import type { DriveFile } from "../src/drive/client.ts";
-import { json, mockFetch, newStore } from "./helpers.ts";
+import { account, json, mockFetch, newStore } from "./helpers.ts";
 
 const FOLDER = "1gz2qTGVjYyDM9vTB8Ik0DmaBWyMAISry";
 
@@ -166,4 +166,53 @@ test("a folder FreePoster can't open is reported, and fixing the link clears it"
   assert.match(store.driveConnection()!.error!, /folder/i);
   store.setDriveFolder("1gz2qTGVjYyDM9vTB8Ik0DmaBWyMAISry");
   assert.equal(store.driveConnection()!.error, null);
+});
+
+test("sync takes deleted videos off the list, cancels their unsent posts, and leaves the rest", async (t) => {
+  const { store, state, fake, handed, watcher } = drive();
+  t.after(fake.restore);
+  await watcher.poll(); // baseline: empty folder
+  const acct = store.upsertAccount(account("x"));
+  store.upsertDriveFile("kept", { name: "Kept", state: "needs_caption", size: 1, md5: "a" });
+  store.upsertDriveFile("gone", { name: "Gone", state: "needs_caption", size: 1, md5: "b" });
+  store.upsertDriveFile("busy", { name: "Busy", state: "transcribing", size: 1, md5: "c" });
+  store.upsertDriveFile("sched", { name: "Sched", state: "queued", size: 1, md5: "d" });
+  const postId = store.createDrivePost("sched", {
+    sourcePath: "", sha256: "s", caption: "c", title: "t",
+    tiktok: { privacyLevel: "SELF_ONLY", disableComment: false, disableDuet: false, disableStitch: false, brandContent: false, brandOrganic: false },
+  }, [acct.id], null)!;
+  state.files = [{ id: "kept", name: "Kept", size: 1, md5Checksum: "a" }];
+
+  const out = await watcher.sync();
+  assert.deepEqual(out!.removed.sort(), ["Gone", "Sched"]);
+  assert.equal(out!.cancelledPosts, 1);
+  assert.deepEqual(out!.busy, ["Busy"]);
+  assert.equal(store.post(postId), undefined, "the unsent post is cancelled");
+  assert.deepEqual(store.driveFiles().map((f) => f.name).sort(), ["Busy", "Kept"]);
+  assert.equal(store.driveFile("gone")!.state, "removed", "still remembered, so it's never taken in again");
+
+  // Restored from the trash: already known, so it isn't posted again.
+  state.files.push({ id: "gone", name: "Gone", size: 1, md5Checksum: "b" });
+  state.changes = [{ file: { id: "gone", name: "Gone", size: 1, md5Checksum: "b" } }];
+  await watcher.poll();
+  assert.deepEqual(handed, []);
+});
+
+test("sync leaves posts that already went out", async (t) => {
+  const { store, state, fake, watcher } = drive();
+  t.after(fake.restore);
+  await watcher.poll();
+  const acct = store.upsertAccount(account("x"));
+  store.upsertDriveFile("done", { name: "Done", state: "queued", size: 1, md5: "a" });
+  const postId = store.createDrivePost("done", {
+    sourcePath: "", sha256: "s", caption: "c", title: "t",
+    tiktok: { privacyLevel: "SELF_ONLY", disableComment: false, disableDuet: false, disableStitch: false, brandContent: false, brandOrganic: false },
+  }, [acct.id], null)!;
+  for (const j of store.jobsForPost(postId)) store.finishJob(j.id, "published", { resultUrl: "https://x.com/p/1" });
+  state.files = [];
+  const out = await watcher.sync();
+  assert.deepEqual(out!.removed, ["Done"]);
+  assert.equal(out!.cancelledPosts, 0);
+  assert.ok(store.post(postId), "a published post is kept in the history");
+  assert.equal(store.driveFiles().length, 0);
 });

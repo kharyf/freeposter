@@ -22,11 +22,16 @@ export interface CreatorInfo {
 /**
  * TikTok chunk rules: files under 5 MB go in one chunk; otherwise every chunk is 5–64 MB except the
  * last, which absorbs the remainder (up to 128 MB). total_chunk_count = floor(size / chunk_size).
+ * A single-chunk upload must declare chunk_size = video_size, or TikTok answers "The chunk size is invalid".
  */
 export function chunkPlan(size: number, preferred = 10 * MB) {
   if (size < 5 * MB) return { chunkSize: size, count: 1 };
   const chunkSize = Math.min(Math.max(preferred, 5 * MB), 64 * MB, size);
-  return { chunkSize, count: Math.max(1, Math.floor(size / chunkSize)) };
+  const count = Math.floor(size / chunkSize);
+  if (count > 1) return { chunkSize, count };
+  // One chunk would hold the whole file, which TikTok allows only up to 64 MB; above that, split in two.
+  if (size <= 64 * MB) return { chunkSize: size, count: 1 };
+  return { chunkSize: Math.floor(size / 2), count: 2 };
 }
 
 export function chunkRange(size: number, plan: { chunkSize: number; count: number }, index: number) {

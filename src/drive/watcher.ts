@@ -2,10 +2,13 @@
 // (Drive's push notifications would need a public address). Every ten minutes, and while an upload is still
 // finishing, it also lists the folder, to catch anything the feed missed. Each new video is handed over once,
 // after its upload has finished.
+import { unlinkSync } from "node:fs";
 import type { Store } from "../db.ts";
 import { AuthError, FatalError } from "../http.ts";
 import { folderChanges, listFolder, refreshDrive, startPageToken, uploadedAt, type DriveFile } from "./client.ts";
 
+/** States where the intake is still working on the file: Sync leaves these until it's done. */
+const BUSY = new Set<string>(["queued", "downloading", "transcribing", "processing"]);
 const RECONNECT = "Google Drive sign-in expired or was revoked; reconnect Google Drive in Setup";
 export const POLL_MS = 10_000;
 const FULL_LIST_MS = 10 * 60_000;
@@ -85,6 +88,33 @@ export class DriveWatcher {
       }
       throw err;
     }
+  }
+
+  /**
+   * Brings the app in line with the folder now: picks up new videos, then takes videos that were deleted
+   * from the folder off the list (cancelling their posts if those haven't started going out). Videos still
+   * being downloaded or edited are left for the next sync. Null when Drive isn't connected or the folder can't be opened.
+   */
+  async sync(): Promise<{ removed: string[]; cancelledPosts: number; busy: string[] } | null> {
+    await this.poll();
+    const conn = this.store.driveConnection();
+    if (!conn?.folderId || conn.error || !conn.baselineDone) return null;
+    const files = await this.listAll(conn.folderId);
+    if (!files) return null;
+    const present = new Set(files.map((f) => f.id));
+    const out = { removed: [] as string[], cancelledPosts: 0, busy: [] as string[] };
+    for (const f of this.store.driveFiles(Number.MAX_SAFE_INTEGER)) {
+      if (present.has(f.driveId)) continue;
+      if (BUSY.has(f.state)) {
+        out.busy.push(f.name);
+        continue;
+      }
+      const { cancelled, orphanedSource } = this.store.removeDriveFile(f.driveId);
+      if (cancelled) out.cancelledPosts++;
+      if (orphanedSource) try { unlinkSync(orphanedSource); } catch {}
+      out.removed.push(f.name);
+    }
+    return out;
   }
 
   private async doPoll() {

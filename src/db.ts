@@ -394,6 +394,18 @@ export class Store {
     return { cancelled: Number(changes), deleted, orphanedSource: deleted && !this.sourceInUse(deleted.sourcePath) ? deleted.sourcePath : null };
   }
 
+  /**
+   * A video deleted from the Drive folder: cancels its post if that hasn't started going out (what's already
+   * posted stays posted) and takes it off the list. The record is kept, so the same file is never taken in again.
+   */
+  removeDriveFile(driveId: string): { cancelled: number; orphanedSource: string | null } {
+    const f = this.driveFile(driveId);
+    if (!f) return { cancelled: 0, orphanedSource: null };
+    const out = f.postId !== null && this.post(f.postId) ? this.cancelPost(f.postId) : { cancelled: 0, orphanedSource: null };
+    this.db.prepare("UPDATE drive_files SET state = 'removed', note = 'deleted from the Drive folder', updated_at = ? WHERE drive_id = ?").run(Date.now(), driveId);
+    return { cancelled: out.cancelled, orphanedSource: out.orphanedSource };
+  }
+
   /** Whether any post, edit or Drive file still needs this uploaded video (edits share one copy of a file). */
   sourceInUse(path: string): boolean {
     const used = (sql: string) => Boolean(this.db.prepare(sql).get(path));
@@ -539,7 +551,7 @@ export class Store {
   }
 
   driveFiles(limit = 50): DriveFileRecord[] {
-    return this.db.prepare("SELECT * FROM drive_files WHERE state NOT IN ('ignored', 'pending') ORDER BY created_at DESC LIMIT ?").all(limit).map(toDriveFile);
+    return this.db.prepare("SELECT * FROM drive_files WHERE state NOT IN ('ignored', 'pending', 'removed') ORDER BY created_at DESC LIMIT ?").all(limit).map(toDriveFile);
   }
 
   /** Files part-way through the pipeline, oldest first. */

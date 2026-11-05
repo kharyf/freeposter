@@ -22,7 +22,7 @@ function setup() {
     writeCaption: async () => ({ title: "t", caption: "c" }),
   });
   const polls: number[] = [];
-  const app = buildServer(store, new Runner(store, publishers, tmp()), publishers, {}, { intake, poll: async () => { polls.push(1); } });
+  const app = buildServer(store, new Runner(store, publishers, tmp()), publishers, {}, { intake, poll: async () => { polls.push(1); }, sync: async () => ({ removed: [], cancelledPosts: 0, busy: [] }) });
   const put = (body: unknown) => app.inject({ method: "PUT", url: "/api/drive", payload: body as object });
   const patch = (id: number, body: unknown) => app.inject({ method: "PATCH", url: `/api/posts/${id}`, payload: body as object });
   return { store, app, x, tiktok, intake, polls, put, patch };
@@ -146,4 +146,15 @@ test("cancelling a Drive post marks its file cancelled", async () => {
   const f = store.driveFile("d")!;
   assert.equal(f.state, "cancelled");
   assert.equal(f.postId, null);
+});
+
+test("Sync needs a folder, then reports what it took off", async () => {
+  const { store, app } = setup();
+  assert.equal((await app.inject({ method: "POST", url: "/api/drive/sync" })).statusCode, 400);
+  store.saveDriveTokens({ accessToken: "a", refreshToken: "r", expiresAt: null }, "me@example.com");
+  store.setDriveFolder("1gz2qTGVjYyDM9vTB8Ik0DmaBWyMAISry");
+  const res = await app.inject({ method: "POST", url: "/api/drive/sync" });
+  assert.equal(res.statusCode, 200, res.body);
+  assert.deepEqual(res.json().removed, []);
+  assert.ok(Array.isArray(res.json().view.files));
 });

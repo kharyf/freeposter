@@ -57,7 +57,8 @@ export type DriveFileState =
   | "ignored" | "invalid" | "late"
   | "downloading" | "transcribing" | "processing"
   | "scheduled" | "needs_caption" | "edit_failed" | "failed"
-  | "cancelled"; // its post was cancelled in FreePoster
+  | "cancelled" // its post was cancelled in FreePoster
+  | "removed"; // deleted from the Drive folder; found by Sync and taken off the list
 
 /** One video seen in the watched Drive folder, and how far FreePoster got with it. */
 export interface DriveFileRecord {

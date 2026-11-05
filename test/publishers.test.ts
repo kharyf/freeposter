@@ -287,6 +287,38 @@ test("Facebook: does not send 'finish' again if publishing already started", asy
   }
 });
 
+const notFound = () =>
+  json({ error: { message: "Unsupported get request. Object with ID 'v1' does not exist", type: "GraphMethodException", code: 100, error_subcode: 33 } }, 400);
+
+test("Facebook: a reel briefly reported as missing right after 'finish' keeps polling", async () => {
+  let n = 0;
+  const m = mockFetch(route([
+    ["GET https://graph.facebook.com/v24.0/v1?", () =>
+      n++ < 2 ? notFound() : json({ status: { publishing_phase: { status: "complete" } }, permalink_url: "/reel/557/" })],
+  ]));
+  const realSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = ((fn: () => void) => realSetTimeout(fn, 0)) as typeof setTimeout;
+  try {
+    const { c } = ctx("facebook", { videoId: "v1", uploaded: true, finishRequested: true, finished: true });
+    const r = await facebook.publish(c);
+    assert.equal(r.url, "https://www.facebook.com/reel/557/");
+    assert.equal(n, 3);
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+    m.restore();
+  }
+});
+
+test("Facebook: a reel still missing after the grace period fails", async () => {
+  const m = mockFetch(route([["GET https://graph.facebook.com/v24.0/v1?", notFound]]));
+  try {
+    const { c } = ctx("facebook", { videoId: "v1", uploaded: true, finishRequested: true, finished: true, notFoundSince: Date.now() - 6 * 60_000 });
+    await assert.rejects(facebook.publish(c), /does not exist/);
+  } finally {
+    m.restore();
+  }
+});
+
 // ---------------- pre-upload validation ----------------
 
 test("captions are checked against each platform before anything uploads", () => {
