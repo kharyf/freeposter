@@ -18,7 +18,9 @@ if (packaged) {
 
 const origin = `http://localhost:${config.port}`;
 const icon = nativeImage.createFromPath(join(codeDir, "icon.png"));
-app.setAppUserModelId("FreePoster"); // taskbar grouping and notifications under FreePoster's own name
+// Taskbar grouping and notifications under FreePoster's own name; must match appId in scripts/build-app.ts,
+// the id the installer gives the Start menu shortcut.
+app.setAppUserModelId("com.freeposter.app");
 app.setPath("userData", join(dataDir, "window")); // keep Chromium's files out of the settings folder
 
 let window: BrowserWindow | undefined;

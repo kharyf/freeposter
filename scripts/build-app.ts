@@ -1,6 +1,6 @@
 // Builds the desktop app.
 //   node scripts/build-app.ts            → build/app, run with `electron build/app` (npm run desktop)
-//   node scripts/build-app.ts --package  → dist/FreePoster-win32-x64/FreePoster.exe (npm run build:app)
+//   node scripts/build-app.ts --package  → dist/FreePoster-Setup-<version>.exe, the Windows installer (npm run build:app)
 import { copyFileSync, cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { build } from "esbuild";
@@ -9,6 +9,8 @@ import { iconIco, iconPng } from "./icon.ts";
 const root = resolve(import.meta.dirname, "..");
 const out = join(root, "build", "app");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+// Windows' Application User Model ID for the installed shortcuts; src/desktop.ts sets the same one at runtime.
+const APP_ID = "com.freeposter.app";
 
 rmSync(out, { recursive: true, force: true });
 mkdirSync(join(out, "public"), { recursive: true });
@@ -34,7 +36,11 @@ for (const name of ["index.html", "forward.js", "terms.html", "privacy.html", "_
 // Only the Windows x64 binaries: the package carries every platform's (~300 MB).
 const ort = join(root, "node_modules", "onnxruntime-node");
 const ortOut = join(out, "node_modules", "onnxruntime-node");
-for (const part of ["package.json", "dist", join("bin", "napi-v6", "win32", "x64")]) cpSync(join(ort, part), join(ortOut, part), { recursive: true });
+for (const part of ["dist", join("bin", "napi-v6", "win32", "x64")]) cpSync(join(ort, part), join(ortOut, part), { recursive: true });
+// Its other dependencies (adm-zip, global-agent) only serve its install script, which the app never runs:
+// list just onnxruntime-common, so the installer's dependency scan doesn't look for them.
+const ortPkg = JSON.parse(readFileSync(join(ort, "package.json"), "utf8"));
+writeFileSync(join(ortOut, "package.json"), JSON.stringify({ ...ortPkg, scripts: {}, dependencies: { "onnxruntime-common": ortPkg.dependencies["onnxruntime-common"] } }, null, 2));
 cpSync(join(root, "node_modules", "onnxruntime-common"), join(out, "node_modules", "onnxruntime-common"), { recursive: true });
 writeFileSync(join(out, "icon.png"), iconPng());
 writeFileSync(join(root, "build", "icon.ico"), iconIco());
@@ -43,24 +49,41 @@ writeFileSync(join(out, "package.json"), JSON.stringify({
   productName: "FreePoster",
   version: pkg.version,
   description: pkg.description,
+  author: "FreePoster contributors",
   main: "main.cjs",
+  // The installer ships only declared dependencies; everything else is bundled into main.cjs.
+  dependencies: { "onnxruntime-node": ortPkg.version, "onnxruntime-common": ortPkg.dependencies["onnxruntime-common"] },
 }, null, 2));
 console.log(`built ${out}`);
 
 if (process.argv.includes("--package")) {
-  const { packager } = await import("@electron/packager");
-  const [dir] = await packager({
-    dir: out,
-    out: join(root, "dist"),
-    name: "FreePoster",
-    executableName: "FreePoster",
-    platform: "win32",
-    arch: "x64",
-    electronVersion: JSON.parse(readFileSync(join(root, "node_modules", "electron", "package.json"), "utf8")).version,
-    icon: join(root, "build", "icon.ico"),
-    asar: { unpack: "**/node_modules/onnxruntime-node/**" }, // native DLLs can't load from inside an asar
-    overwrite: true,
-    win32metadata: { ProductName: "FreePoster", FileDescription: "FreePoster", CompanyName: "FreePoster" },
+  const { build: builder, Platform, Arch } = await import("electron-builder");
+  const files = await builder({
+    projectDir: out,
+    targets: Platform.WINDOWS.createTarget("nsis", Arch.x64),
+    // electron-builder would publish by itself on a CI tag build; .github/workflows/release.yml does that instead.
+    publish: "never",
+    config: {
+      appId: APP_ID,
+      productName: "FreePoster",
+      copyright: `Copyright © ${new Date().getFullYear()} FreePoster contributors`,
+      electronVersion: JSON.parse(readFileSync(join(root, "node_modules", "electron", "package.json"), "utf8")).version,
+      directories: { output: join(root, "dist") },
+      // build/app is already complete (bundle, public/, the onnxruntime files): ship it as is.
+      files: ["**/*"],
+      npmRebuild: false,
+      asarUnpack: ["node_modules/onnxruntime-node/**"], // native DLLs can't load from inside an asar
+      win: { icon: join(root, "build", "icon.ico"), executableName: "FreePoster" },
+      nsis: {
+        artifactName: "FreePoster-Setup-${version}.${ext}",
+        // A per-user install: no admin prompt. Settings in %APPDATA%\FreePoster survive uninstalling.
+        oneClick: true,
+        perMachine: false,
+        deleteAppDataOnUninstall: false,
+        installerIcon: join(root, "build", "icon.ico"),
+        uninstallerIcon: join(root, "build", "icon.ico"),
+      },
+    },
   });
-  console.log(`packaged ${join(dir, "FreePoster.exe")}`);
+  console.log(`packaged\n  ${files.join("\n  ")}`);
 }

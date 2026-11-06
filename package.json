@@ -13,7 +13,8 @@
     "dev": "node --watch src/main.ts",
     "test": "node --test \"test/**/*.test.ts\"",
     "typecheck": "tsc",
-    "build:app": "node scripts/build-app.ts --package"
+    "build:app": "node scripts/build-app.ts --package",
+    "checksums": "node scripts/checksums.ts"
   },
   "dependencies": {
     "@fastify/multipart": "^9.4.0",
@@ -21,9 +22,9 @@
     "onnxruntime-node": "^1.31.1"
   },
   "devDependencies": {
-    "@electron/packager": "^20.3.0",
     "@types/node": "^24.19.2",
     "electron": "^45.0.0",
+    "electron-builder": "^26.18.0",
     "esbuild": "^0.28.2",
     "typescript": "^5.9.3"
   }

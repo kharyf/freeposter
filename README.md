@@ -9,17 +9,35 @@ FreePoster is a standalone app (Electron) with its own window, icon and taskbar 
 ```bash
 npm install
 node node_modules/electron/install.js   # only if npm skipped Electron's download (install scripts disabled)
-npm run build:app       # → dist/FreePoster-win32-x64/FreePoster.exe
+npm run build:app       # → dist/FreePoster-Setup-<version>.exe, the installer
 npm run desktop         # or: run the app from source, without packaging
 ```
 
-Run `dist/FreePoster-win32-x64/FreePoster.exe` (keep it with the rest of that folder; you can move the whole folder and pin the exe to Start or the taskbar). Closing the window, or pressing **Quit**, stops it. Launching it again while it runs brings its window forward.
+Run `dist/FreePoster-Setup-<version>.exe`. It installs FreePoster for your Windows user (no admin prompt) and adds it to the Start menu and desktop; uninstall it from Windows Settings → Apps. `dist/win-unpacked/FreePoster.exe` is the same app without installing. Closing the window, or pressing **Quit**, stops it. Launching it again while it runs brings its window forward.
+
+If you run the build from a VS Code terminal, it sets `ELECTRON_RUN_AS_NODE=1`, which makes `FreePoster.exe` start as plain Node. Unset it before launching the built app from that terminal.
 
 The first time, a **setup screen** asks for everything FreePoster needs. It starts by making your own redirect URI on Cloudflare (free), checks ffmpeg, then walks through each platform's developer console with that redirect URI to register, takes the keys, and ends with connecting your accounts. Skip any platform you don't use; reopen it any time with **Setup**.
 
 **Connecting accounts happens in your web browser**, because Google, Meta and others refuse to let you sign in to them inside app windows. Press **Connect**, sign in on the page that opens, and the FreePoster window updates by itself; the browser tab can be closed.
 
-The app keeps its settings and data in `%APPDATA%\FreePoster` (`.env`, `data/`, and `data/freeposter.log`), separate from a source checkout's. `ffmpeg`/`ffprobe` must be installed (on PATH, or their paths entered in setup).
+The app keeps its settings and data in `%APPDATA%\FreePoster` (`.env`, `data/`, and `data/freeposter.log`), separate from a source checkout's. Uninstalling or upgrading leaves that folder in place. `ffmpeg`/`ffprobe` must be installed (on PATH, or their paths entered in setup).
+
+### Windows says it's protected your PC?
+
+FreePoster's installer isn't code-signed, so Windows doesn't know who made it and warns you the first time you run it. To install anyway:
+
+1. If your browser says the file isn't commonly downloaded, choose **Keep**.
+2. When the blue "Windows protected your PC" box appears, click **More info**, then **Run anyway**.
+
+Windows 11 with **Smart App Control** turned on blocks unsigned apps without offering **Run anyway**, and work or school computers may do the same.
+
+To check your download, compare its hash with `SHA256SUMS.txt` on the release page. To go further, the GitHub CLI can confirm the file was built by this repository's GitHub Actions from its public source:
+
+```powershell
+Get-FileHash .\FreePoster-Setup-<version>.exe   # must match the line for this file in SHA256SUMS.txt
+gh attestation verify .\FreePoster-Setup-<version>.exe --repo kharyf/freeposter   # optional, with the GitHub CLI
+```
 
 ## Run from source
 
@@ -124,6 +142,19 @@ src/db.ts              SQLite (data/freeposter.db)
 src/platforms/*.ts     one module per platform, against its official API
 public/index.html      the UI, including the setup screen
 redirect-page/         templates for each user's redirect page, Terms and Privacy (made in setup; see above)
-scripts/build-app.ts   bundles the desktop app and packages it into dist/FreePoster-win32-x64/
+scripts/build-app.ts   bundles the desktop app and builds the installer, dist/FreePoster-Setup-<version>.exe
+scripts/checksums.ts   writes dist/SHA256SUMS.txt for the installer
 scripts/icon.ts        draws the app icon
+.github/workflows/release.yml   builds, tests and attests a release when a version tag is pushed
 ```
+
+## Making a release
+
+Releases are built by GitHub Actions from a clean checkout, never on your own machine, so nothing local (your `.env`, `data/`) can end up in them.
+
+```bash
+npm version 1.0.0        # sets the version in package.json and creates the tag v1.0.0
+git push --follow-tags   # the tag starts .github/workflows/release.yml
+```
+
+The workflow tests the code, then builds the installer, `SHA256SUMS.txt` and the build attestation. It puts them on a **draft** release with notes made from the commits since the last release. Read the draft under **Releases**, edit the notes if you like, and press **Publish**. A tag that doesn't match `package.json`'s version stops the workflow before it builds anything.
