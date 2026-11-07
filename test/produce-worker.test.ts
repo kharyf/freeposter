@@ -174,3 +174,18 @@ test("a restart picks up where it left off", async () => {
   const second = new ProductionWorker(store, { adapters: fakes().adapters, dir });
   assert.equal((await settle(second, p.id)).state, "ready");
 });
+
+test("a revise that changes no shots still re-assembles", async () => {
+  const { adapters, stats } = fakes();
+  const w = new ProductionWorker(newStore(), { adapters, dir: tmp() });
+  const p = await w.create(rawSpec());
+  await settle(w, p.id);
+  stats.renders.length = 0;
+  const raw: any = rawSpec();
+  raw.transitions = { default: { type: "crossfade", sec: 0.3 } };
+  assert.deepEqual((await w.revise(p.id, raw)).changed, []);
+  const done = await settle(w, p.id, 15_000);
+  assert.equal(done.state, "ready");
+  assert.equal(done.revision, 2);
+  assert.deepEqual(stats.renders, []);
+});

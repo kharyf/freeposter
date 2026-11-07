@@ -160,10 +160,13 @@ export class ProductionWorker {
     if (Date.now() - this.lastCleanup > 3_600_000) this.cleanup();
   }
 
-  /** Rendering productions whose current revision has every shot done. */
+  /**
+   * Open productions whose current revision has every shot done. Includes queued ones: a revise that changed
+   * no shots (only transitions, sound or captions) carries every shot over and never claims one.
+   */
   readyToAssemble(): Production[] {
     const ids = this.productions.db.prepare(
-      `SELECT p.id FROM productions p WHERE p.state = 'rendering'
+      `SELECT p.id FROM productions p WHERE p.state IN ('queued', 'rendering')
        AND NOT EXISTS (SELECT 1 FROM shots s WHERE s.production_id = p.id AND s.revision = p.revision AND s.state != 'done')`,
     ).all() as { id: number }[];
     return ids.map((r) => this.productions.get(r.id)!);

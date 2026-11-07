@@ -22,6 +22,8 @@ If you set an app password in FreePoster, add it as HTTP Basic auth (any user na
       Authorization: "Basic <base64 of freeposter:YOUR_APP_PASSWORD>"
 ```
 
+Downloading a preview (`preview_url`) needs the same header when a password is set.
+
 Restart Hermes. Ask it "what can FreePoster make?" and it should call `describe_production_tools`.
 
 ## 2. The webhook route
