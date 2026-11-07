@@ -48,6 +48,8 @@ mkdirSync(join(dataDir, "uploads"), { recursive: true });
 mkdirSync(join(dataDir, "renders"), { recursive: true });
 mkdirSync(join(dataDir, "edits"), { recursive: true });
 mkdirSync(join(dataDir, "models"), { recursive: true });
+mkdirSync(join(dataDir, "productions"), { recursive: true });
+mkdirSync(join(dataDir, "sfx"), { recursive: true });
 
 /** Every key the setup screen may write to .env. Secrets are never sent back to the browser. */
 export const SETTINGS = {
@@ -77,6 +79,17 @@ export const SETTINGS = {
   DAILY_CAP_X: { secret: false },
   X_MAX_CHARS: { secret: false },
   X_MAX_VIDEO_SECONDS: { secret: false },
+  // Productions (HyperFrames, WanGP, Blender) and the agent's reach.
+  AGENT_APPROVAL: { secret: false },
+  NOTIFY_WEBHOOK_URL: { secret: false },
+  NOTIFY_WEBHOOK_SECRET: { secret: true },
+  HYPERFRAMES_CMD: { secret: false },
+  WANGP_DIR: { secret: false },
+  WANGP_MODEL: { secret: false },
+  WANGP_TIMEOUT_MIN: { secret: false },
+  BLENDER_PATH: { secret: false },
+  CPU_LANE_CONCURRENCY: { secret: false },
+  SHOT_RETENTION_DAYS: { secret: false },
 } as const;
 export type SettingKey = keyof typeof SETTINGS;
 
@@ -89,6 +102,12 @@ function normalizePage(url: string) {
   if (!url || url.toLowerCase() === "off") return "";
   try { return new URL(url).href; } catch { return ""; }
 }
+
+/** A whole number above zero, else the fallback. */
+const positive = (raw: string, fallback: number) => {
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+};
 
 function build() {
   const port = Number(setting("PORT", "4400"));
@@ -124,6 +143,22 @@ function build() {
     } satisfies Record<Platform, number>,
     xMaxChars: Number(setting("X_MAX_CHARS", "280")),
     xMaxVideoSeconds: Number(setting("X_MAX_VIDEO_SECONDS", "140")),
+    produce: {
+      /** "on": an agent may approve a production or edit once the user says yes in chat. Only the window changes it. */
+      agentApproval: setting("AGENT_APPROVAL").toLowerCase() === "on",
+      webhookUrl: setting("NOTIFY_WEBHOOK_URL"),
+      webhookSecret: setting("NOTIFY_WEBHOOK_SECRET"),
+      /** empty = FreePoster's own pinned HyperFrames install (tools.ts) */
+      hyperframesCmd: setting("HYPERFRAMES_CMD"),
+      /** empty = looked for (tools.ts) */
+      wangpDir: setting("WANGP_DIR"),
+      wangpModel: setting("WANGP_MODEL"),
+      wangpTimeoutMin: positive(setting("WANGP_TIMEOUT_MIN"), 30),
+      /** empty = the newest blender.exe under Program Files (tools.ts) */
+      blenderPath: setting("BLENDER_PATH"),
+      cpuLane: positive(setting("CPU_LANE_CONCURRENCY"), 2),
+      shotRetentionDays: positive(setting("SHOT_RETENTION_DAYS"), 14),
+    },
   };
 }
 
