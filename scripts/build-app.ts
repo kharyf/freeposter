@@ -28,6 +28,18 @@ await build({
   logOverride: { "empty-import-meta": "silent" },
 });
 copyFileSync(join(root, "public", "index.html"), join(out, "public", "index.html"));
+// Blender templates productions render from (src/produce/adapters/blender.ts reads them beside the bundle).
+cpSync(join(root, "templates"), join(out, "templates"), { recursive: true, filter: (src) => !src.includes("__pycache__") });
+// The freeposter CLI: one dependency-free file that runs on Node 24+, plus a Windows wrapper to put on PATH.
+await build({
+  entryPoints: [join(root, "src", "cli.ts")],
+  outfile: join(out, "cli", "freeposter-cli.mjs"),
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  target: "node24",
+});
+writeFileSync(join(out, "cli", "freeposter.cmd"), '@node "%~dp0freeposter-cli.mjs" %*\r\n');
 // The templates each user's redirect page is made from (setup's first step); not the maintainer's TikTok files.
 mkdirSync(join(out, "redirect-page"));
 for (const name of ["index.html", "forward.js", "terms.html", "privacy.html", "_headers"]) {
@@ -72,7 +84,8 @@ if (process.argv.includes("--package")) {
       // build/app is already complete (bundle, public/, the onnxruntime files): ship it as is.
       files: ["**/*"],
       npmRebuild: false,
-      asarUnpack: ["node_modules/onnxruntime-node/**"], // native DLLs can't load from inside an asar
+      // native DLLs can't load from inside an asar, and Blender and the CLI's users read templates/ and cli/ as plain files
+      asarUnpack: ["node_modules/onnxruntime-node/**", "templates/**", "cli/**"],
       win: { icon: join(root, "build", "icon.ico"), executableName: "FreePoster" },
       nsis: {
         artifactName: "FreePoster-Setup-${version}.${ext}",

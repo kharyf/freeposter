@@ -11,6 +11,7 @@
     "start": "node src/main.ts",
     "desktop": "node scripts/build-app.ts && electron build/app",
     "dev": "node --watch src/main.ts",
+    "cli": "node src/cli.ts",
     "test": "node --import ./test/isolated-home.ts --test \"test/**/*.test.ts\"",
     "typecheck": "tsc",
     "build:app": "node scripts/build-app.ts --package",

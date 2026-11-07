@@ -14,7 +14,8 @@ import type { RenderContext, ShotAdapter } from "./index.ts";
 const FPS = 30;
 
 /** Template folders: the ones FreePoster ships, then the user's own (which win on a name clash). */
-export const templateDirs = () => [join(codeDir, "templates", "blender"), join(dataDir, "blender-templates")];
+// In the installed app they are unpacked beside app.asar, since Blender can't read inside it.
+export const templateDirs = () => [join(codeDir.replace(/app\.asar$/, "app.asar.unpacked"), "templates", "blender"), join(dataDir, "blender-templates")];
 
 /** Every template with a template.py and a schema.json, by folder name. */
 export function blenderTemplates(): Record<string, TemplateSchema & { script: string }> {
