@@ -562,6 +562,7 @@ const SETUP_STEPS = [
   { id: "welcome", title: "Video tools" },
   ...Object.entries(SETUP_PLATFORMS).map(([id, p]) => ({ id, title: p.title, platform: true })),
   { id: "limits", title: "Limits" },
+  { id: "production", title: "Production tools" },
   { id: "connect", title: "Connect accounts" },
 ];
 let settings = null;
@@ -671,6 +672,37 @@ function stepHtml(step) {
       <div class="note">${esc(note)}</div>
       <div class="grid2">${p.fields.map(([k, label]) => field(k, label)).join("")}</div>`;
   }
+  if (step.id === "production") {
+    const approval = (settings.values.AGENT_APPROVAL || "off").toLowerCase() === "on" ? "on" : "off";
+    return `<h1>Production tools</h1>
+      <p>Optional. Your AI agent can make whole videos from several shots: HTML animations (HyperFrames), AI video (WanGP) and 3D titles (Blender), joined, previewed and posted by FreePoster. Skip this if you only post videos you made yourself.</p>
+      <div id="produceHealth" class="muted">Checking the tools…</div>
+      <h2 style="margin-top:16px">Where the tools are</h2>
+      <div class="grid2">
+        ${field("WANGP_DIR", "WanGP folder", "Blank finds C:\\src\\WanGP. The folder that holds wgp.py.")}
+        ${field("WANGP_MODEL", "WanGP model", "Blank uses the model you last used in WanGP.")}
+        ${field("BLENDER_PATH", "Blender", "Blank uses the newest Blender installed; or the full path to blender.exe")}
+        ${field("WANGP_TIMEOUT_MIN", "WanGP time limit per shot (minutes)", "default 30", "number")}
+      </div>
+      <details><summary>Advanced</summary><div class="grid2">
+        ${field("HYPERFRAMES_CMD", "HyperFrames command", "Blank uses FreePoster's own copy (install it above).")}
+        ${field("CPU_LANE_CONCURRENCY", "Shots rendered side by side", "default 2 (HyperFrames, files, edits); WanGP and Blender always take turns on the GPU", "number")}
+        ${field("SHOT_RETENTION_DAYS", "Keep shot files after posting (days)", "default 14; finished videos are kept", "number")}
+      </div></details>
+      <h2 style="margin-top:16px">Your agent</h2>
+      <p>FreePoster tells your agent when a video is ready, an edit is done or a post went out, so it doesn't have to keep asking. For Hermes Agent, the address is <code>http://localhost:8644/webhooks/freeposter</code>, and the secret is the one in its <code>freeposter</code> webhook route.</p>
+      <div class="grid2">
+        ${field("NOTIFY_WEBHOOK_URL", "Webhook address", "Blank sends nothing.")}
+        ${field("NOTIFY_WEBHOOK_SECRET", "Webhook secret", "The same text as in your agent's webhook settings.")}
+      </div>
+      <p><button type="button" data-produce="webhook-test">Send a test event</button> <span id="webhookTest"></span></p>
+      <div class="field"><label for="f_AGENT_APPROVAL">Let my agent approve</label>
+        <select id="f_AGENT_APPROVAL" data-key="AGENT_APPROVAL">
+          <option value="off" ${approval === "off" ? "selected" : ""}>Off: I approve videos and edits here</option>
+          <option value="on" ${approval === "on" ? "selected" : ""}>On: my agent may post once I say yes in chat</option>
+        </select>
+        <div class="hint">Posting is public. With this on, your agent should show you each preview and post only after you say yes.</div></div>`;
+  }
   if (step.id === "limits") {
     return `<h1>Limits</h1>
       <p>The defaults suit most accounts. Posts over a daily cap wait for the rolling 24-hour window instead of failing.</p>
@@ -721,6 +753,7 @@ function renderSetup() {
       ${skip && !settings.configured[step.id] ? `<button type="button" data-nav="skip">${esc(skip)}</button>` : ""}
       <button type="button" class="primary" data-nav="next">${last ? "Finish" : "Save & continue"}</button>
     </div>`;
+  if (step.id === "production") void loadProductionHealth();
 }
 
 async function saveStep() {
@@ -792,12 +825,55 @@ $("setup").addEventListener("click", async (e) => {
   const redirect = e.target.closest("[data-redirect]")?.dataset.redirect;
   if (redirect === "folder") return makeRedirectFolder();
   if (redirect === "show") return fetch("/api/redirect-page/show", { method: "PUT" });
+  const produce = e.target.closest("[data-produce]");
+  if (produce) return produceAction(produce);
   if (nav === "next" || nav === "skip" || nav === "accept") {
     stepIndex++;
     await loadStatus();
     renderSetup();
   }
 });
+
+/** The Production tools step: what each tool reports, the HyperFrames install, the webhook test. */
+async function loadProductionHealth() {
+  const box = $("produceHealth");
+  if (!box) return;
+  const res = await fetch("/api/produce/health");
+  if (!res.ok) { box.textContent = "Production tools aren't available in this FreePoster."; return; }
+  const h = await res.json();
+  const names = { hyperframes: "HyperFrames", wan: "WanGP", blender: "Blender", file: "Video files", edit: "Talking-head edits" };
+  box.innerHTML = h.kinds.filter((k) => ["hyperframes", "wan", "blender"].includes(k.kind)).map((k) =>
+    `<div>${k.ok ? `<span class="check-ok">✓ ${names[k.kind]}</span>` : `<span class="check-bad">✗ ${names[k.kind]}</span>`} <span class="muted">${esc(k.detail)}</span>
+      ${k.kind === "hyperframes" && !k.ok ? ` <button type="button" data-produce="install">Install HyperFrames ${esc(h.hyperframesVersion)}</button>` : ""}</div>`).join("")
+    + `<div class="muted" style="margin-top:8px">Blender templates: ${h.templates.map(esc).join(", ") || "none"}. Sound effects: ${h.sfx.length} in <code>${esc(h.sfxDir)}</code>.</div>`
+    + (h.webhook.lastError ? `<div class="banner err" style="margin:8px 0 0">The webhook last failed: ${esc(h.webhook.lastError)}</div>` : "");
+}
+
+async function produceAction(button) {
+  const action = button.dataset.produce;
+  button.disabled = true;
+  try {
+    if (action === "install") {
+      button.textContent = "Installing… (a minute or two)";
+      const res = await fetch("/api/produce/hyperframes/install", { method: "POST" });
+      if (!res.ok) throw new Error((await res.json()).error);
+      await loadProductionHealth();
+    } else if (action === "webhook-test") {
+      // Save what's typed first, so the test uses it.
+      const values = {};
+      for (const input of $("stepBody").querySelectorAll("[data-key^='NOTIFY_']")) values[input.dataset.key] = input.value;
+      const saved = await fetch("/api/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ values }) });
+      if (!saved.ok) throw new Error((await saved.json()).error);
+      settings = await saved.json();
+      const res = await fetch("/api/notify/test", { method: "POST" });
+      $("webhookTest").innerHTML = res.ok ? `<span class="check-ok">✓ delivered</span>` : `<span class="check-bad">✗ ${esc((await res.json()).error)}</span>`;
+    }
+  } catch (err) {
+    $("setupError").innerHTML = `<div class="banner err" style="margin:16px 0 0">${esc(err.message)}</div>`;
+  } finally {
+    button.disabled = false;
+  }
+}
 
 /** Saves the owner's details, then writes the folder to upload to Cloudflare. */
 async function makeRedirectFolder() {

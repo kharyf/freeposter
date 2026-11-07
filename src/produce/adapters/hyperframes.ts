@@ -20,7 +20,7 @@ export function hyperframesAdapter(opts: { command?: () => { bin: string; args: 
     version: 1,
     async health() {
       const cmd = command();
-      if (!cmd) return { ok: false, detail: `HyperFrames ${HYPERFRAMES_VERSION} isn't installed yet; install it from Setup` };
+      if (!cmd) return { ok: false, detail: `version ${HYPERFRAMES_VERSION} isn't installed yet (Setup → Production tools)` };
       try {
         const { code, tail } = await runTool(cmd.bin, [...cmd.args, "--version"], { signal: AbortSignal.timeout(60_000) });
         return code === 0 ? { ok: true, detail: `HyperFrames ${tail.trim().split("\n").at(-1)}` } : { ok: false, detail: tail };

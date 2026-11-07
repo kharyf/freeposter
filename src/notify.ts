@@ -25,6 +25,23 @@ export function queueEvent(store: Store, event: EventType, key: string, fields: 
   store.addEvent(key, event, body);
 }
 
+/** POSTs a body to the webhook with the timestamped signature; throws unless it answers 2xx. */
+export async function postSigned(url: string, secret: string, body: string, requestId: string, fetchImpl: typeof fetch = fetch) {
+  const ts = Math.floor(Date.now() / 1000);
+  const res = await fetchImpl(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Webhook-Timestamp": String(ts),
+      "X-Webhook-Signature-V2": signBody(body, secret, ts),
+      "X-Request-ID": requestId,
+    },
+    body,
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) throw new Error(`webhook answered ${res.status}`);
+}
+
 export class Notifier {
   store: Store;
   fetch: typeof fetch;
@@ -58,21 +75,9 @@ export class Notifier {
     const url = config.produce.webhookUrl;
     if (!url) return;
     for (const row of this.store.dueEvents(Date.now(), MAX_ATTEMPTS)) {
-      const ts = Math.floor(Date.now() / 1000);
       const attempts = row.attempts + 1;
       try {
-        const res = await this.fetch(url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Webhook-Timestamp": String(ts),
-            "X-Webhook-Signature-V2": signBody(row.body, config.produce.webhookSecret, ts),
-            "X-Request-ID": row.key,
-          },
-          body: row.body,
-          signal: AbortSignal.timeout(15_000),
-        });
-        if (!res.ok) throw new Error(`webhook answered ${res.status}`);
+        await postSigned(url, config.produce.webhookSecret, row.body, row.key, this.fetch);
         this.store.markEvent(row.id, { sentAt: Date.now(), attempts, nextTryAt: row.nextTryAt, error: null });
       } catch (err) {
         const message = (err as Error).message;

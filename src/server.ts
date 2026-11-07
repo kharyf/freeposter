@@ -13,6 +13,11 @@ import { codeDir, config, dataDir, envFile, isConfigured, isLocalUrl, needsRedir
 import { randomToken } from "./crypto.ts";
 import type { SignIn, Store } from "./db.ts";
 import { registerMcp, trustedRequest } from "./mcp.ts";
+import { postSigned } from "./notify.ts";
+import { blenderTemplates } from "./produce/adapters/blender.ts";
+import { sfxDir, sfxLibrary } from "./produce/sfx.ts";
+import { SHOT_KINDS } from "./produce/spec.ts";
+import { blenderPath, HYPERFRAMES_VERSION, installHyperframes, wangpDir, wangpModel } from "./produce/tools.ts";
 import type { ProductionWorker } from "./produce/worker.ts";
 import type { Publisher } from "./platforms/base.ts";
 import { creatorInfo } from "./platforms/tiktok.ts";
@@ -352,6 +357,11 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
       if (k === "REDIRECT_PAGE_URL" && value && value.toLowerCase() !== "off" && !/^https:\/\/[^\s?#]+$/.test(value)) {
         problems.push("REDIRECT_PAGE_URL must be an https address, like https://yourname-freeposter.pages.dev, or off");
       }
+      if (/^(WANGP_TIMEOUT_MIN|CPU_LANE_CONCURRENCY|SHOT_RETENTION_DAYS)$/.test(k) && value && !(Number.isInteger(Number(value)) && Number(value) > 0)) {
+        problems.push(`${k} must be a whole number above 0`);
+      }
+      if (k === "AGENT_APPROVAL" && value && !/^(on|off)$/i.test(value)) problems.push("AGENT_APPROVAL must be on or off");
+      if (k === "NOTIFY_WEBHOOK_URL" && value && !/^https?:\/\/\S+$/.test(value)) problems.push("NOTIFY_WEBHOOK_URL must be an http or https address");
       if (k === "SITE_CONTACT_EMAIL" && value && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) problems.push("the contact email doesn't look like an email address");
       if (k === "BASE_URL" && value) {
         value = value.replace(/\/$/, "");
@@ -371,6 +381,44 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     saveSettings(out);
     if (pageBefore && config.redirectPage !== pageBefore) store.setPref("redirect.changedFrom", pageBefore);
     return { ...(await settingsView()), restartNeeded: config.port !== portBefore };
+  });
+
+  // ---- productions: what the setup screen shows about HyperFrames, WanGP, Blender, the SFX library and the webhook ----
+
+  app.get("/api/produce/health", async (_req, reply) => {
+    if (!producer) return reply.code(404).send({ error: "productions aren't available" });
+    const kinds = await Promise.all(SHOT_KINDS.map(async (kind) => ({ kind, ...(await producer.adapters[kind].health()) })));
+    return {
+      kinds,
+      templates: Object.keys(blenderTemplates()),
+      sfx: sfxLibrary().map((s) => s.name),
+      sfxDir: sfxDir(),
+      hyperframesVersion: HYPERFRAMES_VERSION,
+      found: { blender: blenderPath(), wangp: wangpDir(), wangpModel: wangpModel() },
+      webhook: { url: config.produce.webhookUrl, secretSet: Boolean(config.produce.webhookSecret), lastError: store.outbox().filter((e) => !e.sentAt && e.lastError).at(-1)?.lastError ?? null },
+      agentApproval: config.produce.agentApproval,
+    };
+  });
+
+  app.post("/api/produce/hyperframes/install", async (_req, reply) => {
+    try {
+      await installHyperframes();
+      return { ok: true };
+    } catch (err) {
+      return reply.code(500).send({ error: (err as Error).message });
+    }
+  });
+
+  app.post("/api/notify/test", async (_req, reply) => {
+    const url = config.produce.webhookUrl;
+    if (!url) return reply.code(400).send({ error: "set the webhook address first" });
+    const body = JSON.stringify({ event_type: "test", at: new Date().toISOString(), summary: "FreePoster test event: the webhook works." });
+    try {
+      await postSigned(url, config.produce.webhookSecret, body, `test:${Date.now()}`);
+      return { ok: true };
+    } catch (err) {
+      return reply.code(502).send({ error: `the webhook didn't take it: ${(err as Error).message}` });
+    }
   });
 
   app.put<{ Body: { complete?: boolean } }>("/api/setup", async (req) => {

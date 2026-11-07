@@ -75,6 +75,22 @@ For apps configured with a JSON file: `{"mcpServers": {"freeposter": {"type": "h
 | `get_post` / `list_posts` | Each account's job state, the published post's link, or the platform's reason for refusing it |
 | `reschedule_post` / `cancel_post` | Move, post early, or cancel a post that hasn't started going out |
 | `retry_job` | Try a failed account again from where it stopped |
+| `describe_production_tools` | What productions can use now: each tool's status, the Blender templates and their params, the sound-effects library |
+| `start_production` | Render a new video from a JSON spec of shots (HyperFrames, WanGP, Blender, files, edits); `dry_run` only checks the spec |
+| `get_production` | A production's state, each shot's state and error, and its preview once ready |
+| `revise_production` | Change shots; only those render again |
+| `cancel_production` | Stop a production; any tool rendering for it is stopped |
+| `approve_production` | Post a ready production, only when the user turned on agent approval in Setup |
+
+### Productions
+
+A production is a video made from several shots, all rendered on this computer: **HyperFrames** (HTML compositions, rendered with FreePoster's own pinned HyperFrames 0.9.20), **WanGP** (AI video, run headless with `wgp.py --process`, starting from your own saved settings for the model), **Blender** (templates in `templates/blender/` or `data/blender-templates/`, each a `template.py` plus a `schema.json` of its params), existing files, and talking-head edits. WanGP and Blender take turns on the GPU; the rest render side by side. FreePoster joins the shots (cuts or crossfades), mixes in a voiceover and sound effects from `data/sfx/`, burns captions from the voiceover, and makes a preview. Renders are cached, so a revise re-renders only the shots that changed. Set the tools up in **Setup → Production tools**.
+
+When something finishes, FreePoster can POST a signed event (`production.ready`, `production.failed`, `edit.ready`, `edit.failed`, `post.done`) to a webhook, so an agent never has to poll. [docs/hermes.md](docs/hermes.md) sets this up for Hermes Agent.
+
+### Command line
+
+`freeposter` (`npm run cli -- <command>` from source) runs the same tools from a terminal or a script: `freeposter accounts`, `freeposter produce spec.json --wait`, `freeposter production 12 --watch`, `freeposter call <tool> '<json>'`. `freeposter help` lists them all.
 
 It deliberately can't read or change settings, keys or tokens, or connect and remove accounts: those stay in the window. It speaks MCP's Streamable HTTP transport (protocol 2025-03-26 through 2025-11-25), statelessly with plain JSON responses: `publish_video` returns at once and the job runner does the posting, as it does for the window. It only answers on this computer: requests from web pages (any `Origin` other than FreePoster's own) and from other host names are refused, and with an app password set, agents must send it as HTTP Basic auth.
 
