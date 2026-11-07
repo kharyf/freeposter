@@ -4,6 +4,7 @@ import { config, dataDir } from "./config.ts";
 import type { Store } from "./db.ts";
 import { AuthError, FatalError, RetryableError } from "./http.ts";
 import { render } from "./media.ts";
+import { queueEvent } from "./notify.ts";
 import { StillProcessing, type Publisher } from "./platforms/base.ts";
 import type { Account, Job, Platform, Post } from "./types.ts";
 
@@ -54,8 +55,21 @@ export class Runner {
       const job = this.store.claimNextJob(this.busy);
       if (!job) return started;
       this.busy.add(job.platform);
-      started.push(this.run(job).finally(() => this.busy.delete(job.platform)));
+      started.push(this.run(job).finally(() => {
+        this.busy.delete(job.platform);
+        this.notePostDone(job.postId);
+      }));
     }
+  }
+
+  /** Once every account of a post has published or failed, tells the webhook (once per post). */
+  notePostDone(postId: number) {
+    const jobs = this.store.jobsForPost(postId);
+    if (!jobs.length || !jobs.every((j) => j.state === "published" || j.state === "failed")) return;
+    const results = jobs.map((j) => ({ platform: j.platform, account: this.store.account(j.accountId)?.name ?? null, state: j.state, url: j.resultUrl, error: j.state === "failed" ? j.error : null }));
+    const ok = results.filter((r) => r.state === "published").length;
+    queueEvent(this.store, "post.done", `post.done:${postId}`, { post_id: postId, results },
+      `Post ${postId} finished: ${ok} of ${results.length} account${results.length === 1 ? "" : "s"} published.`);
   }
 
   async run(job: Job): Promise<void> {

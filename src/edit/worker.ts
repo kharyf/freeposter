@@ -6,6 +6,7 @@ import { dataDir } from "../config.ts";
 import type { Store } from "../db.ts";
 import { probe } from "../media.ts";
 import type { Edit } from "../types.ts";
+import { queueEvent } from "../notify.ts";
 import { renderEdit } from "./render.ts";
 import { findLyricsWithAi, spokenWords, type FindLyrics } from "./speech.ts";
 import { transcribe as whisper, type Transcript } from "./transcribe.ts";
@@ -98,9 +99,13 @@ export class EditWorker {
       }
       this.store.updateEdit(edit.id, { state: "ready", progress: 1, outputPath: out, durationSec, error: null });
       log(edit, `ready (${durationSec.toFixed(1)}s)`);
+      queueEvent(this.store, "edit.ready", `edit.ready:${edit.id}`, { edit_id: edit.id, duration_sec: durationSec, preview_path: out },
+        `Edit ${edit.id} is ready (${durationSec.toFixed(1)} s); it needs approval before it can be posted.`);
     } catch (err) {
       log(edit, `failed: ${(err as Error).message}`);
       this.store.updateEdit(edit.id, { state: "failed", error: (err as Error).message });
+      queueEvent(this.store, "edit.failed", `edit.failed:${edit.id}:${Date.now()}`, { edit_id: edit.id, error: (err as Error).message },
+        `Edit ${edit.id} failed: ${(err as Error).message}`);
     }
   }
 }

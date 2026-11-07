@@ -120,3 +120,20 @@ test("setPostEdit and updatePostText only touch unstarted posts, and requireEdit
   store.db.prepare("UPDATE jobs SET attempts = 1 WHERE post_id = ?").run(id);
   assert.equal(store.updatePostText(id, "late", "late"), 0);
 });
+
+test("a finished edit tells the webhook", async () => {
+  const { config } = await import("../src/config.ts");
+  const saved = config.produce.webhookUrl;
+  config.produce.webhookUrl = "http://localhost:8644/webhooks/freeposter";
+  try {
+    const store = newStore();
+    const worker = new EditWorker(store, { dir: tmp(), findLyrics: async () => [], transcribe: async () => ({ words, language: null }) });
+    const edit = store.createEdit(video, sha256(video), DEFAULT_EDIT);
+    await worker.tick();
+    const [row] = store.outbox();
+    assert.equal(row.event, "edit.ready");
+    assert.equal(JSON.parse(row.body).edit_id, edit.id);
+  } finally {
+    config.produce.webhookUrl = saved;
+  }
+});

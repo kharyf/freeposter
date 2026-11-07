@@ -10,6 +10,7 @@ import { Intake } from "./drive/intake.ts";
 import { DriveWatcher } from "./drive/watcher.ts";
 import { EditWorker } from "./edit/worker.ts";
 import { sampleFrames } from "./media.ts";
+import { Notifier } from "./notify.ts";
 import { publishers } from "./platforms/index.ts";
 import { Runner } from "./runner.ts";
 import { buildServer, type ServerOptions } from "./server.ts";
@@ -43,6 +44,7 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
   setAi(ai);
   const runner = new Runner(store, publishers);
   const editor = new EditWorker(store);
+  const notifier = new Notifier(store);
   // Drive: the watcher finds new videos, the intake edits, captions and schedules them.
   let watcher: DriveWatcher;
   const intake = new Intake(store, publishers, {
@@ -73,6 +75,7 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
   }
   runner.start();
   editor.start();
+  notifier.start();
   captioner.start();
   void intake.resume().catch((err) => console.error(`drive resume: ${(err as Error).message}`));
   const intakeTimer = setInterval(() => void intake.tick().catch((err) => console.error(`drive tick: ${(err as Error).message}`)), 10_000);
@@ -87,6 +90,7 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
     async stop() {
       runner.stop();
       editor.stop();
+      notifier.stop();
       captioner.stop();
       watcher.stop();
       clearInterval(intakeTimer);

@@ -104,6 +104,17 @@ CREATE TABLE IF NOT EXISTS ai_usage (
   error TEXT,
   created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS notify_outbox (
+  id INTEGER PRIMARY KEY,
+  key TEXT NOT NULL UNIQUE,
+  event TEXT NOT NULL,
+  body TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_try_at INTEGER NOT NULL,
+  sent_at INTEGER,
+  last_error TEXT,
+  created_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS oauth_states (
   state TEXT PRIMARY KEY,
   platform TEXT NOT NULL,
@@ -111,6 +122,23 @@ CREATE TABLE IF NOT EXISTS oauth_states (
   created_at INTEGER NOT NULL
 );
 `;
+
+export interface OutboxRow {
+  id: number;
+  key: string;
+  event: string;
+  body: string;
+  attempts: number;
+  nextTryAt: number;
+  sentAt: number | null;
+  lastError: string | null;
+  createdAt: number;
+}
+
+const toOutbox = (r: any): OutboxRow => ({
+  id: r.id, key: r.key, event: r.event, body: r.body, attempts: r.attempts,
+  nextTryAt: r.next_try_at, sentAt: r.sent_at, lastError: r.last_error, createdAt: r.created_at,
+});
 
 export class Store {
   db: DatabaseSync;
@@ -697,6 +725,29 @@ export class Store {
       )
       .get(accountId, Date.now() - 86_400_000, Math.max(cap - 1, 0)) as { published_at: number } | undefined;
     return (row?.published_at ?? Date.now()) + 86_400_000 + 60_000;
+  }
+
+  // ---- webhook outbox (notify.ts delivers it) ----
+
+  /** Queues an event once per key; a repeat of the same key is ignored. */
+  addEvent(key: string, event: string, body: string) {
+    this.db.prepare("INSERT OR IGNORE INTO notify_outbox (key, event, body, next_try_at, created_at) VALUES (?, ?, ?, ?, ?)").run(key, event, body, Date.now(), Date.now());
+  }
+
+  dueEvents(now: number, maxAttempts = 5): OutboxRow[] {
+    return (this.db.prepare("SELECT * FROM notify_outbox WHERE sent_at IS NULL AND attempts < ? AND next_try_at <= ? ORDER BY id").all(maxAttempts, now) as any[]).map(toOutbox);
+  }
+
+  outbox(): OutboxRow[] {
+    return (this.db.prepare("SELECT * FROM notify_outbox ORDER BY id").all() as any[]).map(toOutbox);
+  }
+
+  markEvent(id: number, f: { sentAt?: number; attempts: number; nextTryAt: number; error: string | null }) {
+    this.db.prepare("UPDATE notify_outbox SET sent_at = ?, attempts = ?, next_try_at = ?, last_error = ? WHERE id = ?").run(f.sentAt ?? null, f.attempts, f.nextTryAt, f.error, id);
+  }
+
+  pruneEvents(before: number) {
+    this.db.prepare("DELETE FROM notify_outbox WHERE created_at < ?").run(before);
   }
 
   close() {

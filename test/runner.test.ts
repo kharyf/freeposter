@@ -161,3 +161,22 @@ test("videos too long for a platform are rejected before upload", async () => {
   assert.match(job.error!, /up to 2s/);
   assert.equal(called, false);
 });
+
+test("post.done is queued once, when the post's last job finishes", async () => {
+  const saved = config.produce.webhookUrl;
+  config.produce.webhookUrl = "http://localhost:8644/webhooks/freeposter";
+  try {
+    const { store, queue, runDue } = setup(fakePublisher(async () => ({ url: "https://x.com/u/status/7" })));
+    const post = queue();
+    await runDue();
+    await runDue();
+    const rows = store.outbox();
+    assert.equal(rows.length, 1);
+    const body = JSON.parse(rows[0].body);
+    assert.equal(body.event_type, "post.done");
+    assert.equal(body.post_id, post);
+    assert.equal(body.results[0].url, "https://x.com/u/status/7");
+  } finally {
+    config.produce.webhookUrl = saved;
+  }
+});
