@@ -1,6 +1,6 @@
 {
   "name": "freeposter",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "description": "Publish one short vertical video to TikTok, Instagram, Facebook, X and YouTube through their official APIs.",
