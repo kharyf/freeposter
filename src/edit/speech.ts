@@ -1,7 +1,7 @@
 // Keeps only words a person in the video says. Whisper also writes down what it hears that nobody said:
 // sound tags like "(upbeat music)" or "[Applause]", and the lyrics of any song playing. Those must never
 // become captions, and they must not decide what the cut keeps either.
-import { askClaude } from "../claude.ts";
+import { askAi } from "../ai/router.ts";
 import type { Word } from "./transcribe.ts";
 
 const OPEN: Record<string, string> = { "(": ")", "[": "]", "{": "}", "<": ">", "*": "*" };
@@ -74,8 +74,8 @@ export function phrases(words: Word[], gap = 0.6): Word[][] {
 /** Given the transcript's lines, the indices of the ones that are song lyrics rather than someone talking. */
 export type FindLyrics = (lines: string[]) => Promise<number[]>;
 
-export const findLyricsWithClaude: FindLyrics = async (lines) => {
-  const { lyrics } = await askClaude<{ lyrics: number[] }>({
+export const findLyricsWithAi: FindLyrics = async (lines) => {
+  const { lyrics } = await askAi<{ lyrics: number[] }>("lyrics", {
     system:
       "You read a speech-to-text transcript of a short video, one numbered line per phrase. The audio may contain " +
       "a person talking, music with sung lyrics, or both. Name the lines that are lyrics of a song (sung or rapped " +
@@ -95,11 +95,11 @@ export const findLyricsWithClaude: FindLyrics = async (lines) => {
 
 /**
  * The words people in the video speak: sound tags and ♪-marked lines always go; unmarked lyrics go when
- * `findLyrics` can tell. If it can't (Claude Code missing, no answer), the words it couldn't judge stay.
+ * `findLyrics` can tell. If it can't (no AI provider, no answer), the words it couldn't judge stay.
  */
 export async function spokenWords(
   words: Word[],
-  findLyrics: FindLyrics = findLyricsWithClaude,
+  findLyrics: FindLyrics = findLyricsWithAi,
 ): Promise<{ words: Word[]; lyricsChecked: boolean }> {
   const said = dropSoundTags(words);
   if (!said.length) return { words: said, lyricsChecked: true };

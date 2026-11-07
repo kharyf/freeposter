@@ -7,14 +7,14 @@ import type { Store } from "../db.ts";
 import { probe } from "../media.ts";
 import type { Edit } from "../types.ts";
 import { renderEdit } from "./render.ts";
-import { findLyricsWithClaude, spokenWords, type FindLyrics } from "./speech.ts";
+import { findLyricsWithAi, spokenWords, type FindLyrics } from "./speech.ts";
 import { transcribe as whisper, type Transcript } from "./transcribe.ts";
 
 export interface EditWorkerOptions {
   /** where edited files and transcripts go (data/edits) */
   dir?: string;
   transcribe?: (path: string) => Promise<Transcript>;
-  /** tells song lyrics from talking (default: asks Claude) */
+  /** tells song lyrics from talking (default: asks the AI providers) */
   findLyrics?: FindLyrics;
 }
 
@@ -32,7 +32,7 @@ export class EditWorker {
     this.store = store;
     this.dir = opts.dir ?? join(dataDir, "edits");
     this.transcribe = opts.transcribe ?? ((path) => whisper(path));
-    this.findLyrics = opts.findLyrics ?? findLyricsWithClaude;
+    this.findLyrics = opts.findLyrics ?? findLyricsWithAi;
     store.requeueInterruptedEdits();
   }
 

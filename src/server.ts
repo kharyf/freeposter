@@ -5,6 +5,9 @@ import { execFile } from "node:child_process";
 import { createReadStream, existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { accountSets, createAccountSet, defaultAccountIds, deleteAccountSet, noteSignInSet, placeInSet, takeSignInSet, defaultTikTokPrefs, noteConnected, noteRemoving, setDefaultAccounts, renameAccountSet, setDefaultTikTokPrefs, setSharing, sharedFrom, sharingPairs, type Sharing } from "./accounts.ts";
+import * as openrouter from "./ai/openrouter.ts";
+import { AI_JOBS, PROVIDER_IDS, type AiJob, type ProviderId } from "./ai/providers.ts";
+import type { AiService } from "./ai/router.ts";
 import { findClaude } from "./claude.ts";
 import { codeDir, config, dataDir, envFile, isConfigured, isLocalUrl, needsRedirectPage, redirectUri, saveSettings, setting, SETTINGS, type SettingKey } from "./config.ts";
 import { randomToken } from "./crypto.ts";
@@ -64,7 +67,7 @@ export interface DriveServices {
   sync: () => Promise<{ removed: string[]; cancelledPosts: number; busy: string[] } | null>;
 }
 
-export function buildServer(store: Store, runner: Runner, publishers: Record<Platform, Publisher>, options: ServerOptions = {}, drive?: DriveServices): FastifyInstance {
+export function buildServer(store: Store, runner: Runner, publishers: Record<Platform, Publisher>, options: ServerOptions = {}, drive?: DriveServices, ai?: AiService): FastifyInstance {
   const app = Fastify({ logger: false, bodyLimit: 1024 * 1024 });
   app.register(multipart, { limits: { fileSize: 4 * 1024 ** 3, files: 1, fields: 20 } });
 
@@ -125,6 +128,15 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     return reply.redirect(driveAuthorizeUrl(state, verifier));
   });
 
+  // OpenRouter accepts a localhost callback, so it needs no redirect page or developer app.
+  app.get("/connect/openrouter", async (_req, reply) => {
+    if (!ai) return reply.code(404).send("AI providers aren't available");
+    const state = `${config.port}.${randomToken(24)}`;
+    const verifier = randomToken(48);
+    store.putOAuthState(state, "openrouter", verifier);
+    return reply.redirect(openrouter.authorizeUrl(`${config.baseUrl}/callback/openrouter`, state, verifier));
+  });
+
   app.get<{ Params: { platform: string }; Querystring: { set?: string } }>("/connect/:platform", async (req, reply) => {
     const { platform } = req.params;
     if (!isPlatform(platform)) return reply.code(404).send("unknown platform");
@@ -140,7 +152,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
 
   app.get<{ Params: { platform: string }; Querystring: Record<string, string> }>("/callback/:platform", async (req, reply) => {
     const { platform } = req.params;
-    if (platform === "drive") return finishSignIn("drive", req.query, reply);
+    if (platform === "drive" || platform === "openrouter") return finishSignIn(platform, req.query, reply);
     if (!isPlatform(platform)) return reply.code(404).send("unknown platform");
     return finishSignIn(platform, req.query, reply);
   });
@@ -164,6 +176,10 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     const verifier = q.state ? store.takeOAuthState(q.state, platform) : undefined;
     if (!verifier) return back({ error: `${platform}: login expired or was not started here; try again` });
     try {
+      if (platform === "openrouter") {
+        ai!.saveOpenRouterKey(await openrouter.exchangeCode(q.code, verifier, ai!.opts.fetch));
+        return back({ connected: "OpenRouter" });
+      }
       if (platform === "drive") {
         const { tokens, email } = await exchangeDriveCode(q.code, verifier);
         store.saveDriveTokens(tokens, email);
@@ -252,6 +268,43 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     } catch (err) {
       return reply.code(502).send({ error: (err as Error).message });
     }
+  });
+
+  // ---- AI providers ----
+
+  const isProvider = (id: string): id is ProviderId => (PROVIDER_IDS as readonly string[]).includes(id);
+  const aiRoute = <B>(fn: (id: ProviderId, body: B) => Promise<unknown> | unknown) =>
+    async (req: { params: { id: string }; body?: B }, reply: FastifyReply) => {
+      if (!ai) return reply.code(404).send({ error: "AI providers aren't available" });
+      if (!isProvider(req.params.id)) return reply.code(404).send({ error: "unknown AI provider" });
+      try {
+        await fn(req.params.id, (req.body ?? {}) as B);
+        return ai.view();
+      } catch (err) {
+        return reply.code(400).send({ error: (err as Error).message });
+      }
+    };
+
+  app.get("/api/ai", async (_req, reply) => (ai ? ai.view() : reply.code(404).send({ error: "AI providers aren't available" })));
+  app.post<{ Params: { id: string }; Body: { plan?: unknown; path?: unknown } }>("/api/ai/:id/connect", aiRoute<{ plan?: unknown; path?: unknown }>((id, b) =>
+    ai!.connect(id, { plan: typeof b.plan === "string" && b.plan ? b.plan : null, path: typeof b.path === "string" ? b.path : undefined })));
+  app.post<{ Params: { id: string } }>("/api/ai/:id/test", aiRoute((id) => ai!.test(id)));
+  app.delete<{ Params: { id: string } }>("/api/ai/:id", aiRoute((id) => ai!.disconnect(id)));
+  app.put<{ Params: { id: string }; Body: { plan?: unknown; model?: unknown } }>("/api/ai/:id", aiRoute<{ plan?: unknown; model?: unknown }>(async (id, b) => {
+    if ("plan" in b) ai!.setPlan(id, typeof b.plan === "string" && b.plan ? b.plan : null);
+    if ("model" in b) {
+      if (id !== "openrouter" || typeof b.model !== "string") throw new Error("only OpenRouter has a model to choose");
+      await ai!.setModel(b.model);
+    }
+  }));
+  app.put<{ Body: { job?: unknown; order?: unknown } }>("/api/ai-ranking", async (req, reply) => {
+    if (!ai) return reply.code(404).send({ error: "AI providers aren't available" });
+    const { job, order } = req.body ?? {};
+    if (!(AI_JOBS as readonly unknown[]).includes(job) || !Array.isArray(order) || !order.every((id) => typeof id === "string" && isProvider(id))) {
+      return reply.code(400).send({ error: "give a job and the order of its providers" });
+    }
+    ai.setRanking(job as AiJob, order as ProviderId[]);
+    return ai.view();
   });
 
   // ---- setup ----
@@ -400,7 +453,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
         accountIds: JSON.parse(fields.accounts || "[]").map(Number),
         tiktok: fields.tiktok ? JSON.parse(fields.tiktok) : null,
         scheduledAt: parseSchedule(fields.scheduledAt),
-        // A blank caption is written by Claude (see Captioner) before the post goes out.
+        // A blank caption is written by the AI providers (see Captioner) before the post goes out.
         captionTopic: captionTopicFor(fields.caption ?? "", fields.title ?? "", filename),
       };
       await checkDraft(store, publishers, draft, fields.allowDuplicate === "true");

@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { copyFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { probe, render, specProblems } from "../src/media.ts";
 import { renderEdit } from "../src/edit/render.ts";
+import { faceModelPath } from "../src/edit/reframe.ts";
 import { DEFAULT_EDIT, editKey, parseEditSettings, type EditSettings } from "../src/edit/settings.ts";
 import { landscape60, makeVideo, sha256, tmp, verticalSilent } from "./helpers.ts";
 
@@ -74,7 +75,9 @@ test("loudness near -14 LUFS", async () => {
   assert.ok(lufs > -16 && lufs < -12, `integrated loudness ${lufs}`);
 });
 
+// Tests run in their own data folder (FREEPOSTER_HOME): use the model the checkout already downloaded, if any.
 const faceModel = join(import.meta.dirname, "..", "data", "models", "ultraface-rfb-320.onnx");
+if (existsSync(faceModel) && !existsSync(faceModelPath())) copyFileSync(faceModel, faceModelPath());
 test("reframed edit fills the frame instead of letterboxing", { skip: !existsSync(faceModel) && "face model not downloaded" }, async () => {
   const dir = tmp();
   const src = makeVideo(dir, "face.mp4", [

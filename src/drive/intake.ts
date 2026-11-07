@@ -1,8 +1,8 @@
 // What happens to a video dropped in the watched Drive folder: read the posting time from its name (or its upload day),
-// download it, transcribe it, edit it (auto-approved) while Claude writes its title and caption, then
+// download it, transcribe it, edit it (auto-approved) while the AI providers write its title and caption, then
 // schedule it to FreePoster's default accounts. The post waits for the edit, even past its time. A name ending in
 // _RAW was already edited elsewhere: it skips the edit and posts as uploaded (still transcribed for its caption).
-// Nothing waits for the user: a video with no speech is captioned from its frames, and when that (or Claude) fails
+// Nothing waits for the user: a video with no speech is captioned from its frames, and when that (or the AI) fails
 // it gets the caption #fyp. Every step is saved, so a restart picks up where it stopped.
 import type { Readable } from "node:stream";
 import { defaultAccounts, defaultTikTok } from "../accounts.ts";

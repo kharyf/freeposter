@@ -1,7 +1,8 @@
-// Writes a Drive video's title and caption with Claude. A video with speech sends only its transcript text and
-// the filename's name. A video with no speech sends a few still frames instead, so Claude can read its text
-// overlays; the video file itself never leaves this computer. When Claude can't tell what a video is about, it
-// gets FALLBACK_CAPTION. Claude runs through the user's own Claude Code, on their Claude plan (see claude.ts).
+// Writes a video's title and caption with the user's AI providers (see ai/router.ts), in their order for the job.
+// A video with speech sends only its transcript text and the filename's name. A video with no speech sends a few
+// still frames instead, so the AI can read its text overlays; the video file itself never leaves this computer.
+// When the AI can't tell what a video is about, it gets FALLBACK_CAPTION.
+import { askAi } from "./ai/router.ts";
 import { askClaude, type ClaudeRun } from "./claude.ts";
 import { config } from "./config.ts";
 import { sampleFrames } from "./media.ts";
@@ -10,10 +11,10 @@ import type { Account, Platform, Post } from "./types.ts";
 
 const RETRIES = 2;
 
-/** The caption when nothing better can be written: no speech and nothing readable on screen, or Claude failed. */
+/** The caption when nothing better can be written: no speech and nothing readable on screen, or the AI failed. */
 export const FALLBACK_CAPTION = "#fyp";
 
-/** Title and caption for a video Claude couldn't caption: the filename's name and FALLBACK_CAPTION. */
+/** Title and caption for a video the AI couldn't caption: the filename's name and FALLBACK_CAPTION. */
 export function fallbackText(topic: string): { title: string; caption: string } {
   return { title: topic.replace(/[<>]/g, "").trim().slice(0, 100) || "Video", caption: FALLBACK_CAPTION };
 }
@@ -64,7 +65,7 @@ const SCHEMA = {
   additionalProperties: false,
 };
 
-// From frames, Claude also says whether they showed what the video is about.
+// From frames, the AI also says whether they showed what the video is about.
 const VISUAL_SCHEMA = {
   type: "object",
   properties: { understood: { type: "boolean" }, title: { type: "string" }, caption: { type: "string" } },
@@ -112,7 +113,8 @@ function problems(text: { title: string; caption: string }, accounts: Account[],
 
 /**
  * A title and caption from the transcript or, when nobody speaks, from `frames` (JPEG stills). Null when there's
- * no speech and the frames don't show what the video is about (or there are none). Throws when Claude fails.
+ * no speech and the frames don't show what the video is about (or there are none). Throws when every AI
+ * provider fails. `run`/`claudePath` ask Claude Code directly instead (tests).
  */
 export async function writeCaption(
   input: { topic: string; transcript: string; accounts: Account[]; frames?: Buffer[] },
@@ -127,19 +129,19 @@ export async function writeCaption(
   const request = spoken
     ? `Topic (from the file name): ${input.topic}\n\nTranscript:\n${input.transcript.trim()}`
     : `Topic (from the file name, which may not mean much): ${input.topic}\n\nThe video has no speech. Here are ${frames.length} still frames from it, in order.`;
-  // Each try is a fresh `claude -p`, so earlier answers and what was wrong with them are carried in the prompt.
+  // Each try is a fresh question, so earlier answers and what was wrong with them are carried in the prompt.
   const history: string[] = [];
 
   let last: string[] = [];
   for (let attempt = 0; attempt <= RETRIES; attempt++) {
     let text: { title: string; caption: string; understood?: boolean };
     try {
-      text = await askClaude<{ title: string; caption: string; understood?: boolean }>(
-        spoken
-          ? { system: system(platforms, limit), prompt: [request, ...history].join("\n\n"), schema: SCHEMA }
-          : { system: visualSystem(platforms, limit), prompt: [request, ...history].join("\n\n"), schema: VISUAL_SCHEMA, images: frames },
-        opts,
-      );
+      const q = spoken
+        ? { system: system(platforms, limit), prompt: [request, ...history].join("\n\n"), schema: SCHEMA }
+        : { system: visualSystem(platforms, limit), prompt: [request, ...history].join("\n\n"), schema: VISUAL_SCHEMA, images: frames };
+      text = opts.run || opts.claudePath !== undefined
+        ? await askClaude<{ title: string; caption: string; understood?: boolean }>(q, opts)
+        : await askAi<{ title: string; caption: string; understood?: boolean }>(spoken ? "caption" : "frames", q);
     } catch (err) {
       throw new Error(`caption writing failed: ${(err as Error).message}`);
     }

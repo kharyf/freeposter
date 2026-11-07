@@ -50,12 +50,12 @@ export interface Draft {
   /** publish this approved edit instead of the original */
   editId?: number | null;
   requireEdit?: boolean;
-  /** set (see captionTopicFor) when the caption was left blank: Claude writes it before the post goes out */
+  /** set (see captionTopicFor) when the caption was left blank: the AI writes it before the post goes out */
   captionTopic?: string | null;
 }
 
 /**
- * Null when the user wrote a caption. Otherwise what Claude is told the video is called, and the title if it
+ * Null when the user wrote a caption. Otherwise what the AI is told the video is called, and the title if it
  * can't caption it: the user's title, else the file's name without its extension, else "Video".
  */
 export function captionTopicFor(caption: string, title: string, filename = ""): string | null {
@@ -84,7 +84,7 @@ export async function checkDraft(store: Store, publishers: Record<Platform, Publ
     durationSec = (await probe(edit.outputPath)).durationSec;
   }
 
-  // A caption Claude will write is checked as its fallback; whatever Claude writes is checked against these accounts.
+  // A caption the AI will write is checked as its fallback; whatever it writes is checked against these accounts.
   const text = d.captionTopic ? { caption: FALLBACK_CAPTION, title: d.title || fallbackText(d.captionTopic).title } : {};
   const problems: string[] = [];
   for (const a of accounts as Account[]) {
@@ -143,7 +143,7 @@ export function postView(store: Store, { post, jobs }: { post: Post; jobs: Job[]
     scheduledAt: post.scheduledAt,
     editId: post.editId ?? null,
     requireEdit: Boolean(post.requireEdit),
-    /** Claude is still writing the caption; the post goes out once it's in */
+    /** The AI is still writing the caption; the post goes out once it's in */
     captionPending: Boolean(post.captionTopic),
     jobs: jobs.map((j) => ({
       id: j.id,

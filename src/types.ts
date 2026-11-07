@@ -50,7 +50,7 @@ export interface Post {
   /** Drive posts that were edited: never fall back to the original */
   requireEdit?: boolean;
   /**
-   * Set while Claude writes the caption of a post made with a blank one: what the video is called (its title or
+   * Set while the AI writes the caption of a post made with a blank one: what the video is called (its title or
    * file name). Its jobs wait until the caption is in. Null/absent once it has a caption.
    */
   captionTopic?: string | null;

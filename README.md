@@ -21,7 +21,7 @@ The first time, a **setup screen** asks for everything FreePoster needs. It star
 
 **Connecting accounts happens in your web browser**, because Google, Meta and others refuse to let you sign in to them inside app windows. Press **Connect**, sign in on the page that opens, and the FreePoster window updates by itself; the browser tab can be closed.
 
-The app keeps its settings and data in `%APPDATA%\FreePoster` (`.env`, `data/`, and `data/freeposter.log`), separate from a source checkout's. Uninstalling or upgrading leaves that folder in place. `ffmpeg`/`ffprobe` must be installed (on PATH, or their paths entered in setup).
+The app keeps its settings and data in `%APPDATA%\FreePoster` (`.env`, `data/`, and `data/freeposter.log`). Uninstalling or upgrading leaves that folder in place, and running from source (`npm start`, `npm run desktop`) uses the same folder, so your connected accounts carry over whichever way you run or update FreePoster. Set `FREEPOSTER_HOME` to use a different folder. `ffmpeg`/`ffprobe` must be installed (on PATH, or their paths entered in setup).
 
 ### Windows says it's protected your PC?
 
@@ -115,7 +115,19 @@ With a tunnel instead of a redirect page, if a console refuses `http://localhost
 - **Rejected before upload, not after.** Caption limits (X 280 weighted chars, TikTok/IG 2200, IG 30 hashtags), per-platform durations (FB Reels 3–90 s, X 140 s, Shorts 180 s, TikTok per-account max), and TikTok privacy rules are checked when you press Publish.
 - **Scheduling.** Choose *Schedule for* to post at a set time (up to a year ahead). Upcoming posts can be moved, posted early, or cancelled until they start going out. FreePoster has to be running at that time; a post whose time passed while it was closed goes out as soon as it starts. In the desktop app, closing the window while posts are scheduled keeps FreePoster running in the system tray until they're out; click the tray icon (or open the app again) to get the window back.
 - **Default accounts.** Videos that arrive without you at the screen (from Google Drive) go to the accounts ticked **Default** under Accounts. At first that's the first account you connected on each platform; change it any time. Drive only hands FreePoster the files.
-- **Titles and captions on your Claude plan.** For Drive videos, Claude writes the title and caption from the transcript. FreePoster runs your own [Claude Code](https://claude.com/claude-code) (`claude -p`, with no tools) to do this, so it counts against your Claude Pro/Max usage, not an API bill. Install Claude Code and run `claude` once to sign in. Setup shows whether it was found; if it's installed somewhere unusual, set `CLAUDE_CODE_PATH`. Each caption uses roughly 1–2k tokens. When your plan's limit is reached, the video waits as "Needs a caption" until you write one yourself.
+- **Titles and captions on the AI plan you already pay for.** Connect one or more providers under **AI Providers** on the main screen. Each runs the program that comes with your plan, signed in on this computer, so it counts against your plan's usage, not an API bill:
+
+  | Provider | Program | Plans | Looks at images (silent videos) |
+  |---|---|---|---|
+  | Claude | [Claude Code](https://claude.com/claude-code) (`claude -p`) | Pro, Max | yes |
+  | ChatGPT | [Codex CLI](https://learn.chatgpt.com/docs/codex/cli) (`codex exec`) | Plus, Pro, Business | yes |
+  | Google AI (Gemini) | [Antigravity CLI](https://antigravity.google/docs/cli/) (`agy -p`) | AI Pro, AI Ultra | no |
+  | GitHub Copilot | [Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli) (`copilot -p`) | Pro, Pro+ (premium requests) | yes |
+  | Cursor | [Cursor CLI](https://cursor.com/cli) (`cursor-agent -p`) | Pro, Pro+, Ultra | no |
+  | Grok *(experimental)* | [Grok Build](https://docs.x.ai/build/overview) (`grok`) | SuperGrok, SuperGrok Heavy | no |
+  | Muse Code *(experimental)* | [Muse Code](https://dev.meta.ai) (`muse exec`) | Everyday, High, Power, Maximum | no |
+
+  Or connect [OpenRouter](https://openrouter.ai), which you sign in to from FreePoster and which is paid per use from your OpenRouter credits; the panel shows your balance, each job's estimated cost and what each use actually cost. Connect asks the provider a tiny test question first. Each job (captions from speech, captions from still frames, spotting song lyrics) asks your providers in the order you set, and moves on to the next when one fails or is out of plan usage. If none can answer, the caption is `#fyp` and you can change it under Upcoming. Each caption uses roughly 1–2k tokens.
 - **Meta's automatic sharing.** If Meta shares your Instagram posts to the linked Facebook Page (or the reverse), tick that under the Instagram account. FreePoster then never posts to the receiving account itself, so nothing goes up twice.
 - **One job per (post, account).** Each job runs independently: a platform failing never blocks the others.
 - **Never posts twice.** Every step saves a checkpoint (upload session, container id, byte offset). A crash or retry resumes from there. If the final "publish" request was sent but its response was lost, the job looks the post up on the platform instead of publishing again. Re-uploading the same file to the same account asks first.

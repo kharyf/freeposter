@@ -52,7 +52,7 @@ export async function probe(path: string): Promise<Probe> {
 
 /**
  * `count` JPEG stills spread evenly through the video (never the very first or last frame), at most 540 px wide,
- * for Claude to look at when a video has no speech. Times that can't be read are skipped.
+ * for the AI to look at when a video has no speech. Times that can't be read are skipped.
  */
 export async function sampleFrames(path: string, count = 6): Promise<Buffer[]> {
   const { durationSec } = await probe(path);

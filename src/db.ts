@@ -4,7 +4,7 @@ import { editKey, type EditSettings } from "./edit/settings.ts";
 import type { Account, DriveConnection, DriveFileRecord, Edit, Job, JobState, NewAccount, Platform, Post, TikTokOptions, TokenSet } from "./types.ts";
 
 /** What a pending sign-in is for: a posting platform, or the watched Google Drive folder. */
-export type SignIn = Platform | "drive";
+export type SignIn = Platform | "drive" | "openrouter";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS accounts (
@@ -91,6 +91,18 @@ CREATE TABLE IF NOT EXISTS drive_files (
 CREATE TABLE IF NOT EXISTS prefs (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ai_usage (
+  id INTEGER PRIMARY KEY,
+  provider TEXT NOT NULL,
+  job TEXT NOT NULL,
+  ok INTEGER NOT NULL,
+  cost REAL,
+  prompt_tokens INTEGER,
+  completion_tokens INTEGER,
+  model TEXT,
+  error TEXT,
+  created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS oauth_states (
   state TEXT PRIMARY KEY,
@@ -299,7 +311,7 @@ export class Store {
     };
   }
 
-  /** Posts made with a blank caption whose caption Claude hasn't written yet. */
+  /** Posts made with a blank caption whose caption the AI hasn't written yet. */
   postsAwaitingCaption(): Post[] {
     const rows = this.db.prepare("SELECT id FROM posts WHERE caption_topic IS NOT NULL ORDER BY id").all() as { id: number }[];
     return rows.map(({ id }) => this.post(id)!);
@@ -443,7 +455,7 @@ export class Store {
 
   /**
    * Changes the caption and title of a post that hasn't started going out anywhere. A caption the user types
-   * replaces one Claude is still writing; leaving it blank keeps Claude writing it.
+   * replaces one the AI is still writing; leaving it blank keeps the AI writing it.
    */
   updatePostText(postId: number, caption: string, title: string): number {
     if (!this.allUnstarted(postId)) return 0;
@@ -605,6 +617,34 @@ export class Store {
     }
   }
 
+  // ---- AI use (which provider answered which job, and what pay-per-use ones charged) ----
+
+  recordAiUse(u: { provider: string; job: string; ok: boolean; cost?: number | null; promptTokens?: number | null; completionTokens?: number | null; model?: string | null; error?: string | null }) {
+    this.db
+      .prepare("INSERT INTO ai_usage (provider, job, ok, cost, prompt_tokens, completion_tokens, model, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(u.provider, u.job, u.ok ? 1 : 0, u.cost ?? null, u.promptTokens ?? null, u.completionTokens ?? null, u.model ?? null, u.error ?? null, Date.now());
+    // Keep the last few thousand; it's only for the AI Providers panel.
+    this.db.prepare("DELETE FROM ai_usage WHERE id <= (SELECT MAX(id) FROM ai_usage) - 5000").run();
+  }
+
+  /** The latest answer and failure per provider. */
+  aiLastUses(): { provider: string; ok: number; error: string | null; created_at: number }[] {
+    return this.db
+      .prepare(`SELECT provider, ok, error, MAX(created_at) AS created_at FROM ai_usage GROUP BY provider, ok`)
+      .all() as { provider: string; ok: number; error: string | null; created_at: number }[];
+  }
+
+  /** A provider's paid answers for one job: how many, the average and the latest cost, and average sizes. */
+  aiCosts(provider: string, job: string): { uses: number; average: number | null; last: number | null; promptTokens: number | null; completionTokens: number | null } {
+    const avg = this.db
+      .prepare("SELECT COUNT(*) AS uses, AVG(cost) AS average, AVG(prompt_tokens) AS p, AVG(completion_tokens) AS c FROM (SELECT * FROM ai_usage WHERE provider = ? AND job = ? AND ok = 1 AND cost IS NOT NULL ORDER BY id DESC LIMIT 50)")
+      .get(provider, job) as { uses: number; average: number | null; p: number | null; c: number | null };
+    const last = this.db
+      .prepare("SELECT cost FROM ai_usage WHERE provider = ? AND job = ? AND ok = 1 AND cost IS NOT NULL ORDER BY id DESC LIMIT 1")
+      .get(provider, job) as { cost: number } | undefined;
+    return { uses: avg.uses, average: avg.average, last: last?.cost ?? null, promptTokens: avg.p, completionTokens: avg.c };
+  }
+
   // ---- preferences (small JSON values kept in the database) ----
 
   pref<T>(key: string): T | undefined {
@@ -614,6 +654,20 @@ export class Store {
 
   setPref(key: string, value: unknown) {
     this.db.prepare("INSERT INTO prefs (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(key, JSON.stringify(value));
+  }
+
+  deletePref(key: string) {
+    this.db.prepare("DELETE FROM prefs WHERE key = ?").run(key);
+  }
+
+  /** A preference kept encrypted at rest, like the OAuth tokens (an API key, say). */
+  secretPref(key: string): string | undefined {
+    const sealed = this.pref<string>(key);
+    return sealed ? decrypt(this.key, sealed) : undefined;
+  }
+
+  setSecretPref(key: string, value: string) {
+    this.setPref(key, encrypt(this.key, value));
   }
 
   /** Jobs that still have to go out; the desktop app keeps running in the background while any remain. */

@@ -11,7 +11,7 @@
     "start": "node src/main.ts",
     "desktop": "node scripts/build-app.ts && electron build/app",
     "dev": "node --watch src/main.ts",
-    "test": "node --test \"test/**/*.test.ts\"",
+    "test": "node --import ./test/isolated-home.ts --test \"test/**/*.test.ts\"",
     "typecheck": "tsc",
     "build:app": "node scripts/build-app.ts --package",
     "checksums": "node scripts/checksums.ts"
@@ -27,5 +27,8 @@
     "electron-builder": "^26.18.0",
     "esbuild": "^0.28.2",
     "typescript": "^5.9.3"
+  },
+  "overrides": {
+    "minimatch@>=7.0.0 <11.0.1": "^11.0.5"
   }
 }

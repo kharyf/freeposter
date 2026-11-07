@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { AiService, setAi } from "./ai/router.ts";
 import { config, dataDir, isConfigured, isLocalUrl } from "./config.ts";
 import { loadKey } from "./crypto.ts";
 import { Store } from "./db.ts";
@@ -37,6 +38,9 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
   }
 
   const store = new Store(join(dataDir, "freeposter.db"), loadKey(dataDir));
+  // Captions, titles and lyric spotting ask the user's AI providers, in their order for each job.
+  const ai = new AiService(store);
+  setAi(ai);
   const runner = new Runner(store, publishers);
   const editor = new EditWorker(store);
   // Drive: the watcher finds new videos, the intake edits, captions and schedules them.
@@ -58,11 +62,12 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
     writeCaption: (input) => writeCaption(input, publishers),
     frames: (sourcePath) => sampleFrames(sourcePath),
   });
-  const app = buildServer(store, runner, publishers, options, { intake, poll: () => watcher.poll(), sync: () => watcher.sync() });
+  const app = buildServer(store, runner, publishers, options, { intake, poll: () => watcher.poll(), sync: () => watcher.sync() }, ai);
 
   try {
     await app.listen({ port: config.port, host: "127.0.0.1" });
   } catch (err) {
+    setAi(undefined);
     store.close();
     throw err;
   }
@@ -86,6 +91,7 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
       watcher.stop();
       clearInterval(intakeTimer);
       await app.close();
+      setAi(undefined);
       store.close();
     },
     pendingJobs: () => store.pendingJobCount(),

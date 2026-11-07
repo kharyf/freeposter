@@ -100,7 +100,7 @@ test("Claude failing doesn't hold the post: #fyp", async () => {
   assert.equal(store.post(postId)!.captionTopic, null);
 });
 
-test("a caption typed under Upcoming while Claude writes wins", async () => {
+test("a caption typed under Upcoming while the AI writes wins", async () => {
   const { store, app, captioner, upload } = setup();
   const at = Date.now() + 3_600_000;
   const { postId } = (await upload({ caption: "", scheduledAt: String(at) })).json();
@@ -131,7 +131,7 @@ test("MCP publish_video with no caption gets one written the same way", async ()
   })).json().result;
   const dry = await call({ video_path: clip, account_ids: [x.id], dry_run: true });
   assert.equal(dry.isError, undefined, dry.content[0].text);
-  assert.equal(dry.structuredContent.captionWrittenByClaude, true);
+  assert.equal(dry.structuredContent.captionWrittenByAi, true);
   const r = await call({ video_path: clip, account_ids: [x.id], schedule_at: new Date(Date.now() + 3_600_000).toISOString() });
   assert.equal(r.isError, undefined, r.content[0].text);
   assert.equal(r.structuredContent.captionPending, true);

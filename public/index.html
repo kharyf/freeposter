@@ -121,6 +121,29 @@
   .check-ok { color: var(--ok); font-weight: 600; } .check-bad { color: var(--bad); font-weight: 600; }
   .note { border-left: 3px solid var(--warn); padding: 6px 10px; margin: 12px 0; font-size: 13px; color: var(--muted); }
   details summary { cursor: pointer; font-weight: 600; margin-top: 14px; }
+  .ai-row { border-top: 1px solid var(--line); padding: 10px 0; }
+  .ai-row:first-child { border-top: 0; padding-top: 0; }
+  .ai-row .head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .ai-row .head strong { font-size: 14px; }
+  .ai-row .head .acts { margin-left: auto; display: flex; gap: 6px; }
+  .ai-row button, .ai-rank button { padding: 2px 8px; font-size: 12px; }
+  a.btnlink { border: 1px solid var(--line); background: var(--bg); color: var(--ink); padding: 2px 8px; border-radius: 6px; font-size: 12px; text-decoration: none; }
+  .ai-row select { width: auto; padding: 3px 6px; font-size: 13px; }
+  .ai-row .pricing { font-size: 13px; margin-top: 2px; }
+  .ai-row .err { color: var(--bad); font-size: 12px; margin-top: 4px; overflow-wrap: anywhere; }
+  .ai-row .ok { color: var(--ok); font-size: 12px; margin-top: 4px; }
+  .ai-costs { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 6px; }
+  .ai-costs th, .ai-costs td { text-align: left; padding: 3px 6px 3px 0; border-top: 1px solid var(--line); font-weight: 400; }
+  .ai-costs th { color: var(--muted); font-size: 12px; }
+  .ai-money { font-variant-numeric: tabular-nums; }
+  .ai-rank { margin-top: 8px; }
+  .ai-rank .job { display: block; font-size: 13px; font-weight: 600; margin: 10px 0 4px; }
+  .ai-rank ol { margin: 0; padding-left: 22px; }
+  .ai-rank li { font-size: 13px; padding: 2px 0; }
+  .ai-rank li.cant { color: var(--muted); }
+  .ai-rank li .moves { display: inline-flex; gap: 4px; margin-left: 6px; }
+  .ai-add .ai-row .path { margin-top: 6px; }
+  .ai-add .ai-row .path input { font-size: 13px; padding: 4px 8px; }
   .filebtn { display: inline-block; font-weight: 400; margin: 4px 0; }
   .filebtn span { display: inline-block; border: 1px solid var(--line); background: var(--bg); padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; }
 </style>
@@ -172,8 +195,8 @@
         <label for="title">Title <span class="muted">(YouTube; defaults to the caption's first line)</span></label>
         <input id="title" type="text" maxlength="100">
 
-        <label for="caption">Caption <span class="muted">(leave blank and Claude writes it, and the title if that's blank too)</span></label>
-        <textarea id="caption" placeholder="Blank: Claude writes it from what's said, or from the on-screen text, before it posts"></textarea>
+        <label for="caption">Caption <span class="muted">(leave blank and your AI provider writes it, and the title if that's blank too)</span></label>
+        <textarea id="caption" placeholder="Blank: your AI provider writes it from what's said, or from the on-screen text, before it posts"></textarea>
         <div class="counters" id="counters"></div>
 
         <label>Post to</label>
@@ -198,6 +221,10 @@
     </section>
   </div>
   <div>
+    <section id="aiSection">
+      <h2>AI Providers</h2>
+      <div id="aiBody" class="muted">Loading…</div>
+    </section>
     <section id="driveFilesSection" hidden>
       <div class="row" style="justify-content:space-between;align-items:center"><h2>From Drive</h2><button type="button" id="driveSync" title="Check the Drive folder now and take off videos you've deleted there">Sync</button></div>
       <div id="driveFiles"></div>
@@ -619,8 +646,7 @@ function stepHtml(step) {
       <p>FreePoster uses ffmpeg to convert each video into the format every platform accepts.</p>
       <p>${tool("ffmpeg", settings.tools.ffmpeg)}<br>${tool("ffprobe", settings.tools.ffprobe)}</p>
       ${missing ? `<p>Install ffmpeg (on Windows, run <code>winget install Gyan.FFmpeg</code> or download a build from ${ext("https://www.gyan.dev/ffmpeg/builds/", "gyan.dev")}) and restart FreePoster, or enter where the programs are:</p>` : ""}
-      <p>Claude writes the titles and captions for videos from Google Drive, on your Claude plan through Claude Code (no API key):<br>${tool("Claude Code", settings.tools.claude)}</p>
-      ${settings.tools.claude ? "" : `<p class="muted">Optional. To use it, install ${ext("https://claude.com/claude-code", "Claude Code")}, run <code>claude</code> once in a terminal to sign in, then reload this page.</p>`}
+      <p>Titles and captions are written by the AI providers you connect under <strong>AI Providers</strong> on the main screen: Claude, ChatGPT, Google AI, GitHub Copilot, Cursor, Grok or Muse Code on the plan you already pay for, or OpenRouter, paid per use. Optional: without one, a blank caption becomes <code>#fyp</code>.</p>
       <details ${missing ? "open" : ""}><summary>Program locations</summary><div class="grid2">
         ${field("FFMPEG_PATH", "ffmpeg", "Blank uses ffmpeg from PATH; or the full path to ffmpeg.exe")}
         ${field("FFPROBE_PATH", "ffprobe", "Blank uses ffprobe from PATH; or the full path to ffprobe.exe")}
@@ -913,7 +939,7 @@ async function submit(allowDuplicate = false) {
       return;
     }
     if (!res.ok) return banner("err", body.error);
-    const writing = !fd.get("caption").trim() ? " Claude is writing its caption first." : "";
+    const writing = !fd.get("caption").trim() ? " Your AI provider is writing its caption first." : "";
     banner("ok", (scheduledAt
       ? `Scheduled for ${new Date(scheduledAt).toLocaleString()}. It's listed under Upcoming, where you can change the time or cancel it.`
       : "Queued. Each platform's status updates below.") + writing);
@@ -966,7 +992,7 @@ function scheduledTime() {
 const isUpcoming = (p) => p.jobs.some((j) => j.state === "queued" && j.nextRunAt > Date.now());
 
 const captionText = (p) => p.captionPending
-  ? "<span class='muted'>Claude is writing the caption; it posts once that's done.</span>"
+  ? "<span class='muted'>Your AI provider is writing the caption; it posts once that's done.</span>"
   : esc(p.caption) || "<span class='muted'>(no caption)</span>";
 
 function renderUpcoming(posts) {
@@ -1054,7 +1080,8 @@ document.addEventListener("click", async (e) => {
   // The desktop app opens sign-ins in the system browser (platforms block them in app windows).
   const connect = e.target.closest('a[href^="/connect/"]');
   if (connect && status.desktop) {
-    const label = status.platforms.find((p) => new URL(connect.href).pathname === `/connect/${p.platform}`)?.label ?? "the platform";
+    const path = new URL(connect.href).pathname;
+    const label = status.platforms.find((p) => path === `/connect/${p.platform}`)?.label ?? (path === "/connect/openrouter" ? "OpenRouter" : "the platform");
     const note = `Your browser opened so you can sign in to ${label}. FreePoster updates here as soon as you're done.`;
     if ($("setup").classList.contains("open")) $("setupError").innerHTML = `<div class="banner ok" style="margin:16px 0 0">${esc(note)}</div>`;
     else banner("ok", note);
@@ -1159,7 +1186,7 @@ $("approveEdit").addEventListener("click", async () => {
 });
 $("useOriginal").addEventListener("click", () => { $("doEdit").checked = false; $("editBox").hidden = true; resetEdit(); videoDuration = $("preview").duration || null; checkDuration(); });
 
-// ---- Google Drive folder: new videos there are edited, captioned by Claude and scheduled by their name ----
+// ---- Google Drive folder: new videos there are edited, captioned by the AI providers and scheduled by their name ----
 
 const DRIVE_STATE = {
   queued: "Found", downloading: "Downloading…", transcribing: "Listening…", processing: "Editing…", scheduled: "Scheduled",
@@ -1194,7 +1221,7 @@ function renderDrive(v) {
     <input id="driveFolder" type="text" placeholder="https://drive.google.com/drive/folders/…" value="${esc(v.folderUrl ?? "")}">
     <div class="muted">Name each video <code>name_m.d.yy_h.mm.am</code>, like <code>Gatekeeping_11.1.26_5.30.pm</code>. Leave off the time to post as soon as possible that day; leave off the date to use the day it was uploaded. Add <code>_RAW</code> at the end (<code>Gatekeeping_11.1.26_5.30.pm_RAW</code>) for a video you've already edited: FreePoster posts it as it is, with no edit of its own. Videos already in the folder when you add it are left alone.</div>
     <div class="muted" style="margin-top:8px">Drive videos post to the accounts ticked <strong>Default</strong> under Accounts.</div>
-    <div class="muted" style="margin-top:8px">Claude writes each video's title and caption from what's said in it, or, when nobody speaks, from its on-screen text and what it shows (a few still frames are sent to Claude). If it can't tell what a video is about, the caption is <code>#fyp</code>; you can change it under Upcoming before it posts. Claude runs on your Claude plan through <a href="https://claude.com/claude-code" target="_blank" rel="noopener">Claude Code</a>. Install it and run <code>claude</code> once to sign in.</div>
+    <div class="muted" style="margin-top:8px">Your AI providers (see <strong>AI Providers</strong>) write each video's title and caption from what's said in it, or, when nobody speaks, from its on-screen text and what it shows (a few still frames are sent to the provider). If they can't tell what a video is about, the caption is <code>#fyp</code>; you can change it under Upcoming before it posts.</div>
     <div class="actions"><button type="button" id="driveSave">Save</button><button type="button" id="driveDisconnect">Disconnect</button></div>`;
 }
 
@@ -1238,6 +1265,179 @@ loadStatus().then(() => {
 });
 loadPosts();
 setInterval(loadPosts, 3000);
+
+// ---- AI providers: which are connected, how each is paid for, and their order for each job ----
+
+let ai = null;
+const aiBusy = new Set(); // provider ids with a Connect or Test running
+const aiNotes = {}; // provider id -> { ok | err } from the last button pressed
+
+const money = (n) => n === null || n === undefined ? "—"
+  : n === 0 ? "$0" : n < 0.01 ? `$${n.toFixed(5).replace(/0+$/, "")}` : `$${n.toFixed(2)}`;
+const ago = (t) => {
+  const s = Math.round((Date.now() - t) / 1000);
+  return s < 90 ? "just now" : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 129600 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} days ago`;
+};
+
+async function loadAi() {
+  const res = await fetch("/api/ai");
+  if (!res.ok) { $("aiSection").hidden = true; return; }
+  ai = await res.json();
+  renderAi();
+}
+
+function planSelect(p) {
+  if (!p.plans.length) return "";
+  return `<select data-ai-plan="${p.id}" aria-label="Your ${esc(p.label)} plan">
+    <option value="">Which plan?</option>
+    ${p.plans.map((pl) => `<option value="${pl.id}" ${p.plan === pl.id ? "selected" : ""}>${esc(pl.label)}${pl.price ? ` (${esc(pl.price)})` : ""}</option>`).join("")}
+  </select>`;
+}
+
+function aiNote(p) {
+  const n = aiNotes[p.id];
+  if (aiBusy.has(p.id)) return `<div class="muted" style="font-size:12px;margin-top:4px">Asking ${esc(p.program || p.label)} a test question… this can take a minute.</div>`;
+  if (n?.err) return `<div class="err">${esc(n.err)}</div>`;
+  if (n?.ok) return `<div class="ok">${esc(n.ok)}</div>`;
+  if (!p.connected) return "";
+  if (p.lastError) return `<div class="err">Last try failed: ${esc(p.lastError)}</div>`;
+  if (p.lastAnswerAt) return `<div class="muted" style="font-size:12px;margin-top:4px">Last answered ${ago(p.lastAnswerAt)}</div>`;
+  return "";
+}
+
+function openRouterHtml(o) {
+  const b = o.balance;
+  const balance = !b ? "—"
+    : b.credits !== null ? `${money(b.credits)} left`
+    : b.keyRemaining !== null ? `${money(b.keyRemaining)} left under FreePoster's key limit`
+    : `<a class="link" href="https://openrouter.ai/settings/credits" target="_blank" rel="noopener">See it on OpenRouter</a>`;
+  const spent = b && b.keyUsage !== null ? ` <span class="muted">· ${money(b.keyUsage)} spent by FreePoster so far</span>` : "";
+  const rows = ai.jobs.map((j) => {
+    const c = o.costs[j.id];
+    const actual = c.uses ? `${money(c.last)} last · ${money(c.average)} average of ${c.uses}` : "<span class='muted'>not used yet</span>";
+    return `<tr><td>${esc(j.label)}</td><td class="ai-money">${c.estimate === null ? "—" : `≈ ${money(c.estimate)}`}</td><td class="ai-money">${actual}</td></tr>`;
+  }).join("");
+  const models = o.models.length
+    ? `<select data-ai-model aria-label="OpenRouter model">${o.models.map((m) => `<option value="${esc(m.id)}" ${m.id === o.model ? "selected" : ""}>${esc(m.name)} — $${m.promptPerM.toFixed(2)} / $${m.completionPerM.toFixed(2)} per M tokens${m.images ? "" : " (no images)"}</option>`).join("")}</select>`
+    : `<code>${esc(o.model)}</code>`;
+  return `<div class="pricing">Balance: ${balance}${b?.error ? ` <span class="muted">(${esc(b.error)})</span>` : ""}${spent}</div>
+    <label style="margin:8px 0 4px">Model</label>${models}
+    <table class="ai-costs"><tr><th>Cost per use</th><th>Estimated</th><th>Actual</th></tr>${rows}</table>`;
+}
+
+const EXPERIMENTAL = `<span class="badge" title="Works per its documentation; not yet tried on a real plan">experimental</span>`;
+
+function connectedHtml(p) {
+  return `<div class="ai-row">
+    <div class="head"><strong>${esc(p.label)}</strong>${p.program ? `<span class="muted">${esc(p.program)}</span>` : ""}
+      ${p.experimental ? EXPERIMENTAL : ""}
+      <span class="acts"><button type="button" data-ai-test="${p.id}" ${aiBusy.has(p.id) ? "disabled" : ""}>Test</button><button type="button" data-ai-remove="${p.id}">Disconnect</button></span></div>
+    <div class="pricing">${p.plans.length ? `Monthly plan: ${planSelect(p)}` : esc(p.pricing)}</div>
+    ${p.id === "openrouter" && ai.openrouter ? openRouterHtml(ai.openrouter) : ""}
+    ${p.installed === false ? `<div class="err">${esc(p.program)} isn't installed any more. ${esc(p.setup)}</div>` : ""}
+    ${aiNote(p)}
+  </div>`;
+}
+
+function addHtml(p) {
+  const action = p.id === "openrouter"
+    ? `<a class="btnlink" href="/connect/openrouter" data-ai-signin>Connect</a>`
+    : `<button type="button" data-ai-connect="${p.id}" ${aiBusy.has(p.id) ? "disabled" : ""}>Connect</button>`;
+  return `<div class="ai-row">
+    <div class="head"><strong>${esc(p.label)}</strong>${p.program ? `<span class="muted">${esc(p.program)}${p.installed ? " · installed" : ""}</span>` : ""}
+      ${p.experimental ? EXPERIMENTAL : ""}
+      <span class="acts">${planSelect(p)}${action}</span></div>
+    <div class="muted" style="font-size:13px">${p.billing === "credits" ? "Pay per use, from your OpenRouter credits." : "Monthly plan."} ${esc(p.setup)}${p.images ? "" : " It can't look at images, so it's skipped for videos nobody speaks in."} <a class="link" href="${esc(p.setupUrl)}" target="_blank" rel="noopener">${p.billing === "credits" ? "openrouter.ai" : "How to install"}</a></div>
+    ${p.installed === false ? `<div class="path"><input type="text" data-ai-path="${p.id}" placeholder="Installed somewhere else? Its full path" value="${esc(p.path)}"></div>` : ""}
+    ${aiNote(p)}
+  </div>`;
+}
+
+function rankingHtml() {
+  return `<div class="ai-rank">${ai.jobs.map((j) => `<span class="job">${esc(j.label)}</span>
+    ${j.order.length ? `<ol>${j.order.map((p, i) => `<li class="${p.canDo ? "" : "cant"}">${esc(p.label)}${p.canDo ? "" : " <span class='muted'>(can't look at images; skipped)</span>"}
+      <span class="moves"><button type="button" data-ai-move="${j.id}:${p.id}:-1" ${i === 0 ? "disabled" : ""} aria-label="Move ${esc(p.label)} up">↑</button><button type="button" data-ai-move="${j.id}:${p.id}:1" ${i === j.order.length - 1 ? "disabled" : ""} aria-label="Move ${esc(p.label)} down">↓</button></span></li>`).join("")}</ol>` : `<div class="muted">No provider connected.</div>`}`).join("")}
+    <p class="muted" style="margin:8px 0 0">Each job asks the first one; if it fails or runs out of plan usage, the next one tries.</p></div>`;
+}
+
+function renderAi() {
+  const on = ai.providers.filter((p) => p.connected);
+  const off = ai.providers.filter((p) => !p.connected);
+  const addOpen = $("aiAdd") ? $("aiAdd").open : !on.length;
+  const rankOpen = $("aiRank") ? $("aiRank").open : true;
+  $("aiBody").className = "";
+  $("aiBody").innerHTML = `
+    ${on.length ? on.map(connectedHtml).join("") : `<p class="muted" style="margin-top:0">No AI provider is connected, so blank captions become <code>#fyp</code>. Connect the one you already pay for below.</p>`}
+    ${on.length > 1 ? `<details id="aiRank" ${rankOpen ? "open" : ""}><summary>Order for each job</summary>${rankingHtml()}</details>` : ""}
+    ${off.length ? `<details class="ai-add" id="aiAdd" ${addOpen ? "open" : ""}><summary>Add a provider</summary>${off.map(addHtml).join("")}</details>` : ""}`;
+}
+
+async function aiCall(method, url, body) {
+  const res = await fetch(url, { method, headers: body ? { "content-type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
+  const out = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(out.error || `HTTP ${res.status}`);
+  ai = out;
+  return out;
+}
+
+$("aiBody").addEventListener("click", async (e) => {
+  const connect = e.target.closest("[data-ai-connect]");
+  const test = e.target.closest("[data-ai-test]");
+  const remove = e.target.closest("[data-ai-remove]");
+  const move = e.target.closest("[data-ai-move]");
+  if (connect || test) {
+    const id = connect ? connect.dataset.aiConnect : test.dataset.aiTest;
+    aiBusy.add(id);
+    delete aiNotes[id];
+    renderAi();
+    try {
+      if (connect) {
+        const plan = document.querySelector(`[data-ai-plan="${id}"]`)?.value || null;
+        const path = document.querySelector(`[data-ai-path="${id}"]`)?.value || undefined;
+        await aiCall("POST", `/api/ai/${id}/connect`, { plan, path });
+        aiNotes[id] = { ok: "Connected: it answered a test question." };
+      } else {
+        await aiCall("POST", `/api/ai/${id}/test`);
+        aiNotes[id] = { ok: "It answered the test question." };
+      }
+    } catch (err) {
+      aiNotes[id] = { err: err.message };
+    }
+    aiBusy.delete(id);
+    renderAi();
+  } else if (remove) {
+    const p = ai.providers.find((x) => x.id === remove.dataset.aiRemove);
+    if (!confirm(`Disconnect ${p.label}? FreePoster stops asking it to write captions.${p.id === "openrouter" ? " FreePoster forgets its OpenRouter key; you can also delete the key on openrouter.ai." : ""}`)) return;
+    delete aiNotes[p.id];
+    await aiCall("DELETE", `/api/ai/${p.id}`).catch((err) => banner("err", err.message));
+    renderAi();
+  } else if (move) {
+    const [job, id, step] = move.dataset.aiMove.split(":");
+    const order = ai.jobs.find((j) => j.id === job).order.map((p) => p.id);
+    const i = order.indexOf(id);
+    order.splice(i, 1);
+    order.splice(i + Number(step), 0, id);
+    await aiCall("PUT", "/api/ai-ranking", { job, order }).catch((err) => banner("err", err.message));
+    renderAi();
+  }
+});
+
+$("aiBody").addEventListener("change", async (e) => {
+  const plan = e.target.closest("[data-ai-plan]");
+  const model = e.target.closest("[data-ai-model]");
+  const id = plan?.dataset.aiPlan;
+  if (plan && ai.providers.find((p) => p.id === id)?.connected) {
+    await aiCall("PUT", `/api/ai/${id}`, { plan: plan.value || null }).catch((err) => banner("err", err.message));
+    renderAi();
+  } else if (model) {
+    await aiCall("PUT", "/api/ai/openrouter", { model: model.value }).catch((err) => banner("err", err.message));
+    renderAi();
+  }
+});
+
+loadAi();
+// The balance and costs change as captions get written; don't redraw under a running test or an open menu.
+setInterval(() => { if (!aiBusy.size && !$("aiBody").contains(document.activeElement)) loadAi(); }, 30_000);
 
 // ---- AI agents (MCP) ----
 
