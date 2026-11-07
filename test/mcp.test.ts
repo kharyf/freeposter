@@ -49,8 +49,9 @@ test("MCP handshake and tool list", async () => {
   assert.equal(note.statusCode, 202);
 
   const names = (await rpc("tools/list")).body.result.tools.map((t: any) => t.name);
-  assert.deepEqual(names.sort(), ["cancel_post", "create_edit", "get_edit", "get_post", "get_tiktok_creator_info", "list_accounts", "list_posts", "publish_video", "reschedule_post", "retry_job"]);
-  assert.ok(!names.some((n: string) => /approve/.test(n)), "agents can never approve an edit");
+  assert.deepEqual(names.sort(), ["approve_production", "cancel_post", "cancel_production", "create_edit", "describe_production_tools", "get_edit", "get_post", "get_production", "get_tiktok_creator_info", "list_accounts", "list_posts", "publish_video", "reschedule_post", "retry_job", "revise_production", "start_production"]);
+  // Approval goes through approve_production, which refuses unless the user turned agent approval on (produce-mcp.test.ts).
+  assert.ok(!names.some((n: string) => /approve/.test(n) && n !== "approve_production"), "no other approve tool");
   assert.equal((await rpc("nope")).body.error.code, -32601);
   assert.equal((await rpc("tools/call", { name: "nope" })).body.error.code, -32602);
   assert.equal((await app.inject({ method: "GET", url: "/mcp", headers: HOST })).statusCode, 405);

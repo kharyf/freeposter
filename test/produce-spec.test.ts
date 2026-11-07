@@ -95,3 +95,8 @@ test("shotsChanged names new and changed shots only", () => {
   raw.shots.push({ id: "outro", kind: "file", path: clip });
   assert.deepEqual(shotsChanged(a, parseSpec(raw, ctx)), ["hero", "outro"]);
 });
+
+test("a parsed spec parses again unchanged (revise re-reads stored specs)", () => {
+  const once = parseSpec(good(), ctx);
+  assert.deepEqual(parseSpec(JSON.parse(JSON.stringify(once)), ctx), once);
+});

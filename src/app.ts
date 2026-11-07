@@ -73,7 +73,7 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
     writeCaption: (input) => writeCaption(input, publishers),
     frames: (sourcePath) => sampleFrames(sourcePath),
   });
-  const app = buildServer(store, runner, publishers, options, { intake, poll: () => watcher.poll(), sync: () => watcher.sync() }, ai);
+  const app = buildServer(store, runner, publishers, options, { intake, poll: () => watcher.poll(), sync: () => watcher.sync() }, ai, producer);
 
   try {
     await app.listen({ port: config.port, host: "127.0.0.1" });

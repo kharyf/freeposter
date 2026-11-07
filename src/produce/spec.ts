@@ -152,7 +152,7 @@ export function parseSpec(raw: unknown, ctx: SpecContext): ProductionSpec {
       case "file": {
         only(s, ["id", "kind", "path", "trim"], at);
         let trim: [number, number] | null = null;
-        if (s.trim !== undefined) {
+        if (s.trim !== undefined && s.trim !== null) {
           const t = s.trim;
           if (Array.isArray(t) && t.length === 2 && t.every((x) => typeof x === "number" && x >= 0) && t[1] - t[0] >= LIMITS.minShotSec) trim = [t[0], t[1]];
           else problem(`${at}trim must be [start, end] in seconds, at least ${LIMITS.minShotSec} s apart`);
@@ -163,7 +163,7 @@ export function parseSpec(raw: unknown, ctx: SpecContext): ProductionSpec {
       case "edit": {
         only(s, ["id", "kind", "path", "settings"], at);
         let settings = { ...DEFAULT_EDIT };
-        if (s.settings !== undefined) {
+        if (s.settings !== undefined && s.settings !== null) {
           if (!isObj(s.settings)) problem(`${at}settings must be an object`);
           else for (const [k, v] of Object.entries(s.settings)) {
             if (!(k in DEFAULT_EDIT)) problem(`${at}settings: unknown field "${k}"`);
@@ -180,7 +180,7 @@ export function parseSpec(raw: unknown, ctx: SpecContext): ProductionSpec {
   });
 
   const transitions = { default: { type: "cut", sec: 0 } as Transition } as ProductionSpec["transitions"];
-  if (raw.transitions !== undefined) {
+  if (raw.transitions !== undefined && raw.transitions !== null) {
     if (!isObj(raw.transitions)) problem("transitions must be an object");
     else for (const [key, v] of Object.entries(raw.transitions)) {
       const where = `transitions.${key}: `;

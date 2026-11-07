@@ -13,6 +13,8 @@ import type { Publisher } from "./platforms/base.ts";
 import { creatorInfo } from "./platforms/tiktok.ts";
 import { parseEditSettings } from "./edit/settings.ts";
 import { captionTopicFor, checkDraft, DuplicateError, editView, parseSchedule, postView, saveUpload, type Draft } from "./posts.ts";
+import { PRODUCTION_INSTRUCTIONS, productionTools } from "./produce/mcp-tools.ts";
+import type { ProductionWorker } from "./produce/worker.ts";
 import type { Runner } from "./runner.ts";
 import { PLATFORMS, type Platform, type TikTokOptions } from "./types.ts";
 
@@ -25,13 +27,15 @@ Start with list_accounts to get account ids. publish_video queues the post and r
 
 Posting is public and hard to undo: only post what the user asked for, to the accounts they chose. For TikTok, call get_tiktok_creator_info first and let the user pick the privacy level from privacy_level_options; TikTok requires that choice to be the user's, never a default. Use dry_run to check a post without queueing it. With no caption, the user's AI provider writes the title and caption from the video (or "#fyp" when it can't tell what it's about) before it posts.
 
-create_edit makes an edited cut (pauses and filler words cut, captions, speaker framing, even sound) in the background; follow it with get_edit. Only the user can approve an edit, by previewing it in the FreePoster window; publish_video with edit_id is refused until they have.`;
+create_edit makes an edited cut (pauses and filler words cut, captions, speaker framing, even sound) in the background; follow it with get_edit. The user approves an edit by previewing it in the FreePoster window; publish_video with edit_id is refused until they have, unless they turned on agent approval in FreePoster, in which case posting it (after they say yes to the preview) approves it.
+
+${PRODUCTION_INSTRUCTIONS}`;
 
 /** Epoch ms → ISO 8601; agents read and write times this way. */
 const iso = (ms: number | null | undefined) => (ms === null || ms === undefined ? null : new Date(ms).toISOString());
 
 /** An error the agent caused and can fix: reported as a tool result with isError, which the model reads. */
-class ToolError extends Error {}
+export class ToolError extends Error {}
 
 // ---- argument readers: the schemas below tell clients the shapes; these make sure of them ----
 
@@ -99,7 +103,7 @@ interface Tool {
   run(args: Args): Promise<unknown>;
 }
 
-export function mcpTools(store: Store, runner: Runner, publishers: Record<Platform, Publisher>): Tool[] {
+export function mcpTools(store: Store, runner: Runner, publishers: Record<Platform, Publisher>, producer?: ProductionWorker): Tool[] {
   const view = (p: Parameters<typeof postView>[1]) => {
     const v = postView(store, p);
     return {
@@ -120,7 +124,7 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
     return account;
   };
 
-  return [
+  const tools: Tool[] = [
     {
       name: "list_accounts",
       title: "List accounts",
@@ -184,7 +188,7 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
         type: "object",
         properties: {
           video_path: { type: "string", description: "Absolute path of the video file on this computer. Not needed with edit_id." },
-          edit_id: { type: "integer", description: "Post this edit (from create_edit) instead of the original file. The user must have approved it in FreePoster." },
+          edit_id: { type: "integer", description: "Post this edit (from create_edit) instead of the original file. The user must have approved it in FreePoster, or turned on agent approval and said yes to its preview." },
           account_ids: { type: "array", items: { type: "integer" }, minItems: 1, description: "Account ids from list_accounts." },
           caption: { type: "string", description: "The post's text: the tweet on X, the description on YouTube, the caption elsewhere. Leave it out (or blank) and the user's AI provider writes it from what's said in the video, or from its on-screen text when nobody speaks, else \"#fyp\"; the post waits for it (get_post shows captionPending until it's in)." },
           title: { type: "string", description: "YouTube title (up to 100 characters); defaults to the caption's first line." },
@@ -200,6 +204,11 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
       async run(args) {
         const edit = args.edit_id === undefined ? undefined : store.edit(int(args, "edit_id"));
         if (args.edit_id !== undefined && !edit) throw new ToolError("no such edit; create_edit returns its id");
+        // With agent approval on, posting a ready edit is the approval (the user said yes to its preview in chat).
+        if (edit && !edit.approvedAt && edit.state === "ready" && config.produce.agentApproval && !bool(args, "dry_run")) {
+          store.approveEdit(edit.id);
+          edit.approvedAt = Date.now();
+        }
         const videoPath = edit ? edit.sourcePath : checkedPath(str(args, "video_path"));
         const ids = args.account_ids;
         if (!Array.isArray(ids) || !ids.length || !ids.every(Number.isInteger)) throw new ToolError("account_ids must be a list of account ids");
@@ -387,6 +396,14 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
       },
     },
   ];
+  tools.push(...productionTools({
+    producer: () => producer,
+    store,
+    publishers,
+    publish: (args) => tools.find((t) => t.name === "publish_video")!.run(args),
+    fail: (message) => new ToolError(message),
+  }));
+  return tools;
 
   /** An absolute path to an existing video file of at most 4 GB. */
   function checkedPath(videoPath: string): string {
@@ -432,7 +449,7 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
 const rpcError = (id: unknown, code: number, message: string) => ({ jsonrpc: "2.0", id: id ?? null, error: { code, message } });
 
 /** A local agent, or this app's own page; never another website the user happens to have open. */
-function trustedRequest(req: FastifyRequest): string | null {
+export function trustedRequest(req: FastifyRequest): string | null {
   const origin = req.headers.origin;
   const own = [`http://localhost:${config.port}`, `http://127.0.0.1:${config.port}`, `http://[::1]:${config.port}`, config.baseUrl];
   if (origin && !own.includes(origin)) return `origin ${origin} may not use FreePoster's MCP server`;
@@ -443,8 +460,8 @@ function trustedRequest(req: FastifyRequest): string | null {
   return null;
 }
 
-export function registerMcp(app: FastifyInstance, store: Store, runner: Runner, publishers: Record<Platform, Publisher>) {
-  const tools = mcpTools(store, runner, publishers);
+export function registerMcp(app: FastifyInstance, store: Store, runner: Runner, publishers: Record<Platform, Publisher>, producer?: ProductionWorker) {
+  const tools = mcpTools(store, runner, publishers, producer);
 
   async function handle(msg: any): Promise<object | null> {
     if (!msg || typeof msg !== "object" || msg.jsonrpc !== "2.0" || typeof msg.method !== "string") {

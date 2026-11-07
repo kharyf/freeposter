@@ -1,5 +1,5 @@
 import multipart from "@fastify/multipart";
-import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { timingSafeEqual } from "node:crypto";
 import { execFile } from "node:child_process";
 import { createReadStream, existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -12,7 +12,8 @@ import { findClaude } from "./claude.ts";
 import { codeDir, config, dataDir, envFile, isConfigured, isLocalUrl, needsRedirectPage, redirectUri, saveSettings, setting, SETTINGS, type SettingKey } from "./config.ts";
 import { randomToken } from "./crypto.ts";
 import type { SignIn, Store } from "./db.ts";
-import { registerMcp } from "./mcp.ts";
+import { registerMcp, trustedRequest } from "./mcp.ts";
+import type { ProductionWorker } from "./produce/worker.ts";
 import type { Publisher } from "./platforms/base.ts";
 import { creatorInfo } from "./platforms/tiktok.ts";
 import { driveAuthorizeUrl, driveRedirectUri, exchangeDriveCode, folderIdFrom } from "./drive/client.ts";
@@ -67,7 +68,7 @@ export interface DriveServices {
   sync: () => Promise<{ removed: string[]; cancelledPosts: number; busy: string[] } | null>;
 }
 
-export function buildServer(store: Store, runner: Runner, publishers: Record<Platform, Publisher>, options: ServerOptions = {}, drive?: DriveServices, ai?: AiService): FastifyInstance {
+export function buildServer(store: Store, runner: Runner, publishers: Record<Platform, Publisher>, options: ServerOptions = {}, drive?: DriveServices, ai?: AiService, producer?: ProductionWorker): FastifyInstance {
   const app = Fastify({ logger: false, bodyLimit: 1024 * 1024 });
   app.register(multipart, { limits: { fileSize: 4 * 1024 ** 3, files: 1, fields: 20 } });
 
@@ -501,22 +502,48 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     return editView(store, publishers, edit);
   });
 
-  app.get<{ Params: { id: string } }>("/api/edits/:id/video", async (req, reply) => {
-    const edit = store.edit(Number(req.params.id));
-    if (!edit?.outputPath || !existsSync(edit.outputPath)) return reply.code(404).send({ error: "the edit isn't ready" });
-    const size = statSync(edit.outputPath).size;
+  /** Sends a video file, honouring Range requests (preview players seek with them). */
+  const sendVideo = (req: FastifyRequest, reply: FastifyReply, path: string) => {
+    const size = statSync(path).size;
     reply.type("video/mp4").header("accept-ranges", "bytes");
-    // The preview player seeks with Range requests.
     const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range ?? "");
     if (range && (range[1] || range[2])) {
       const start = range[1] ? Number(range[1]) : Math.max(size - Number(range[2]), 0);
       const end = range[1] && range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
       if (start > end || start >= size) return reply.code(416).header("content-range", `bytes */${size}`).send();
       reply.code(206).header("content-range", `bytes ${start}-${end}/${size}`).header("content-length", end - start + 1);
-      return reply.send(createReadStream(edit.outputPath, { start, end }));
+      return reply.send(createReadStream(path, { start, end }));
     }
     reply.header("content-length", size);
-    return reply.send(createReadStream(edit.outputPath));
+    return reply.send(createReadStream(path));
+  };
+
+  app.get<{ Params: { id: string } }>("/api/edits/:id/video", async (req, reply) => {
+    const edit = store.edit(Number(req.params.id));
+    if (!edit?.outputPath || !existsSync(edit.outputPath)) return reply.code(404).send({ error: "the edit isn't ready" });
+    return sendVideo(req, reply, edit.outputPath);
+  });
+
+  // ---- productions: previews an agent downloads to show the user (same host check as /mcp) ----
+
+  const productionFile = (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply, pick: "previewPath" | "thumbPath" | "outputPath") => {
+    const refused = trustedRequest(req);
+    if (refused) { reply.code(403).send({ error: refused }); return null; }
+    const path = producer?.productions.get(Number(req.params.id))?.[pick];
+    if (!path || !existsSync(path)) { reply.code(404).send({ error: "the production isn't ready" }); return null; }
+    return path;
+  };
+  app.get<{ Params: { id: string } }>("/api/productions/:id/preview.mp4", async (req, reply) => {
+    const path = productionFile(req, reply, "previewPath");
+    return path ? sendVideo(req, reply, path) : reply;
+  });
+  app.get<{ Params: { id: string } }>("/api/productions/:id/final.mp4", async (req, reply) => {
+    const path = productionFile(req, reply, "outputPath");
+    return path ? sendVideo(req, reply, path) : reply;
+  });
+  app.get<{ Params: { id: string } }>("/api/productions/:id/thumb.jpg", async (req, reply) => {
+    const path = productionFile(req, reply, "thumbPath");
+    return path ? reply.type("image/jpeg").send(createReadStream(path)) : reply;
   });
 
   app.put<{ Params: { id: string } }>("/api/edits/:id/approve", async (req, reply) => {
@@ -631,7 +658,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     return { ok: true };
   });
 
-  registerMcp(app, store, runner, publishers);
+  registerMcp(app, store, runner, publishers, producer);
 
   return app;
 }
