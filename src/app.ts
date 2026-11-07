@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { AiService, setAi } from "./ai/router.ts";
 import { config, dataDir, isConfigured, isLocalUrl } from "./config.ts";
 import { loadKey } from "./crypto.ts";
@@ -12,6 +12,9 @@ import { EditWorker } from "./edit/worker.ts";
 import { sampleFrames } from "./media.ts";
 import { Notifier } from "./notify.ts";
 import { publishers } from "./platforms/index.ts";
+import { adapters } from "./produce/adapters/index.ts";
+import { ProductionStore } from "./produce/store.ts";
+import { ProductionWorker } from "./produce/worker.ts";
 import { Runner } from "./runner.ts";
 import { buildServer, type ServerOptions } from "./server.ts";
 import { PLATFORMS } from "./types.ts";
@@ -28,7 +31,7 @@ export interface RunningApp {
 
 /** Posts waiting, edits or Drive files part-way through, or a watched folder (even one needing a reconnect). */
 export function keepRunning(store: Store): boolean {
-  return store.pendingJobCount() > 0 || store.openEditCount() > 0 || store.driveFilesIn(["queued", "downloading", "transcribing", "processing"]).length > 0
+  return store.pendingJobCount() > 0 || store.openEditCount() > 0 || new ProductionStore(store).openCount() > 0 || store.driveFilesIn(["queued", "downloading", "transcribing", "processing"]).length > 0
     || Boolean(store.driveConnection()?.folderId);
 }
 
@@ -45,6 +48,12 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
   const runner = new Runner(store, publishers);
   const editor = new EditWorker(store);
   const notifier = new Notifier(store);
+  // Inputs are stored by content hash, so a file's name is its hash: the edit pipeline's transcript cache key.
+  const speech = (path: string) => editor.speechFor({ sourcePath: path, sha256: basename(path).replace(/\.[^.]+$/, "") });
+  const producer = new ProductionWorker(store, {
+    adapters: adapters({ speechFor: (src) => editor.speechFor(src) }),
+    transcribe: speech,
+  });
   // Drive: the watcher finds new videos, the intake edits, captions and schedules them.
   let watcher: DriveWatcher;
   const intake = new Intake(store, publishers, {
@@ -76,6 +85,7 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
   runner.start();
   editor.start();
   notifier.start();
+  producer.start();
   captioner.start();
   void intake.resume().catch((err) => console.error(`drive resume: ${(err as Error).message}`));
   const intakeTimer = setInterval(() => void intake.tick().catch((err) => console.error(`drive tick: ${(err as Error).message}`)), 10_000);
@@ -91,6 +101,7 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
       runner.stop();
       editor.stop();
       notifier.stop();
+      producer.stop();
       captioner.stop();
       watcher.stop();
       clearInterval(intakeTimer);
