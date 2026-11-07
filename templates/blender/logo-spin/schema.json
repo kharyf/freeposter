@@ -1,0 +1,9 @@
+{
+  "description": "Extruded 3D text spinning about its vertical axis on a solid background.",
+  "params": {
+    "text": { "type": "string", "required": true, "maxLength": 40 },
+    "color": { "type": "color", "default": "#ff5a36" },
+    "background": { "type": "color", "default": "#000000" },
+    "turns": { "type": "number", "default": 1, "min": 0.25, "max": 4 }
+  }
+}

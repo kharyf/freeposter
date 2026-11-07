@@ -1,0 +1,9 @@
+{
+  "description": "A title, with an optional subtitle, that rises and grows into place over 0.6 s, then holds.",
+  "params": {
+    "title": { "type": "string", "required": true, "maxLength": 40 },
+    "subtitle": { "type": "string", "default": "", "maxLength": 60 },
+    "color": { "type": "color", "default": "#ffffff" },
+    "background": { "type": "color", "default": "#111111" }
+  }
+}
