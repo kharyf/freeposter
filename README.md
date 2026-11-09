@@ -31,6 +31,7 @@
 - **Schedule** posts up to a year ahead.
 - **AI captions** on the plan you already pay for (Claude, ChatGPT, Gemini, Copilot, Cursor) or OpenRouter.
 - **Productions:** render new videos from shots (HyperFrames, WanGP, Blender) on your own machine.
+- **You approve what agents post.** An agent can only ask: you get the exact file on Telegram (or in the window) with Approve, Reject and Redo, and only your tap posts it.
 
 <img src="docs/assets/divider.svg" width="100%" height="6" alt="">
 
@@ -59,7 +60,7 @@ http://localhost:4400/mcp
 claude mcp add --transport http freeposter http://localhost:4400/mcp
 ```
 
-The app's **AI agents** panel shows the setup line for each agent. Prefer a terminal? Run `freeposter help`. For webhook-driven agents, see [docs/hermes.md](docs/hermes.md).
+The app's **AI agents** panel shows the setup line for each agent. Prefer a terminal? Run `freeposter help`. For webhook-driven agents and reviews on Telegram, see [docs/hermes.md](docs/hermes.md).
 
 <img src="docs/assets/divider.svg" width="100%" height="6" alt="">
 

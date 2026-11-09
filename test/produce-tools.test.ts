@@ -33,7 +33,7 @@ test("findWanGP returns the first folder holding wgp.py, and reads its python an
 });
 
 test("production settings default to safe values", () => {
-  assert.equal(config.produce.agentApproval, false);
+  assert.equal("agentApproval" in config.produce, false, "agents can't be allowed to approve");
   assert.equal(config.produce.cpuLane, 2);
   assert.equal(config.produce.wangpTimeoutMin, 30);
   assert.equal(config.produce.shotRetentionDays, 14);

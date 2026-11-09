@@ -25,16 +25,16 @@ function setup() {
 test("production settings are checked when saved", async () => {
   const app = setup();
   const put = (values: Record<string, string>) => app.inject({ method: "PUT", url: "/api/settings", headers: HOST, payload: { values } });
-  const bad = await put({ AGENT_APPROVAL: "maybe", WANGP_TIMEOUT_MIN: "-3", NOTIFY_WEBHOOK_URL: "ftp://x" });
+  const bad = await put({ AGENT_APPROVAL: "on", WANGP_TIMEOUT_MIN: "-3", NOTIFY_WEBHOOK_URL: "ftp://x" });
   assert.equal(bad.statusCode, 400);
-  assert.match(bad.json().error, /AGENT_APPROVAL must be on or off/);
+  // Agents never approve any more: the setting is gone, so turning it on is refused.
+  assert.match(bad.json().error, /AGENT_APPROVAL is not a setting/);
   assert.match(bad.json().error, /WANGP_TIMEOUT_MIN must be a whole number/);
   assert.match(bad.json().error, /NOTIFY_WEBHOOK_URL must be an http/);
-  const good = await put({ AGENT_APPROVAL: "on", CPU_LANE_CONCURRENCY: "3" });
+  const good = await put({ CPU_LANE_CONCURRENCY: "3" });
   assert.equal(good.statusCode, 200);
-  assert.equal(config.produce.agentApproval, true);
   assert.equal(config.produce.cpuLane, 3);
-  await put({ AGENT_APPROVAL: "off", CPU_LANE_CONCURRENCY: "" });
+  await put({ CPU_LANE_CONCURRENCY: "" });
   await app.close();
 });
 

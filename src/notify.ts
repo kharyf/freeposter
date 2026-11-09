@@ -7,7 +7,9 @@ import { config } from "./config.ts";
 import type { Store } from "./db.ts";
 import { backoffMs } from "./runner.ts";
 
-export type EventType = "production.ready" | "production.failed" | "edit.ready" | "edit.failed" | "post.done";
+export type EventType =
+  | "production.ready" | "production.failed" | "edit.ready" | "edit.failed" | "post.done"
+  | "review.waiting" | "review.approved" | "review.rejected" | "review.redo" | "review.failed" | "review.expired";
 
 export const MAX_ATTEMPTS = 5;
 const KEEP_MS = 7 * 86_400_000;

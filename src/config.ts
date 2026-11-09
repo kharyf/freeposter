@@ -50,6 +50,7 @@ mkdirSync(join(dataDir, "edits"), { recursive: true });
 mkdirSync(join(dataDir, "models"), { recursive: true });
 mkdirSync(join(dataDir, "productions"), { recursive: true });
 mkdirSync(join(dataDir, "sfx"), { recursive: true });
+mkdirSync(join(dataDir, "reviews"), { recursive: true });
 
 /** Every key the setup screen may write to .env. Secrets are never sent back to the browser. */
 export const SETTINGS = {
@@ -79,8 +80,7 @@ export const SETTINGS = {
   DAILY_CAP_X: { secret: false },
   X_MAX_CHARS: { secret: false },
   X_MAX_VIDEO_SECONDS: { secret: false },
-  // Productions (HyperFrames, WanGP, Blender) and the agent's reach.
-  AGENT_APPROVAL: { secret: false },
+  // Productions (HyperFrames, WanGP, Blender) and the agent's webhook. Agents never approve: the user does, on a review.
   NOTIFY_WEBHOOK_URL: { secret: false },
   NOTIFY_WEBHOOK_SECRET: { secret: true },
   HYPERFRAMES_CMD: { secret: false },
@@ -144,8 +144,6 @@ function build() {
     xMaxChars: Number(setting("X_MAX_CHARS", "280")),
     xMaxVideoSeconds: Number(setting("X_MAX_VIDEO_SECONDS", "140")),
     produce: {
-      /** "on": an agent may approve a production or edit once the user says yes in chat. Only the window changes it. */
-      agentApproval: setting("AGENT_APPROVAL").toLowerCase() === "on",
       webhookUrl: setting("NOTIFY_WEBHOOK_URL"),
       webhookSecret: setting("NOTIFY_WEBHOOK_SECRET"),
       /** empty = FreePoster's own pinned HyperFrames install (tools.ts) */

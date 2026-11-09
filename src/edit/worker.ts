@@ -7,7 +7,7 @@ import type { Store } from "../db.ts";
 import { probe } from "../media.ts";
 import type { Edit } from "../types.ts";
 import { queueEvent } from "../notify.ts";
-import { renderEdit } from "./render.ts";
+import { planSegments, renderEdit } from "./render.ts";
 import { findLyricsWithAi, spokenWords, type FindLyrics } from "./speech.ts";
 import { transcribe as whisper, type Transcript } from "./transcribe.ts";
 
@@ -87,20 +87,29 @@ export class EditWorker {
       const transcript = await this.speechFor(edit);
       this.store.updateEdit(edit.id, { state: "editing", transcriptPath: join(this.dir, `${edit.sha256}.words.json`) });
       const out = join(this.dir, `${edit.key}.mp4`);
+      // The kept source stretches: a redo note's "0:14" in the edit maps back to the source through these.
+      const cuts = join(this.dir, `${edit.key}.cuts.json`);
       let durationSec: number;
       if (existsSync(out)) {
         durationSec = (await probe(out)).durationSec;
+        if (!existsSync(cuts)) writeFileSync(cuts, JSON.stringify(planSegments(transcript, edit.settings, (await probe(edit.sourcePath)).durationSec)));
       } else {
         log(edit, "editing");
         let last = 0;
-        ({ durationSec } = await renderEdit(edit.sourcePath, transcript, edit.settings, out, (f) => {
+        let segments;
+        ({ durationSec, segments } = await renderEdit(edit.sourcePath, transcript, edit.settings, out, (f) => {
           if (f - last >= 0.02) { last = f; this.store.updateEdit(edit.id, { progress: f }); }
         }));
+        writeFileSync(cuts, JSON.stringify(segments));
       }
-      this.store.updateEdit(edit.id, { state: "ready", progress: 1, outputPath: out, durationSec, error: null });
+      this.store.updateEdit(edit.id, { state: "ready", progress: 1, outputPath: out, durationSec, error: null, cutsPath: cuts });
       log(edit, `ready (${durationSec.toFixed(1)}s)`);
-      queueEvent(this.store, "edit.ready", `edit.ready:${edit.id}`, { edit_id: edit.id, duration_sec: durationSec, preview_path: out },
-        `Edit ${edit.id} is ready (${durationSec.toFixed(1)} s); it needs approval before it can be posted.`);
+      // A Drive video's edit goes to review by itself (Drive intake asks for it); an agent asking too would only replace that card.
+      const drive = this.store.driveFileForEdit(edit.id);
+      queueEvent(this.store, "edit.ready", `edit.ready:${edit.id}`, { edit_id: edit.id, duration_sec: durationSec, parent_edit_id: edit.parentEditId, drive_file: drive?.name ?? null },
+        drive
+          ? `Edit ${edit.id} of the Drive video "${drive.name}" is ready (${durationSec.toFixed(1)} s). FreePoster sends it to the user for review itself; don't call request_review.`
+          : `Edit ${edit.id} is ready (${durationSec.toFixed(1)} s). Call request_review with it so the user can approve, reject or redo it.`);
     } catch (err) {
       log(edit, `failed: ${(err as Error).message}`);
       this.store.updateEdit(edit.id, { state: "failed", error: (err as Error).message });

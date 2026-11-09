@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS shot_cache (
 );
 `;
 
-export type ProductionState = "queued" | "rendering" | "assembling" | "ready" | "approved" | "failed" | "cancelled";
+/** rejected: the user turned down its current revision; revise_production can still make a new one. */
+export type ProductionState = "queued" | "rendering" | "assembling" | "ready" | "approved" | "failed" | "cancelled" | "rejected";
 export type ShotState = "queued" | "running" | "done" | "failed" | "cancelled";
 export type Lane = "gpu" | "cpu";
 
@@ -227,6 +228,12 @@ export class ProductionStore {
     this.db.prepare("UPDATE shots SET state = 'cancelled', updated_at = ? WHERE production_id = ? AND state IN ('queued', 'running')").run(Date.now(), id);
     this.setState(id, { state: "cancelled" });
     return true;
+  }
+
+  /** The user turned the ready revision down. Returns false unless it was ready. */
+  reject(id: number, revision: number): boolean {
+    const { changes } = this.db.prepare("UPDATE productions SET state = 'rejected', updated_at = ? WHERE id = ? AND revision = ? AND state = 'ready'").run(Date.now(), id, revision);
+    return changes > 0;
   }
 
   approve(id: number, postId: number) {

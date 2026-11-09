@@ -268,7 +268,7 @@ export class ProductionWorker {
       log(p.id, `ready (${durationSec.toFixed(1)} s)`);
       queueEvent(this.store, "production.ready", `production.ready:${p.id}:${p.revision}`,
         { production_id: p.id, revision: p.revision, title: p.spec.title, duration_sec: durationSec, preview_url: previewUrl(p.id), thumb_url: thumbUrl(p.id) },
-        `Production ${p.id}${p.spec.title ? ` (${p.spec.title})` : ""} is ready: ${durationSec.toFixed(1)} s. Show the preview and ask before approving.`);
+        `Production ${p.id}${p.spec.title ? ` (${p.spec.title})` : ""} is ready: ${durationSec.toFixed(1)} s. Call request_review with its production_id so the user can approve, reject or redo it.`);
     } catch (err) {
       const now = ps.get(p.id)!;
       if (controller.signal.aborted || now.state !== "assembling" || now.revision !== p.revision) return;

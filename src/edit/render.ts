@@ -6,7 +6,7 @@ import { renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { config } from "../config.ts";
 import { probe } from "../media.ts";
 import { buildAss } from "./captions.ts";
-import { planCuts, remapWords, type Segment } from "./cuts.ts";
+import { applyRanges, fixWords, planCuts, remapWords, type Segment } from "./cuts.ts";
 import { planReframe, sendcmdScript } from "./reframe.ts";
 import type { EditSettings } from "./settings.ts";
 import { filterPath, type Transcript } from "./transcribe.ts";
@@ -43,15 +43,21 @@ function filterGraph(segs: Segment[], s: EditSettings, opts: { reframe: { width:
   return parts.join(";");
 }
 
+/** The source stretches an edit keeps: the cut plan (when tightening), with the user's keep and drop ranges. */
+export function planSegments(transcript: Transcript, s: EditSettings, durationSec: number): Segment[] {
+  const base = s.tighten ? planCuts(transcript.words, durationSec) : [{ start: 0, end: durationSec }];
+  return applyRanges(base, durationSec, s.keep, s.drop);
+}
+
 export async function renderEdit(
   source: string,
   transcript: Transcript,
   s: EditSettings,
   outPath: string,
   onProgress?: (fraction: number) => void,
-): Promise<{ path: string; durationSec: number }> {
+): Promise<{ path: string; durationSec: number; segments: Segment[] }> {
   const src = await probe(source);
-  const segs = s.tighten ? planCuts(transcript.words, src.durationSec) : [{ start: 0, end: src.durationSec }];
+  const segs = planSegments(transcript, s, src.durationSec);
   const editedSec = segs.reduce((t, g) => t + g.end - g.start, 0);
   const temp: string[] = [];
 
@@ -72,7 +78,9 @@ export async function renderEdit(
   let ass: string | null = null;
   if (s.captions && transcript.words.length) {
     ass = `${outPath}.ass`;
-    const captionWords = s.tighten ? remapWords(transcript.words, segs) : transcript.words;
+    const words = fixWords(transcript.words, s.captionFixes);
+    // Uncut, the captions show every word as said (fillers too), as before.
+    const captionWords = s.tighten || s.drop?.length ? remapWords(words, segs) : words;
     writeFileSync(ass, buildAss(captionWords));
     temp.push(ass);
   }
@@ -105,5 +113,5 @@ export async function renderEdit(
     for (const f of [...temp, part]) try { unlinkSync(f); } catch {}
   }
   onProgress?.(1);
-  return { path: outPath, durationSec: (await probe(outPath)).durationSec };
+  return { path: outPath, durationSec: (await probe(outPath)).durationSec, segments: segs };
 }

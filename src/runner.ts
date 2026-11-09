@@ -1,11 +1,12 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { config, dataDir } from "./config.ts";
 import type { Store } from "./db.ts";
 import { AuthError, FatalError, RetryableError } from "./http.ts";
-import { render } from "./media.ts";
+import { probe, render, specProblems } from "./media.ts";
 import { queueEvent } from "./notify.ts";
 import { StillProcessing, type Publisher } from "./platforms/base.ts";
+import { hashFile } from "./review/media.ts";
 import type { Account, Job, Platform, Post } from "./types.ts";
 
 export const MAX_ATTEMPTS = 6;
@@ -97,6 +98,8 @@ export class Runner {
 
       const video = await this.renderFor(post);
       const { durationSec } = video.probe;
+      // What this job uploads, recorded before a byte is sent: the audit compares it with what was approved.
+      this.store.recordUpload(job.id, video.sha256);
       const max = publisher.maxDurationSec(account);
       if (durationSec > max + 0.05) {
         throw new FatalError(`${publisher.label} accepts up to ${max}s; this video is ${durationSec.toFixed(1)}s`);
@@ -142,14 +145,30 @@ export class Runner {
     }
   }
 
-  /** The approved edit when the post has one; Drive posts that were edited don't fall back to the original. */
-  renderFor(post: Post) {
-    const edit = post.editId ? this.store.edit(post.editId) : undefined;
-    if (edit?.state === "ready" && edit.approvedAt && edit.outputPath && existsSync(edit.outputPath)) {
-      return render(edit.outputPath, edit.key, this.rendersDir);
+  /**
+   * The file a job uploads, with its hash. An approved review's post uploads the approved file exactly as it is,
+   * and only while it still has the approved hash. Otherwise: the approved edit when the post has one (Drive posts
+   * that were edited don't fall back to the original), rendered for the platforms.
+   */
+  async renderFor(post: Post) {
+    if (post.approvedSha256) {
+      if (!existsSync(post.sourcePath)) throw new FatalError("the approved file is gone; ask for a new review");
+      const sha256 = await hashFile(post.sourcePath);
+      if (sha256 !== post.approvedSha256) throw new FatalError("the approved file changed after it was approved; ask for a new review");
+      const p = await probe(post.sourcePath);
+      const problems = specProblems(p);
+      if (problems.length) throw new FatalError(`the approved file doesn't meet the platforms' spec: ${problems.join("; ")}`);
+      return { path: post.sourcePath, size: statSync(post.sourcePath).size, probe: p, sha256 };
     }
-    if (post.requireEdit) throw new FatalError("the edited video isn't available, and this Drive video posts only its edit (end its name with _RAW to post a video as uploaded)");
-    return render(post.sourcePath, post.sha256, this.rendersDir);
+    const edit = post.editId ? this.store.edit(post.editId) : undefined;
+    let out;
+    if (edit?.state === "ready" && edit.approvedAt && edit.outputPath && existsSync(edit.outputPath)) {
+      out = await render(edit.outputPath, edit.key, this.rendersDir);
+    } else {
+      if (post.requireEdit) throw new FatalError("the edited video isn't available, and this Drive video posts only its edit (end its name with _RAW to post a video as uploaded)");
+      out = await render(post.sourcePath, post.sha256, this.rendersDir);
+    }
+    return { ...out, sha256: await hashFile(out.path) };
   }
 
   handleFailure(job: Job, err: Error) {

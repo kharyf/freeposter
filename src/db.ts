@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS drive_files (
   caption TEXT,
   note TEXT,
   uploaded_at INTEGER,
+  review_id INTEGER,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -157,8 +158,19 @@ export class Store {
     if (!postColumns.some((c) => c.name === "require_edit")) this.db.exec("ALTER TABLE posts ADD COLUMN require_edit INTEGER NOT NULL DEFAULT 0");
     // ...and before captions were written for posts made with a blank one.
     if (!postColumns.some((c) => c.name === "caption_topic")) this.db.exec("ALTER TABLE posts ADD COLUMN caption_topic TEXT");
+    // ...and before reviews: an approved review's post uploads exactly the file that was approved.
+    if (!postColumns.some((c) => c.name === "review_id")) this.db.exec("ALTER TABLE posts ADD COLUMN review_id INTEGER");
+    if (!postColumns.some((c) => c.name === "approved_sha256")) this.db.exec("ALTER TABLE posts ADD COLUMN approved_sha256 TEXT");
+    // Posts made before this was recorded are 'legacy': the audit can't vouch for them.
+    if (!postColumns.some((c) => c.name === "origin")) this.db.exec("ALTER TABLE posts ADD COLUMN origin TEXT NOT NULL DEFAULT 'legacy'");
+    const jobColumns = this.db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[];
+    if (!jobColumns.some((c) => c.name === "uploaded_sha256")) this.db.exec("ALTER TABLE jobs ADD COLUMN uploaded_sha256 TEXT");
+    const editColumns = this.db.prepare("PRAGMA table_info(edits)").all() as { name: string }[];
+    if (!editColumns.some((c) => c.name === "parent_edit_id")) this.db.exec("ALTER TABLE edits ADD COLUMN parent_edit_id INTEGER");
+    if (!editColumns.some((c) => c.name === "cuts_path")) this.db.exec("ALTER TABLE edits ADD COLUMN cuts_path TEXT");
     const driveColumns = this.db.prepare("PRAGMA table_info(drive_files)").all() as { name: string }[];
     if (!driveColumns.some((c) => c.name === "uploaded_at")) this.db.exec("ALTER TABLE drive_files ADD COLUMN uploaded_at INTEGER");
+    if (!driveColumns.some((c) => c.name === "review_id")) this.db.exec("ALTER TABLE drive_files ADD COLUMN review_id INTEGER");
     const connColumns = this.db.prepare("PRAGMA table_info(drive_connection)").all() as { name: string }[];
     if (!connColumns.some((c) => c.name === "changes_token")) this.db.exec("ALTER TABLE drive_connection ADD COLUMN changes_token TEXT");
     // A crash mid-run leaves jobs "running"; their progress checkpoint lets them resume safely.
@@ -294,8 +306,9 @@ export class Store {
 
   private insertPost(p: Omit<Post, "id" | "createdAt">, accountIds: number[]): number {
     const { lastInsertRowid } = this.db
-      .prepare("INSERT INTO posts (caption, title, source_path, sha256, tiktok, created_at, scheduled_at, edit_id, require_edit, caption_topic) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(p.caption, p.title, p.sourcePath, p.sha256, p.tiktok ? JSON.stringify(p.tiktok) : null, Date.now(), p.scheduledAt ?? null, p.editId ?? null, p.requireEdit ? 1 : 0, p.captionTopic ?? null);
+      .prepare("INSERT INTO posts (caption, title, source_path, sha256, tiktok, created_at, scheduled_at, edit_id, require_edit, caption_topic, review_id, approved_sha256, origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(p.caption, p.title, p.sourcePath, p.sha256, p.tiktok ? JSON.stringify(p.tiktok) : null, Date.now(), p.scheduledAt ?? null, p.editId ?? null, p.requireEdit ? 1 : 0, p.captionTopic ?? null,
+        p.reviewId ?? null, p.approvedSha256 ?? null, p.origin ?? "window");
     const postId = Number(lastInsertRowid);
     const insertJob = this.db.prepare(
       "INSERT INTO jobs (post_id, account_id, platform, state, next_run_at, updated_at) VALUES (?, ?, ?, 'queued', ?, ?)",
@@ -336,6 +349,9 @@ export class Store {
       editId: r.edit_id ?? null,
       requireEdit: Boolean(r.require_edit),
       captionTopic: r.caption_topic ?? null,
+      reviewId: r.review_id ?? null,
+      approvedSha256: r.approved_sha256 ?? null,
+      origin: r.origin,
     };
   }
 
@@ -420,6 +436,11 @@ export class Store {
       );
   }
 
+  /** The hash of the file a job is about to upload (the audit compares it with what was approved). */
+  recordUpload(jobId: number, sha256: string) {
+    this.db.prepare("UPDATE jobs SET uploaded_sha256 = ? WHERE id = ?").run(sha256, jobId);
+  }
+
   /** Waiting-for-quota jobs don't consume attempts. */
   refundAttempt(jobId: number) {
     this.db.prepare("UPDATE jobs SET attempts = MAX(attempts - 1, 0) WHERE id = ?").run(jobId);
@@ -501,14 +522,17 @@ export class Store {
 
   // ---- edits ----
 
-  /** Queues an edit, or returns the one already made (or being made) from the same file with the same settings. */
-  createEdit(sourcePath: string, sha256: string, settings: EditSettings): Edit {
+  /**
+   * Queues an edit, or returns the one already made (or being made) from the same file with the same settings.
+   * Rejected and superseded edits aren't reused: asking for those settings again makes a new edit (its file is cached).
+   */
+  createEdit(sourcePath: string, sha256: string, settings: EditSettings, parentEditId: number | null = null): Edit {
     const key = editKey(sha256, settings);
-    const existing = this.db.prepare("SELECT id FROM edits WHERE key = ? AND state != 'failed' ORDER BY id DESC LIMIT 1").get(key) as { id: number } | undefined;
+    const existing = this.db.prepare("SELECT id FROM edits WHERE key = ? AND state NOT IN ('failed', 'rejected', 'superseded') ORDER BY id DESC LIMIT 1").get(key) as { id: number } | undefined;
     if (existing) return this.edit(existing.id)!;
     const { lastInsertRowid } = this.db
-      .prepare("INSERT INTO edits (source_path, sha256, settings, key, state, created_at) VALUES (?, ?, ?, ?, 'queued', ?)")
-      .run(sourcePath, sha256, JSON.stringify(settings), key, Date.now());
+      .prepare("INSERT INTO edits (source_path, sha256, settings, key, state, parent_edit_id, created_at) VALUES (?, ?, ?, ?, 'queued', ?, ?)")
+      .run(sourcePath, sha256, JSON.stringify(settings), key, parentEditId, Date.now());
     return this.edit(Number(lastInsertRowid))!;
   }
 
@@ -528,6 +552,8 @@ export class Store {
       transcriptPath: r.transcript_path,
       error: r.error,
       approvedAt: r.approved_at,
+      parentEditId: r.parent_edit_id ?? null,
+      cutsPath: r.cuts_path ?? null,
       createdAt: r.created_at,
     };
   }
@@ -540,16 +566,22 @@ export class Store {
     return row ? this.edit(row.id) : undefined;
   }
 
-  updateEdit(id: number, f: Partial<Pick<Edit, "state" | "progress" | "outputPath" | "durationSec" | "transcriptPath" | "error">>) {
-    const cols = { state: "state", progress: "progress", outputPath: "output_path", durationSec: "duration_sec", transcriptPath: "transcript_path", error: "error" } as const;
+  updateEdit(id: number, f: Partial<Pick<Edit, "state" | "progress" | "outputPath" | "durationSec" | "transcriptPath" | "error" | "cutsPath">>) {
+    const cols = { state: "state", progress: "progress", outputPath: "output_path", durationSec: "duration_sec", transcriptPath: "transcript_path", error: "error", cutsPath: "cuts_path" } as const;
     const keys = (Object.keys(f) as (keyof typeof cols)[]).filter((k) => k in cols);
     if (!keys.length) return;
     this.db.prepare(`UPDATE edits SET ${keys.map((k) => `${cols[k]} = ?`).join(", ")} WHERE id = ?`).run(...keys.map((k) => f[k] ?? null), id);
   }
 
-  /** Only the user approves edits (the page's Approve button); agents have no way to. */
+  /** Only the user approves edits (the page's Approve button, or a review they approved); agents have no way to. */
   approveEdit(id: number) {
     this.db.prepare("UPDATE edits SET approved_at = ? WHERE id = ? AND state = 'ready'").run(Date.now(), id);
+  }
+
+  /** A ready (or failed) edit the user turned down, or one replaced by a revision. Never once approved. */
+  closeEdit(id: number, state: "rejected" | "superseded"): boolean {
+    const { changes } = this.db.prepare("UPDATE edits SET state = ? WHERE id = ? AND approved_at IS NULL AND state IN ('ready', 'failed', 'queued', 'rejected')").run(state, id);
+    return changes > 0;
   }
 
   /** Edits still to be made or being made. */
@@ -620,6 +652,38 @@ export class Store {
     return this.db.prepare("SELECT * FROM drive_files WHERE state NOT IN ('ignored', 'pending', 'removed') ORDER BY created_at DESC LIMIT ?").all(limit).map(toDriveFile);
   }
 
+  /** The Drive file an edit (or an earlier version of it) was made for. */
+  driveFileForEdit(editId: number): DriveFileRecord | undefined {
+    for (let id: number | null = editId, hops = 0; id !== null && hops < 50; hops++) {
+      const r = this.db.prepare("SELECT * FROM drive_files WHERE edit_id = ?").get(id);
+      if (r) return toDriveFile(r);
+      id = this.edit(id)?.parentEditId ?? null;
+    }
+    return undefined;
+  }
+
+  /** Records the post an approved review of a Drive file's edit made; only once. */
+  linkDrivePost(driveId: string, postId: number, note: string | null) {
+    this.db.prepare("UPDATE drive_files SET state = 'scheduled', post_id = ?, note = ?, updated_at = ? WHERE drive_id = ? AND post_id IS NULL")
+      .run(postId, note, Date.now(), driveId);
+  }
+
+  driveFileForReview(reviewId: number): DriveFileRecord | undefined {
+    const r = this.db.prepare("SELECT * FROM drive_files WHERE review_id = ?").get(reviewId);
+    return r ? toDriveFile(r) : undefined;
+  }
+
+  /** The newest revision of an edit (revise_edit makes children), or the edit itself when it has none. */
+  latestRevision(editId: number): number {
+    let id = editId;
+    for (let hops = 0; hops < 50; hops++) {
+      const child = this.db.prepare("SELECT id FROM edits WHERE parent_edit_id = ? ORDER BY id DESC LIMIT 1").get(id) as { id: number } | undefined;
+      if (!child) break;
+      id = child.id;
+    }
+    return id;
+  }
+
   /** Files part-way through the pipeline, oldest first. */
   driveFilesIn(states: DriveFileRecord["state"][]): DriveFileRecord[] {
     return this.db
@@ -632,7 +696,7 @@ export class Store {
   upsertDriveFile(driveId: string, f: Partial<Omit<DriveFileRecord, "driveId" | "createdAt" | "updatedAt">>) {
     const cols = {
       name: "name", state: "state", size: "size", md5: "md5", scheduledAt: "scheduled_at", sourcePath: "source_path", sha256: "sha256",
-      editId: "edit_id", postId: "post_id", title: "title", caption: "caption", note: "note", uploadedAt: "uploaded_at",
+      editId: "edit_id", postId: "post_id", title: "title", caption: "caption", note: "note", uploadedAt: "uploaded_at", reviewId: "review_id",
     } as const;
     const keys = (Object.keys(f) as (keyof typeof cols)[]).filter((k) => k in cols);
     const values = keys.map((k) => f[k] ?? null);
@@ -771,6 +835,7 @@ function toDriveFile(r: any): DriveFileRecord {
     caption: r.caption,
     note: r.note,
     uploadedAt: r.uploaded_at,
+    reviewId: r.review_id ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -788,6 +853,7 @@ function toJob(r: any): Job {
     progress: JSON.parse(r.progress),
     resultUrl: r.result_url,
     error: r.error,
+    uploadedSha256: r.uploaded_sha256 ?? null,
     updatedAt: r.updated_at,
   };
 }

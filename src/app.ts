@@ -15,6 +15,9 @@ import { publishers } from "./platforms/index.ts";
 import { adapters } from "./produce/adapters/index.ts";
 import { ProductionStore } from "./produce/store.ts";
 import { ProductionWorker } from "./produce/worker.ts";
+import { ReviewService } from "./review/service.ts";
+import { ReviewStore } from "./review/store.ts";
+import { TelegramReview } from "./review/telegram.ts";
 import { Runner } from "./runner.ts";
 import { buildServer, type ServerOptions } from "./server.ts";
 import { PLATFORMS } from "./types.ts";
@@ -31,7 +34,7 @@ export interface RunningApp {
 
 /** Posts waiting, edits or Drive files part-way through, or a watched folder (even one needing a reconnect). */
 export function keepRunning(store: Store): boolean {
-  return store.pendingJobCount() > 0 || store.openEditCount() > 0 || new ProductionStore(store).openCount() > 0 || store.driveFilesIn(["queued", "downloading", "transcribing", "processing"]).length > 0
+  return store.pendingJobCount() > 0 || store.openEditCount() > 0 || new ReviewStore(store).inState("preparing", "pending").length > 0 || new ProductionStore(store).openCount() > 0 || store.driveFilesIn(["queued", "downloading", "transcribing", "processing"]).length > 0
     || Boolean(store.driveConnection()?.folderId);
 }
 
@@ -54,7 +57,16 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
     adapters: adapters({ speechFor: (src) => editor.speechFor(src) }),
     transcribe: speech,
   });
-  // Drive: the watcher finds new videos, the intake edits, captions and schedules them.
+  // Reviews: the only way an edited video gets posted (an agent's, or a Drive video's). The user decides on
+  // Telegram or in the window.
+  const reviews = new ReviewService(store, {
+    publishers,
+    runner,
+    productions: () => producer.productions,
+    transcribe: (path, sha256) => editor.speechFor({ sourcePath: path, sha256 }),
+    caption: { writeCaption: (input) => writeCaption(input, publishers), frames: (sourcePath) => sampleFrames(sourcePath) },
+  });
+  // Drive: the watcher finds new videos; the intake edits and captions them and sends them for review.
   let watcher: DriveWatcher;
   const intake = new Intake(store, publishers, {
     download: async (id) => {
@@ -65,6 +77,7 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
     transcribe: (sourcePath, sha256) => editor.speechFor({ sourcePath, sha256 }),
     writeCaption: (input) => writeCaption(input, publishers),
     frames: (sourcePath) => sampleFrames(sourcePath),
+    reviews,
   });
   watcher = new DriveWatcher(store, (f) => void intake.handle(f).catch((err) => console.error(`drive intake: ${(err as Error).message}`)));
   // Posts made on the page or through MCP with a blank caption get one written the same way.
@@ -73,7 +86,8 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
     writeCaption: (input) => writeCaption(input, publishers),
     frames: (sourcePath) => sampleFrames(sourcePath),
   });
-  const app = buildServer(store, runner, publishers, options, { intake, poll: () => watcher.poll(), sync: () => watcher.sync() }, ai, producer);
+  const telegram = new TelegramReview(store, reviews);
+  const app = buildServer(store, runner, publishers, options, { intake, poll: () => watcher.poll(), sync: () => watcher.sync() }, ai, producer, { service: reviews, telegram });
 
   try {
     await app.listen({ port: config.port, host: "127.0.0.1" });
@@ -87,6 +101,8 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
   notifier.start();
   producer.start();
   captioner.start();
+  reviews.start();
+  telegram.start();
   void intake.resume().catch((err) => console.error(`drive resume: ${(err as Error).message}`));
   const intakeTimer = setInterval(() => void intake.tick().catch((err) => console.error(`drive tick: ${(err as Error).message}`)), 10_000);
   watcher.start();
@@ -103,6 +119,8 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
       notifier.stop();
       producer.stop();
       captioner.stop();
+      reviews.stop();
+      telegram.stop();
       watcher.stop();
       clearInterval(intakeTimer);
       await app.close();

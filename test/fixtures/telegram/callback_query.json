@@ -1,0 +1,18 @@
+{
+  "_note": "Bot API Update with a callback_query, in the shape Telegram sends (https://core.telegram.org/bots/api#update). Hand-written from the Bot API reference; replace with one recorded from the real bot when convenient. Tests fill in update_id, id, from.id, message.chat.id, message.message_id and data.",
+  "update_id": 0,
+  "callback_query": {
+    "id": "",
+    "from": { "id": 0, "is_bot": false, "first_name": "Khary", "username": "khary", "language_code": "en" },
+    "message": {
+      "message_id": 0,
+      "from": { "id": 7700000001, "is_bot": true, "first_name": "loxis-meet", "username": "LoxisMeetBot" },
+      "chat": { "id": 0, "first_name": "Khary", "username": "khary", "type": "private" },
+      "date": 1762600000,
+      "video": { "duration": 4, "width": 1080, "height": 1920, "file_name": "review.mp4", "mime_type": "video/mp4", "file_id": "BAACAgEAAxkBAAI", "file_unique_id": "AgAD", "file_size": 120000 },
+      "caption": "🎬 Edit 1 · 4.0 s"
+    },
+    "chat_instance": "-4785239950713431040",
+    "data": ""
+  }
+}

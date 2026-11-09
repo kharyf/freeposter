@@ -1,6 +1,5 @@
-// The six MCP tools for productions. They sit beside the posting tools in mcp.ts and share its conventions:
+// The five MCP tools for productions. They sit beside the posting tools in mcp.ts and share its conventions:
 // stateless, every call returns at once, slow work happens in the ProductionWorker.
-import { config } from "../config.ts";
 import type { Store } from "../db.ts";
 import type { Publisher } from "../platforms/base.ts";
 import type { Platform } from "../types.ts";
@@ -21,15 +20,15 @@ export interface ToolDef {
   run(args: Args): Promise<unknown>;
 }
 
-export const PRODUCTION_INSTRUCTIONS = `Productions make a new video from several shots: HyperFrames (HTML compositions rendered to video), WanGP (AI video from a prompt, optionally from a start image), Blender (3D templates filled with params), existing files, and talking-head edits. Call describe_production_tools first for what is installed, the Blender templates and their params, and the sound-effects library. start_production takes one spec and returns at once; FreePoster renders, assembles and makes a preview in the background, and tells the webhook when it is ready (or call get_production). Show the user the preview (preview_url) before anything is posted. approve_production posts it, and only works when the user has turned on agent approval in FreePoster; even then, approve only after the user says yes to that preview. revise_production changes shots and re-renders only those.`;
+export const PRODUCTION_INSTRUCTIONS = `Productions make a new video from several shots: HyperFrames (HTML compositions rendered to video), WanGP (AI video from a prompt, optionally from a start image), Blender (3D templates filled with params), existing files, and talking-head edits. Call describe_production_tools first for what is installed, the Blender templates and their params, and the sound-effects library. start_production takes one spec and returns at once; FreePoster renders, assembles and makes a preview in the background, and tells the webhook when it is ready (or call get_production). Show the user the preview (preview_url) before anything is posted. To post it, call request_review with its production_id: the user approves, rejects or asks for a redo on the review itself, never in chat. revise_production changes shots and re-renders only those; after a redo, revise it and the new revision comes back for review.`;
 
 /** A ToolError's message goes back to the model as an isError result. */
 export function productionTools(opts: {
   producer: () => ProductionWorker | undefined;
   store: Store;
   publishers: Record<Platform, Publisher>;
-  /** publish_video's own run: approve_production posts through it, with every check it makes */
-  publish: (args: Args) => Promise<any>;
+  /** where the user reviews: Telegram (paired or not) and the window */
+  reviewChannel: () => Record<string, unknown>;
   fail: (message: string) => Error;
 }): ToolDef[] {
   const { fail } = opts;
@@ -84,7 +83,7 @@ export function productionTools(opts: {
           limits: { shots: `1 to ${LIMITS.maxShots}`, generated_shot_sec: `${LIMITS.minShotSec} to ${LIMITS.maxShotSec}`, html_kb: LIMITS.maxHtmlBytes / 1024, crossfade_sec: `0.1 to ${LIMITS.maxCrossfadeSec}` },
           output: "1080x1920, 30 fps",
           hyperframes_rules: "One self-contained HTML page. The root element carries data-composition-id, data-width=\"1080\", data-height=\"1920\" and data-duration equal to the shot's duration_sec; each animated element carries class=\"clip\" with data-start, data-duration and data-track-index; register a paused GSAP timeline as window.__timelines[\"<composition id>\"]. Renders use --strict, so lint errors fail the shot with HyperFrames's own message.",
-          agent_approval: config.produce.agentApproval,
+          review: { ...opts.reviewChannel(), how: "request_review with production_id; only the user's tap on Approve posts it" },
         };
       },
     },
@@ -163,45 +162,6 @@ export function productionTools(opts: {
         const p = production(id(args));
         if (!worker().cancel(p.id)) throw fail(`production ${p.id} is ${p.state} and can't be cancelled`);
         return view(production(p.id));
-      },
-    },
-    {
-      name: "approve_production",
-      title: "Approve and post a production",
-      description: "Posts a ready production to the chosen accounts, now or at schedule_at, with the same checks as publish_video. Only works when the user has turned on agent approval in FreePoster, and only call it after the user has seen the preview and said yes. Fields left out come from the spec's post section.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          production_id: { type: "integer" },
-          account_ids: { type: "array", items: { type: "integer" }, minItems: 1 },
-          caption: { type: "string" },
-          title: { type: "string" },
-          schedule_at: { type: "string" },
-          tiktok: { type: "object" },
-          allow_duplicate: { type: "boolean", default: false },
-          dry_run: { type: "boolean", default: false },
-        },
-        required: ["production_id"],
-        additionalProperties: false,
-      },
-      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-      async run(args) {
-        const p = production(id(args));
-        if (!config.produce.agentApproval) {
-          throw fail("Agent approval is off: the user approves productions themselves. Ask them to turn on \"Let my agent approve\" in FreePoster's Setup if they want you to post after they say yes.");
-        }
-        if (p.state !== "ready" || !p.outputPath) throw fail(`production ${p.id} is ${p.state}; only a ready production can be approved`);
-        const defaults = (p.spec.post ?? {}) as Args;
-        const pick = (k: string) => (args[k] !== undefined ? args[k] : defaults[k]);
-        const publishArgs: Args = { video_path: p.outputPath };
-        for (const k of ["account_ids", "caption", "title", "schedule_at", "tiktok"]) if (pick(k) !== undefined) publishArgs[k] = pick(k);
-        if (!publishArgs.caption && p.spec.title) publishArgs.title ??= p.spec.title;
-        if (args.allow_duplicate !== undefined) publishArgs.allow_duplicate = args.allow_duplicate;
-        if (args.dry_run !== undefined) publishArgs.dry_run = args.dry_run;
-        const result = await opts.publish(publishArgs);
-        if (args.dry_run === true) return result;
-        worker().productions.approve(p.id, result.id);
-        return { production_id: p.id, post_id: result.id, post: result, next: "Call get_post with post_id to follow each account." };
       },
     },
   ];

@@ -52,11 +52,12 @@ function setup() {
 const spec = { title: "Teaser", shots: [{ id: "a", kind: "wan", duration_sec: 2, prompt: "a phone" }, { id: "b", kind: "file", path: "" }] };
 const withClip = () => ({ ...spec, shots: [spec.shots[0], { ...spec.shots[1], path: clip }] });
 
-test("the six production tools are listed", async () => {
+test("the five production tools are listed, and none approves", async () => {
   const { rpc, app } = setup();
   const names = (await rpc("tools/list")).result.tools.map((t: any) => t.name);
-  for (const n of ["describe_production_tools", "start_production", "get_production", "revise_production", "cancel_production", "approve_production"]) assert.ok(names.includes(n), n);
-  assert.equal(names.length, 16);
+  for (const n of ["describe_production_tools", "start_production", "get_production", "revise_production", "cancel_production"]) assert.ok(names.includes(n), n);
+  assert.ok(!names.includes("approve_production"));
+  assert.equal(names.length, 19);
   await app.close();
 });
 
@@ -67,7 +68,8 @@ test("describe_production_tools reports each kind's health, templates and SFX", 
   assert.ok(r.shot_kinds.every((k: any) => k.ok));
   assert.ok(r.blender_templates["logo-spin"].params.text);
   assert.deepEqual(r.sfx, []);
-  assert.equal(r.agent_approval, false);
+  assert.match(r.review.how, /request_review/);
+  assert.equal("agent_approval" in r, false);
   await app.close();
 });
 
@@ -103,25 +105,30 @@ test("a production runs to ready; get_production gives the preview link, which s
   await app.close();
 });
 
-test("approve_production is refused while agent approval is off, and posts when it is on", async () => {
+test("a production posts only through a review the user approves", async () => {
   const { call, app, ready, acct, store } = setup();
   const started = (await call("start_production", { spec: withClip() })).structuredContent;
   await ready(started.id);
-  const refused = await call("approve_production", { production_id: started.id, account_ids: [acct.id], caption: "hi" });
-  assert.equal(refused.isError, true);
-  assert.match(refused.content[0].text, /approve/i);
-  config.produce.agentApproval = true;
-  try {
-    const ok = (await call("approve_production", { production_id: started.id, account_ids: [acct.id], caption: "hi" })).structuredContent;
-    assert.ok(ok.post_id);
-    assert.equal(store.jobsForPost(ok.post_id).length, 1);
-    const p = (await call("get_production", { production_id: started.id })).structuredContent;
-    assert.equal(p.state, "approved");
-    assert.equal(p.post_id, ok.post_id);
-    assert.equal((await call("cancel_production", { production_id: started.id })).isError, true);
-  } finally {
-    config.produce.agentApproval = false;
+  // There's no approve tool any more; asking for a review posts nothing.
+  const gone = await call("approve_production", { production_id: started.id, account_ids: [acct.id], caption: "hi" });
+  assert.equal(gone, undefined, "unknown tool");
+  const asked = (await call("request_review", { production_id: started.id, account_ids: [acct.id], caption: "hi" })).structuredContent;
+  assert.equal(asked.subject.kind, "production");
+  let r = asked;
+  for (let i = 0; i < 200 && r.state === "preparing"; i++) {
+    await new Promise((res) => setTimeout(res, 50));
+    r = (await call("get_review", { review_id: asked.id })).structuredContent;
   }
+  assert.equal(r.state, "pending", r.error);
+  assert.equal(store.recentPosts().length, 0);
+  const res = await app.inject({ method: "POST", url: `/api/reviews/${asked.id}/approve`, headers: HOST });
+  assert.equal(res.statusCode, 200, res.body);
+  const postId = res.json().review.post_id;
+  assert.equal(store.jobsForPost(postId).length, 1);
+  const p = (await call("get_production", { production_id: started.id })).structuredContent;
+  assert.equal(p.state, "approved");
+  assert.equal(p.post_id, postId);
+  assert.equal((await call("cancel_production", { production_id: started.id })).isError, true);
   await app.close();
 });
 

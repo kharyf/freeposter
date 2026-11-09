@@ -9,6 +9,7 @@ import type { Transcript } from "../src/edit/transcribe.ts";
 import type { Publisher } from "../src/platforms/base.ts";
 import { publishers as real } from "../src/platforms/index.ts";
 import { captionTopicFor } from "../src/posts.ts";
+import { ReviewService } from "../src/review/service.ts";
 import { Runner } from "../src/runner.ts";
 import { buildServer } from "../src/server.ts";
 import type { Platform } from "../src/types.ts";
@@ -26,18 +27,21 @@ function setup(opts: { transcript?: Transcript; writeCaption?: CaptionDeps["writ
   const fake = (p: Platform): Publisher => ({ ...real[p], async publish(ctx) { published.push({ caption: ctx.post.caption, title: ctx.post.title }); return { url: `https://${p}/1` }; } });
   const publishers = { ...real, x: fake("x"), youtube: fake("youtube") } as Record<Platform, Publisher>;
   const runner = new Runner(store, publishers, dir);
-  const app = buildServer(store, runner, publishers);
   const asked: Parameters<CaptionDeps["writeCaption"]>[0][] = [];
+  const writeCaption: CaptionDeps["writeCaption"] = async (input) => (asked.push(input), opts.writeCaption ? opts.writeCaption(input) : { title: "Three tips", caption: "Three tips. #tips" });
+  // An agent's post is captioned while its review is prepared, so the user approves the text too.
+  const reviews = new ReviewService(store, { publishers, runner, dir: tmp(), transcribe: async () => opts.transcript ?? speech, caption: { writeCaption, frames: async () => [Buffer.from("a frame")] } });
+  const app = buildServer(store, runner, publishers, {}, undefined, undefined, undefined, { service: reviews });
   const captioner = new Captioner(store, {
     transcribe: async () => opts.transcript ?? speech,
-    writeCaption: async (input) => (asked.push(input), opts.writeCaption ? opts.writeCaption(input) : { title: "Three tips", caption: "Three tips. #tips" }),
+    writeCaption,
     frames: async () => [Buffer.from("a frame")],
   });
   const upload = (fields: Record<string, string>, name = "My_Morning_Routine.mp4") =>
     app.inject({ method: "POST", url: "/api/posts", ...multipart({ accounts: `[${x.id}]`, ...fields }, { name, data: readFileSync(clip) }) });
   /** runs the runner until nothing more starts */
   const drain = async () => { for (let i = 0; i < 5; i++) await Promise.all(runner.tick()); };
-  return { dir, clip, store, x, yt, app, runner, captioner, upload, drain, published, asked };
+  return { dir, clip, store, x, yt, app, runner, captioner, upload, drain, published, asked, reviews };
 }
 
 test("a blank caption on the web page is written by Claude before the post goes out", async () => {
@@ -122,8 +126,8 @@ test("YouTube's title rule is checked against the fallback, so a blank caption a
   assert.equal(res.statusCode, 200, res.body);
 });
 
-test("MCP publish_video with no caption gets one written the same way", async () => {
-  const { store, app, captioner, clip } = setup();
+test("MCP publish_video with no caption gets one written the same way, before the user reviews it", async () => {
+  const { store, app, reviews, clip, asked } = setup();
   const x = store.accounts().find((a) => a.platform === "x")!;
   const call = async (args: Record<string, unknown>) => (await app.inject({
     method: "POST", url: "/mcp", headers: { host: `localhost:${config.port}` },
@@ -134,11 +138,18 @@ test("MCP publish_video with no caption gets one written the same way", async ()
   assert.equal(dry.structuredContent.captionWrittenByAi, true);
   const r = await call({ video_path: clip, account_ids: [x.id], schedule_at: new Date(Date.now() + 3_600_000).toISOString() });
   assert.equal(r.isError, undefined, r.content[0].text);
-  assert.equal(r.structuredContent.captionPending, true);
-  const postId = r.structuredContent.id;
-  assert.equal(store.post(postId)!.captionTopic, "vertical-silent");
-  await captioner.tick();
-  assert.equal(store.post(postId)!.caption, "Three tips. #tips");
+  assert.equal(r.structuredContent.caption_pending, true);
+  await reviews.tick();
+  const review = reviews.reviews.get(r.structuredContent.id)!;
+  assert.equal(review.state, "pending", review.error ?? "");
+  assert.equal(asked[0].topic, "vertical-silent");
+  assert.equal(asked[0].transcript, "Three tips.");
+  assert.equal(review.draft.caption, "Three tips. #tips");
+  assert.equal(review.draft.title, "Three tips");
+  // Approved, the post carries the reviewed text; nothing is left for the captioner to write.
+  const out = await reviews.approve(review.id, { via: "window" });
+  assert.equal(store.post(out.review!.postId!)!.caption, "Three tips. #tips");
+  assert.equal(store.post(out.review!.postId!)!.captionTopic, null);
 });
 
 test("captionTopicFor", () => {

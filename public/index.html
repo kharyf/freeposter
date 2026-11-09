@@ -21,6 +21,7 @@
   main { display: grid; grid-template-columns: minmax(0, 420px) minmax(0, 1fr) minmax(0, 420px); gap: 20px; padding: 20px 24px; max-width: 1720px; }
   @media (max-width: 1300px) { main { grid-template-columns: minmax(0, 420px) minmax(0, 1fr); } }
   @media (max-width: 900px) { main { grid-template-columns: 1fr; padding: 16px; } }
+  main[hidden] { display: none; }
   section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 20px; }
   h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 12px; }
   label { display: block; font-weight: 600; font-size: 13px; margin: 12px 0 4px; }
@@ -67,7 +68,7 @@
   .dfile { border-top: 1px solid var(--line); padding: 10px 0; }
   .dfile:first-child { border-top: 0; }
   .dfile .state.scheduled { color: var(--ok); } .dfile .state.edit_failed, .dfile .state.failed, .dfile .state.invalid, .dfile .state.late { color: var(--bad); }
-  .dfile .state.needs_caption { color: var(--warn); }
+  .dfile .state.needs_caption, .dfile .state.reviewing, .dfile .state.unreviewed { color: var(--warn); } .dfile .state.rejected { color: var(--bad); }
   .edit-box { border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-top: 8px; }
   .edit-box .opts { display: flex; flex-wrap: wrap; gap: 6px 14px; }
   .edit-box .opts label { display: flex; gap: 6px; align-items: center; font-weight: 400; margin: 0; }
@@ -101,8 +102,13 @@
   header .actions { margin-left: auto; display: flex; gap: 8px; }
   a.link { color: var(--accent); }
   /* ---- setup wizard ---- */
-  #setup { position: fixed; inset: 0; background: var(--bg); z-index: 10; display: none; overflow: auto; }
+  #setup { display: none; }
   #setup.open { display: block; }
+  /* ---- tabs ---- */
+  .tabs { display: flex; gap: 4px; padding: 0 24px; border-bottom: 1px solid var(--line); }
+  @media (max-width: 900px) { .tabs { padding: 0 16px; } }
+  .tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; color: var(--muted); padding: 6px 10px; font-size: 13px; font-weight: 600; margin-bottom: -1px; }
+  .tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
   .wiz { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; max-width: 1040px; margin: 0 auto; padding: 24px; }
   @media (max-width: 760px) { .wiz { grid-template-columns: 1fr; padding: 16px; } .steps { display: flex; flex-wrap: wrap; gap: 4px; } }
   .steps { list-style: none; margin: 0; padding: 0; }
@@ -147,15 +153,25 @@
   .ai-add .ai-row .path input { font-size: 13px; padding: 4px 8px; }
   .filebtn { display: inline-block; font-weight: 400; margin: 4px 0; }
   .filebtn span { display: inline-block; border: 1px solid var(--line); background: var(--bg); padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.review { border: 1px solid var(--line, #8883); border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+.review video { display: block; width: 100%; max-height: 420px; background: #000; border-radius: 8px; margin: 8px 0; }
+.review .cap { white-space: pre-wrap; margin: 6px 0; }
+.review .fp { font-family: ui-monospace, monospace; font-size: 12px; }
+.review .decide { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.review .why { margin-top: 8px; display: grid; gap: 6px; }
 </style>
 </head>
 <body>
 <header><h1>FreePoster</h1><span>one video → TikTok · Instagram · Facebook · X · YouTube</span>
-  <div class="actions"><button type="button" id="openSetup">Setup</button><button type="button" id="quit" hidden>Quit</button></div>
+  <div class="actions"><button type="button" id="quit" hidden>Quit</button></div>
 </header>
+<nav class="tabs" role="tablist">
+  <button type="button" role="tab" id="tabHome" aria-selected="true" aria-controls="home">Home</button>
+  <button type="button" role="tab" id="tabSetup" aria-selected="false" aria-controls="setup">Setup</button>
+</nav>
 <div id="redirectBanner"></div>
 <div id="banner"></div>
-<main>
+<main id="home" role="tabpanel">
   <div>
     <section>
       <div class="section-head"><h2>Accounts</h2><button type="button" class="icon-btn" id="addSet" title="Add Account Set" aria-label="Add Account Set"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg></button></div>
@@ -222,6 +238,11 @@
     </section>
   </div>
   <div>
+    <section id="reviewsSection" hidden>
+      <h2>Waiting for your review</h2>
+      <p class="muted" style="margin-top:0">Videos your agent asked to post, and edits of videos from your Drive folder. Nothing goes out until you approve it, here or on Telegram.</p>
+      <div id="reviews"></div>
+    </section>
     <section id="driveFilesSection" hidden>
       <div class="row" style="justify-content:space-between;align-items:center"><h2>From Drive</h2><button type="button" id="driveSync" title="Check the Drive folder now and take off videos you've deleted there">Sync</button></div>
       <div id="driveFiles"></div>
@@ -243,7 +264,7 @@
   </div>
 </main>
 
-<div id="setup" role="dialog" aria-modal="true" aria-label="FreePoster setup">
+<div id="setup" role="tabpanel" aria-label="FreePoster setup" hidden>
   <div class="wiz">
     <nav><ul class="steps" id="steps"></ul></nav>
     <section id="stepBody"></section>
@@ -585,12 +606,22 @@ function tiktokFileHtml() {
 async function openSetup(stepId) {
   settings = await (await fetch("/api/settings")).json();
   stepIndex = Math.max(0, setupSteps().findIndex((s) => s.id === stepId));
-  $("setup").classList.add("open");
+  showTab("setup");
   renderSetup();
 }
 
+/** Home and Setup share the page; one shows at a time. */
+function showTab(name) {
+  const setup = name === "setup";
+  $("setup").classList.toggle("open", setup);
+  $("setup").hidden = !setup;
+  $("home").hidden = setup;
+  $("tabHome").setAttribute("aria-selected", String(!setup));
+  $("tabSetup").setAttribute("aria-selected", String(setup));
+}
+
 function closeSetup() {
-  $("setup").classList.remove("open");
+  showTab("home");
   sessionStorage.removeItem("setupStep");
   loadStatus();
 }
@@ -620,7 +651,7 @@ function stepHtml(step) {
   if (step.id === "redirect") {
     const done = settings.redirectDone;
     return `<h1>Set up FreePoster</h1>
-      <p>This walks you through everything FreePoster needs to post for you: your redirect URI, a developer app on each platform you use, the keys from those apps, and connecting your accounts. Skip any platform you don't use. You can come back here any time with the <strong>Setup</strong> button.</p>
+      <p>This walks you through everything FreePoster needs to post for you: your redirect URI, a developer app on each platform you use, the keys from those apps, and connecting your accounts. Skip any platform you don't use. You can come back here any time with the <strong>Setup</strong> tab.</p>
       <p class="muted">Everything you enter stays on this computer, in <code>${esc(settings.envFile)}</code>.</p>
       <h2 style="margin-top:20px">Your redirect URI ${done ? `<span class="check-ok">✓ checked</span>` : ""}</h2>
       <p>When you connect an account, the platform sends your browser back to an https address you register with it: your redirect URI. This step makes yours, for free, on Cloudflare. It's a small page that hands the platform's response straight back to FreePoster on this computer, and stores nothing. The same site holds the Terms of Service and Privacy Policy that TikTok asks for.</p>
@@ -676,7 +707,6 @@ function stepHtml(step) {
       <div class="grid2">${p.fields.map(([k, label]) => field(k, label)).join("")}</div>`;
   }
   if (step.id === "production") {
-    const approval = (settings.values.AGENT_APPROVAL || "off").toLowerCase() === "on" ? "on" : "off";
     return `<h1>Production tools</h1>
       <p>Optional. Your AI agent can make whole videos from several shots: HTML animations (HyperFrames), AI video (WanGP) and 3D titles (Blender), joined, previewed and posted by FreePoster. Skip this if you only post videos you made yourself.</p>
       <div id="produceHealth" class="muted">Checking the tools…</div>
@@ -699,12 +729,9 @@ function stepHtml(step) {
         ${field("NOTIFY_WEBHOOK_SECRET", "Webhook secret", "The same text as in your agent's webhook settings.")}
       </div>
       <p><button type="button" data-produce="webhook-test">Send a test event</button> <span id="webhookTest"></span></p>
-      <div class="field"><label for="f_AGENT_APPROVAL">Let my agent approve</label>
-        <select id="f_AGENT_APPROVAL" data-key="AGENT_APPROVAL">
-          <option value="off" ${approval === "off" ? "selected" : ""}>Off: I approve videos and edits here</option>
-          <option value="on" ${approval === "on" ? "selected" : ""}>On: my agent may post once I say yes in chat</option>
-        </select>
-        <div class="hint">Posting is public. With this on, your agent should show you each preview and post only after you say yes.</div></div>`;
+      <h2 style="margin-top:16px">Review on Telegram</h2>
+      <p>Your agent can't post on its own, and Drive videos wait for you too. When a video is ready to post, FreePoster sends you the exact file on Telegram with <strong>Approve</strong>, <strong>Reject</strong> and <strong>Redo</strong> buttons, and shows it here under <em>Waiting for your review</em>. Only those buttons post anything; telling your agent "yes" doesn't.</p>
+      <div id="tgBody" class="muted">Loading…</div>`;
   }
   if (step.id === "limits") {
     return `<h1>Limits</h1>
@@ -756,7 +783,7 @@ function renderSetup() {
       ${skip && !settings.configured[step.id] ? `<button type="button" data-nav="skip">${esc(skip)}</button>` : ""}
       <button type="button" class="primary" data-nav="next">${last ? "Finish" : "Save & continue"}</button>
     </div>`;
-  if (step.id === "production") void loadProductionHealth();
+  if (step.id === "production") { void loadProductionHealth(); void loadTelegram(); }
 }
 
 async function saveStep() {
@@ -828,6 +855,8 @@ $("setup").addEventListener("click", async (e) => {
   const redirect = e.target.closest("[data-redirect]")?.dataset.redirect;
   if (redirect === "folder") return makeRedirectFolder();
   if (redirect === "show") return fetch("/api/redirect-page/show", { method: "PUT" });
+  const tgButton = e.target.closest("[data-tg]");
+  if (tgButton) return void telegramAction(tgButton);
   const produce = e.target.closest("[data-produce]");
   if (produce) return produceAction(produce);
   if (nav === "next" || nav === "skip" || nav === "accept") {
@@ -851,6 +880,135 @@ async function loadProductionHealth() {
     + `<div class="muted" style="margin-top:8px">Blender templates: ${h.templates.map(esc).join(", ") || "none"}. Sound effects: ${h.sfx.length} in <code>${esc(h.sfxDir)}</code>.</div>`
     + (h.webhook.lastError ? `<div class="banner err" style="margin:8px 0 0">The webhook last failed: ${esc(h.webhook.lastError)}</div>` : "");
 }
+
+// ---- Telegram reviews (setup) ----
+
+let tgPoll;
+async function loadTelegram() {
+  const box = $("tgBody");
+  clearTimeout(tgPoll);
+  if (!box) return;
+  const res = await fetch("/api/telegram");
+  if (!res.ok) { box.textContent = "Telegram reviews aren't available in this FreePoster."; return; }
+  const t = await res.json();
+  box.classList.remove("muted");
+  const err = t.error ? `<div class="banner err" style="margin:8px 0">${esc(t.error)}</div>` : "";
+  if (!t.configured) {
+    box.innerHTML = `
+      <div class="field"><label>Which bot</label>
+        <label class="row" style="font-weight:400"><input type="radio" name="tgMode" value="hermes" checked style="width:auto;margin:0"> The bot Hermes already talks to me through</label>
+        <label class="row" style="font-weight:400"><input type="radio" name="tgMode" value="own" style="width:auto;margin:0"> A separate bot only FreePoster uses</label>
+        <div class="hint">With Hermes's bot, reviews arrive in the same chat, and a small Hermes plugin passes your taps straight to FreePoster (Hermes's model never sees them). Hermes's token is <code>TELEGRAM_BOT_TOKEN</code> in <code>%LOCALAPPDATA%\\hermes\\.env</code>. A separate bot comes from @BotFather and keeps reviews out of Hermes entirely.</div></div>
+      <div class="field"><label for="tgToken">Bot token</label><input id="tgToken" type="password" autocomplete="off" placeholder="123456789:AA…"></div>
+      <p><button type="button" data-tg="connect">Connect</button></p>${err}`;
+    return;
+  }
+  const hermes = t.mode === "hermes";
+  const pairLine = t.paired
+    ? `<span class="check-ok">✓ Paired with ${esc(t.paired)}</span>`
+    : t.pairCode
+      ? `To pair, send <code>${hermes ? `/freeposter ${esc(t.pairCode)}` : esc(t.pairCode)}</code> to <strong>@${esc(t.bot)}</strong> in a private chat (within 15 minutes).${hermes && !(t.plugin?.installed && t.plugin?.enabled) ? " Install and enable the Hermes plugin first: Hermes passes the code on through it." : ""}`
+      : `<button type="button" data-tg="pair">Get a pairing code</button>`;
+  const p = t.plugin;
+  const plugin = hermes ? `
+      <div style="margin-top:10px"><strong>Hermes plugin</strong>
+        <div>${p.installed && p.configured ? `<span class="check-ok">✓ installed</span>` : `<span class="check-bad">✗ not installed</span>`} <span class="muted">${esc(p.dir)}</span></div>
+        <div>${p.enabled ? `<span class="check-ok">✓ enabled in Hermes</span>` : `<span class="check-bad">✗ not enabled</span> <span class="muted">run <code>hermes plugins enable freeposter-review</code>, then restart Hermes</span>`}</div>
+        ${p.lastRelay ? `<div class="muted">Last tap passed on ${new Date(p.lastRelay).toLocaleString()}</div>` : ""}
+        <p><button type="button" data-tg="plugin">${p.installed && p.configured ? "Reinstall the plugin" : "Install the plugin"}</button></p></div>` : "";
+  box.innerHTML = `
+      <div><span class="check-ok">✓ @${esc(t.bot)}</span> <span class="muted">${hermes ? "Hermes's bot: Hermes reads its messages, the plugin passes FreePoster's on" : "FreePoster's own bot"}</span></div>
+      <div style="margin-top:6px">${pairLine}</div>${plugin}${err}
+      <p><button type="button" data-tg="test" ${t.paired ? "" : "disabled"}>Send a test message</button> <button type="button" data-tg="disconnect">Disconnect</button> <span id="tgResult"></span></p>`;
+  if (!t.paired) tgPoll = setTimeout(loadTelegram, 3000);
+}
+
+async function telegramAction(button) {
+  const action = button.dataset.tg;
+  button.disabled = true;
+  const call = async (method, url, body) => {
+    const res = await fetch(url, { method, ...(body ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {}) });
+    if (!res.ok) throw new Error((await res.json()).error);
+    return res.json();
+  };
+  try {
+    if (action === "connect") {
+      const mode = document.querySelector("input[name=tgMode]:checked")?.value ?? "own";
+      await call("PUT", "/api/telegram", { token: $("tgToken").value, mode });
+    } else if (action === "pair") await call("POST", "/api/telegram/pair");
+    else if (action === "plugin") await call("POST", "/api/telegram/plugin");
+    else if (action === "test") { await call("POST", "/api/telegram/test"); }
+    else if (action === "disconnect") { if (!confirm("Stop sending reviews to Telegram? They'll still show here.")) return; await call("DELETE", "/api/telegram"); }
+    await loadTelegram();
+    if (action === "test" && $("tgResult")) $("tgResult").innerHTML = `<span class="check-ok">✓ sent</span>`;
+  } catch (err) {
+    $("setupError").innerHTML = `<div class="banner err" style="margin:16px 0 0">${esc(err.message)}</div>`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+// ---- reviews waiting for the user ----
+
+const REASONS = [["cuts", "Cuts"], ["captions", "Captions"], ["framing", "Framing"], ["sound", "Sound"], ["zooms", "Zooms"], ["other", "Something else"]];
+let reviewsShown = "";
+async function loadReviews() {
+  const res = await fetch("/api/reviews");
+  if (!res.ok) return;
+  const { pending } = await res.json();
+  // Redraw only when the list changes, so a playing video or a half-typed note isn't wiped.
+  const key = JSON.stringify(pending.map((r) => [r.id, r.state, r.waiting_for, r.sent_to_telegram]));
+  if (key === reviewsShown) return;
+  reviewsShown = key;
+  $("reviewsSection").hidden = !pending.length;
+  $("reviews").innerHTML = pending.map((r) => `
+    <div class="review" data-review="${r.id}">
+      <div><strong>${esc(r.label)}</strong>${r.duration_sec ? ` <span class="muted">· ${r.duration_sec.toFixed(1)} s</span>` : ""}</div>
+      ${r.state === "preparing" ? `<div class="muted">Making the exact file${r.caption_pending ? " and writing the caption" : ""}…</div>` : `
+      <video src="${esc(r.videoUrl)}" controls playsinline preload="metadata"></video>
+      <div>${r.accounts.map((a) => `<span class="row" style="display:inline-flex">${a.platform ? icon(a.platform) : ""}${esc(a.name)}</span>`).join(" ")}</div>
+      <div class="muted">${r.schedule_at ? `Posts ${new Date(r.schedule_at).toLocaleString()}` : "Posts as soon as you approve"} · decide by ${new Date(r.expires_at).toLocaleString()}${r.sent_to_telegram ? " · also on Telegram" : ""}</div>
+      ${r.title && r.title !== r.caption ? `<div><span class="muted">Title:</span> ${esc(r.title)}</div>` : ""}
+      <div class="cap">${esc(r.caption)}</div>
+      <div class="muted fp">File ${esc((r.master_sha256 ?? "").slice(0, 16))}…</div>
+      ${r.waiting_for === "the user's redo note" ? `<div class="muted">Waiting for your redo note on Telegram.</div>` : ""}
+      <div class="decide">
+        <button type="button" class="primary" data-decide="approve">Approve</button>
+        <button type="button" data-decide="reject">Reject</button>
+        <button type="button" data-decide="redo">Redo</button>
+      </div>
+      <div class="why" hidden>
+        <select>${REASONS.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select>
+        <textarea placeholder="What should change? Add a time like 0:14 if it's one spot (optional)"></textarea>
+        <div class="decide"><button type="button" data-decide="send">Send</button><button type="button" data-decide="cancel">Cancel</button></div>
+      </div>`}
+    </div>`).join("");
+}
+
+$("reviews").addEventListener("click", async (e) => {
+  const button = e.target.closest("[data-decide]");
+  if (!button) return;
+  const card = button.closest("[data-review]");
+  const id = card.dataset.review;
+  const why = card.querySelector(".why");
+  const action = button.dataset.decide;
+  if (action === "reject" || action === "redo") {
+    why.hidden = false;
+    why.dataset.action = action;
+    why.querySelector("select").options[0].selected = true;
+    return;
+  }
+  if (action === "cancel") { why.hidden = true; return; }
+  const kind = action === "send" ? why.dataset.action : "approve";
+  const body = kind === "approve" ? null : { reason: why.querySelector("select").value, note: why.querySelector("textarea").value };
+  button.disabled = true;
+  const res = await fetch(`/api/reviews/${id}/${kind}`, { method: "POST", ...(body ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : { headers: { "content-type": "application/json" }, body: "{}" }) });
+  const out = await res.json();
+  banner(res.ok ? "ok" : "err", res.ok ? out.message : out.error);
+  reviewsShown = "";
+  await loadReviews();
+  loadPosts();
+});
 
 async function produceAction(button) {
   const action = button.dataset.produce;
@@ -906,7 +1064,8 @@ $("setup").addEventListener("change", async (e) => {
   renderSetup();
 });
 
-$("openSetup").addEventListener("click", () => openSetup());
+$("tabSetup").addEventListener("click", () => { if (!$("setup").classList.contains("open")) openSetup(sessionStorage.getItem("setupStep") ?? undefined); });
+$("tabHome").addEventListener("click", () => { if ($("setup").classList.contains("open")) closeSetup(); });
 $("quit").addEventListener("click", async () => {
   const { pendingJobs } = await (await fetch("/api/status")).json();
   const waiting = pendingJobs
@@ -1200,6 +1359,13 @@ document.addEventListener("click", async (e) => {
     banner();
     await changePost(useOriginal.dataset.useOriginal, "PATCH", { useOriginal: true });
   }
+  const reviewAgain = e.target.closest("[data-review-again]");
+  if (reviewAgain) {
+    const res = await fetch(`/api/drive/files/${encodeURIComponent(reviewAgain.dataset.reviewAgain)}/review-again`, { method: "POST" });
+    if (!res.ok) return banner("err", (await res.json()).error);
+    loadDrive();
+    return;
+  }
   const retryEdit = e.target.closest("[data-retry-edit]");
   if (retryEdit) {
     const res = await fetch(`/api/drive/files/${encodeURIComponent(retryEdit.dataset.retryEdit)}/retry-edit`, { method: "POST" });
@@ -1269,6 +1435,7 @@ $("useOriginal").addEventListener("click", () => { $("doEdit").checked = false; 
 
 const DRIVE_STATE = {
   queued: "Found", downloading: "Downloading…", transcribing: "Listening…", processing: "Editing…", scheduled: "Scheduled",
+  reviewing: "Waiting for your review", rejected: "Rejected", unreviewed: "Not reviewed",
   needs_caption: "Needs a caption", edit_failed: "Edit failed", failed: "Not posted", invalid: "Name not understood", late: "Too late", cancelled: "Cancelled",
 };
 let driveView = null;
@@ -1299,7 +1466,7 @@ function renderDrive(v) {
     <label for="driveFolder">Folder link</label>
     <input id="driveFolder" type="text" placeholder="https://drive.google.com/drive/folders/…" value="${esc(v.folderUrl ?? "")}">
     <div class="muted">Name each video <code>name_m.d.yy_h.mm.am</code>, like <code>Gatekeeping_11.1.26_5.30.pm</code>. Leave off the time to post as soon as possible that day; leave off the date to use the day it was uploaded. Add <code>_RAW</code> at the end (<code>Gatekeeping_11.1.26_5.30.pm_RAW</code>) for a video you've already edited: FreePoster posts it as it is, with no edit of its own. Videos already in the folder when you add it are left alone.</div>
-    <div class="muted" style="margin-top:8px">Drive videos post to the accounts ticked <strong>Default</strong> under Accounts.</div>
+    <div class="muted" style="margin-top:8px">Drive videos post to the accounts ticked <strong>Default</strong> under Accounts. Each edit waits for your review first: on Telegram once it's set up (<a href="#" data-setup="production">Setup → Review on Telegram</a>), and under <strong>Waiting for your review</strong> here. Approve schedules it; Reject posts nothing; Redo makes a new edit that comes back to you. <code>_RAW</code> videos skip the review.</div>
     <div class="muted" style="margin-top:8px">Your AI providers (see <strong>AI Providers</strong>) write each video's title and caption from what's said in it, or, when nobody speaks, from its on-screen text and what it shows (a few still frames are sent to the provider). If they can't tell what a video is about, the caption is <code>#fyp</code>; you can change it under Upcoming before it posts.</div>
     <div class="actions"><button type="button" id="driveSave">Save</button><button type="button" id="driveDisconnect">Disconnect</button></div>`;
 }
@@ -1325,6 +1492,7 @@ function renderDriveFiles(files, watching) {
       ${f.title ? `<div>${esc(f.title)}</div>` : ""}
       ${f.note ? `<div class="muted">${esc(f.note)}</div>` : ""}
       ${f.state === "edit_failed" ? `<div class="actions" style="margin-top:6px"><button type="button" data-retry-edit="${esc(f.id)}">Retry edit</button></div>` : ""}
+      ${f.state === "unreviewed" ? `<div class="actions" style="margin-top:6px"><button type="button" data-review-again="${esc(f.id)}">Send for review again</button></div>` : ""}
     </div>`).join("");
 }
 
@@ -1344,6 +1512,8 @@ loadStatus().then(() => {
 });
 loadPosts();
 setInterval(loadPosts, 3000);
+loadReviews();
+setInterval(loadReviews, 3000);
 
 // ---- AI providers: which are connected, how each is paid for, and their order for each job ----
 

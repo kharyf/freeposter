@@ -54,13 +54,24 @@ export interface Post {
    * file name). Its jobs wait until the caption is in. Null/absent once it has a caption.
    */
   captionTopic?: string | null;
+  /** the review whose approval made this post (agents can only post through one) */
+  reviewId?: number | null;
+  /** the exact file that was approved: the runner uploads it as it is, and only while it still has this hash */
+  approvedSha256?: string | null;
+  /** who made it: the window, a Drive video, or an approved review */
+  origin?: PostOrigin;
 }
+
+export type PostOrigin = "window" | "drive" | "review" | "legacy";
 
 export type DriveFileState =
   | "pending" // seen, still uploading (size not yet stable)
   | "queued" // handed to the intake
   | "ignored" | "invalid" | "late"
   | "downloading" | "transcribing" | "processing"
+  | "reviewing" // the edit waits for the user's decision (a review: Telegram and the window)
+  | "rejected" // the user rejected the edit; nothing posts
+  | "unreviewed" // its review expired or couldn't be made; "Send for review again" asks again
   | "scheduled" | "edit_failed" | "failed"
   | "needs_caption" // only in older databases; resume() captions these
   | "cancelled" // its post was cancelled in FreePoster
@@ -78,6 +89,8 @@ export interface DriveFileRecord {
   sha256: string | null;
   editId: number | null;
   postId: number | null;
+  /** the review of its edit, while one is open or until it's followed up */
+  reviewId: number | null;
   title: string | null;
   caption: string | null;
   note: string | null;
@@ -99,7 +112,8 @@ export interface DriveConnection {
   error: string | null;
 }
 
-export type EditState = "queued" | "transcribing" | "editing" | "ready" | "failed";
+/** rejected: the user turned it down; superseded: replaced by a revised edit (revise_edit). Neither can be posted. */
+export type EditState = "queued" | "transcribing" | "editing" | "ready" | "failed" | "rejected" | "superseded";
 
 export interface Edit {
   id: number;
@@ -115,6 +129,10 @@ export interface Edit {
   transcriptPath: string | null;
   error: string | null;
   approvedAt: number | null;
+  /** the edit this one revises */
+  parentEditId: number | null;
+  /** the kept source stretches, as JSON: maps a time in the edit back to the source */
+  cutsPath: string | null;
   createdAt: number;
 }
 
@@ -132,5 +150,7 @@ export interface Job {
   progress: Record<string, unknown>;
   resultUrl: string | null;
   error: string | null;
+  /** sha256 of the file this job uploaded, recorded just before the upload starts */
+  uploadedSha256: string | null;
   updatedAt: number;
 }
