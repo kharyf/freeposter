@@ -6,6 +6,7 @@ import { Intake, type IntakeDeps } from "../src/drive/intake.ts";
 import type { DriveFile } from "../src/drive/client.ts";
 import { publishers } from "../src/platforms/index.ts";
 import type { Transcript } from "../src/edit/transcribe.ts";
+import { ReviewService } from "../src/review/service.ts";
 import { account, newStore, tmp, verticalSilent } from "./helpers.ts";
 
 const MIN = 60_000;
@@ -28,11 +29,13 @@ function setup(opts: { transcript?: Transcript; caption?: Caption; frames?: Inta
   const accts = (opts.platforms ?? ["x", "tiktok"]).map((p) => store.upsertAccount(account(p)));
   store.setPref("defaults.accounts", accts.map((a) => a.id));
   const clock = { now: new Date().setSeconds(0, 0) };
+  const reviews = new ReviewService(store, { publishers, runner: { tick() {} }, dir: tmp() });
   const deps: IntakeDeps = {
     download: async () => createReadStream(clip),
     transcribe: async () => opts.transcript ?? words,
     writeCaption: opts.caption ?? (async () => ({ title: "Why gatekeeping matters", caption: "Gatekeeping matters. #gatekeeping" })),
     frames: opts.frames ?? (async () => [Buffer.from("a frame")]),
+    reviews,
     now: () => clock.now,
   };
   const intake = new Intake(store, publishers, deps);
@@ -43,11 +46,32 @@ function setup(opts: { transcript?: Transcript; caption?: Caption; frames?: Inta
     store.updateEdit(editId, { state: "ready", outputPath: clip, durationSec, progress: 1 });
   };
   const posts = () => (store.db.prepare("SELECT COUNT(*) AS n FROM posts").get() as { n: number }).n;
-  return { store, accts, clock, deps, intake, file, finishEdit, posts };
+  /** The edit went to review; the review is made ready (the exact file) and returned. */
+  const reviewOf = async (driveId = "f1") => {
+    await intake.tick();
+    const f = store.driveFile(driveId)!;
+    assert.equal(f.state, "reviewing", f.note ?? "");
+    await reviews.tick();
+    const r = reviews.reviews.get(f.reviewId!)!;
+    assert.equal(r.state, "pending", r.error ?? "");
+    assert.equal(r.subjectKind, "edit");
+    assert.equal(r.subjectId, f.editId);
+    assert.equal(r.requestedVia, "drive");
+    return r;
+  };
+  /** The user taps Approve; the intake records the post the review made. */
+  const approve = async (driveId = "f1") => {
+    const r = await reviewOf(driveId);
+    const out = await reviews.approve(r.id, { via: "window" });
+    assert.ok(out.ok, out.message);
+    await intake.tick();
+    return reviews.reviews.get(r.id)!;
+  };
+  return { store, accts, clock, deps, intake, reviews, file, finishEdit, posts, reviewOf, approve };
 }
 
-test("valid file becomes a scheduled post at the filename time with SELF_ONLY TikTok", async () => {
-  const { store, clock, intake, file, finishEdit, posts } = setup();
+test("valid file's edit waits for review; approving schedules the exact file at the filename time with SELF_ONLY TikTok", async () => {
+  const { store, clock, intake, file, finishEdit, posts, approve } = setup();
   const at = clock.now + 2 * 60 * MIN;
   await intake.handle(file(driveName("Gatekeeping", at)));
   const rec = store.driveFile("f1")!;
@@ -59,17 +83,23 @@ test("valid file becomes a scheduled post at the filename time with SELF_ONLY Ti
 
   finishEdit("f1");
   await intake.tick();
+  assert.equal(store.driveFile("f1")!.state, "reviewing");
+  assert.equal(posts(), 0, "nothing posts before the user approves");
+  assert.equal(store.edit(store.driveFile("f1")!.editId!)!.approvedAt, null, "Drive edits aren't approved by themselves any more");
+  const r = await approve();
   const done = store.driveFile("f1")!;
   assert.equal(done.state, "scheduled", done.note ?? "");
+  assert.equal(done.postId, r.postId);
   const post = store.post(done.postId!)!;
   assert.equal(post.scheduledAt, at);
-  assert.equal(post.editId, done.editId);
-  assert.equal(post.requireEdit, true);
+  assert.equal(post.reviewId, r.id);
+  assert.equal(post.approvedSha256, r.masterSha256, "the post uploads exactly the file that was reviewed");
+  assert.equal(post.sourcePath, r.masterPath);
   assert.equal(post.caption, "Gatekeeping matters. #gatekeeping");
   assert.equal(post.tiktok!.privacyLevel, "SELF_ONLY");
   assert.equal(post.tiktok!.brandContent, false);
   assert.equal(post.tiktok!.brandOrganic, false);
-  assert.ok(store.edit(done.editId!)!.approvedAt, "Drive edits are approved automatically");
+  assert.ok(store.edit(done.editId!)!.approvedAt, "approving the review approves the edit");
   assert.equal(store.jobsForPost(post.id).length, 2);
   assert.equal(store.jobsForPost(post.id)[0].nextRunAt, at);
 });
@@ -133,11 +163,11 @@ test("a _RAW file whose transcription fails is still captioned and posted", asyn
 });
 
 test("TikTok interaction settings come from the Drive settings, privacy never does", async () => {
-  const { store, clock, intake, file, finishEdit } = setup();
+  const { store, clock, intake, file, finishEdit, approve } = setup();
   store.setPref("defaults.tiktok", { allowComment: false, allowDuet: true, allowStitch: false, privacyLevel: "PUBLIC_TO_EVERYONE" });
   await intake.handle(file(driveName("T", clock.now + 60 * MIN)));
   finishEdit("f1");
-  await intake.tick();
+  await approve();
   const post = store.post(store.driveFile("f1")!.postId!)!;
   assert.deepEqual(post.tiktok, { privacyLevel: "SELF_ONLY", disableComment: true, disableDuet: false, disableStitch: true, brandContent: false, brandOrganic: false });
 });
@@ -156,31 +186,30 @@ test("invalid name and late file are not posted", async () => {
   assert.equal(posts(), 0);
 });
 
-test("within grace posts now", async () => {
-  const { store, clock, intake, file, finishEdit } = setup();
+test("within grace posts as soon as it's approved", async () => {
+  const { store, clock, intake, file, finishEdit, approve } = setup();
   await intake.handle(file(driveName("Soon", clock.now - 10 * MIN)));
   finishEdit("f1");
-  await intake.tick();
-  const post = store.post(store.driveFile("f1")!.postId!)!;
-  assert.ok(Math.abs(post.scheduledAt! - clock.now) < 1000, `${post.scheduledAt} vs ${clock.now}`);
+  const r = await approve();
+  assert.equal(r.draft.scheduledAt, null, "its time has come: the review says it posts on approval");
+  assert.equal(store.post(store.driveFile("f1")!.postId!)!.scheduledAt, null);
 });
 
 test("edit still running at scheduled time waits and never posts original", async () => {
-  const { store, clock, intake, file, finishEdit, posts } = setup();
+  const { store, clock, intake, file, finishEdit, posts, approve } = setup();
   const at = clock.now + 5 * MIN;
   await intake.handle(file(driveName("Slow", at)));
   clock.now = at + 20 * MIN;
   await intake.tick();
   assert.equal(posts(), 0, "no post while the edit is unfinished, even past its time");
   finishEdit("f1");
-  await intake.tick();
-  await intake.tick();
+  const r = await approve();
   assert.equal(posts(), 1);
   const rec = store.driveFile("f1")!;
   const post = store.post(rec.postId!)!;
-  assert.ok(post.editId && post.requireEdit);
-  assert.ok(Math.abs(post.scheduledAt! - clock.now) < 1000);
-  assert.match(rec.note!, /late/);
+  assert.notEqual(post.sourcePath, rec.sourcePath, "the reviewed edit posts, not the original");
+  assert.equal(post.approvedSha256, r.masterSha256);
+  assert.equal(post.scheduledAt, null, "past its time: it posts once approved");
 });
 
 test("failed edit holds edit_failed and retry resumes", async () => {
@@ -210,7 +239,7 @@ test("transcription failure holds edit_failed", async () => {
 
 test("no speech: the caption is written from the video's frames", async () => {
   const seen: Parameters<Caption>[0][] = [];
-  const { store, clock, intake, file, finishEdit } = setup({
+  const { store, clock, intake, file, finishEdit, approve } = setup({
     transcript: { words: [], language: null },
     caption: async (input) => (seen.push(input), { title: "5 tips for better sleep", caption: "Sleep better tonight. #sleep" }),
   });
@@ -221,12 +250,12 @@ test("no speech: the caption is written from the video's frames", async () => {
   assert.equal(rec.caption, "Sleep better tonight. #sleep");
   assert.ok(rec.editId, "the edit still runs");
   finishEdit("f1");
-  await intake.tick();
+  await approve();
   assert.equal(store.driveFile("f1")!.state, "scheduled");
 });
 
 test("no speech and frames that don't say what it's about: #fyp, without waiting", async () => {
-  const { store, clock, intake, file, finishEdit } = setup({ transcript: { words: [], language: null }, caption: async () => null });
+  const { store, clock, intake, file, finishEdit, approve } = setup({ transcript: { words: [], language: null }, caption: async () => null });
   await intake.handle(file(driveName("Music", clock.now + 60 * MIN)));
   const rec = store.driveFile("f1")!;
   assert.equal(rec.state, "processing");
@@ -234,7 +263,7 @@ test("no speech and frames that don't say what it's about: #fyp, without waiting
   assert.equal(rec.title, "Music", "the title is the file's name");
   assert.match(rec.note!, /frames didn't show/);
   finishEdit("f1");
-  await intake.tick();
+  await approve();
   const done = store.driveFile("f1")!;
   assert.equal(done.state, "scheduled", done.note ?? "");
   assert.equal(store.post(done.postId!)!.caption, "#fyp");
@@ -248,20 +277,19 @@ test("no speech and no readable frames: #fyp", async () => {
 });
 
 test("caption failure falls back to #fyp instead of waiting", async () => {
-  const { store, clock, intake, file, finishEdit } = setup({ caption: async () => { throw new Error("caption writing failed: X allows 280"); } });
+  const { store, clock, intake, file, finishEdit, approve } = setup({ caption: async () => { throw new Error("caption writing failed: X allows 280"); } });
   await intake.handle(file(driveName("Wordy", clock.now + 60 * MIN)));
   const rec = store.driveFile("f1")!;
   assert.equal(rec.state, "processing");
   assert.equal(rec.caption, "#fyp");
   assert.match(rec.note!, /280.*#fyp/);
   finishEdit("f1");
-  await intake.tick();
+  await approve();
   assert.equal(store.driveFile("f1")!.state, "scheduled");
 });
 
 test("files an older version held for a caption are captioned on restart", async () => {
-  const { store, clock, deps, file, finishEdit, posts } = setup();
-  const intake = new Intake(store, publishers, deps);
+  const { store, clock, deps, intake, file, finishEdit, posts, approve } = setup();
   await intake.handle(file(driveName("Held", clock.now + 60 * MIN)));
   store.upsertDriveFile("f1", { state: "needs_caption", caption: null, title: null, note: "no speech to write a caption from; add a title and caption" });
   await new Intake(store, publishers, deps).resume();
@@ -270,38 +298,43 @@ test("files an older version held for a caption are captioned on restart", async
   assert.equal(rec.caption, "Gatekeeping matters. #gatekeeping");
   assert.equal(rec.note, null);
   finishEdit("f1");
-  await intake.tick();
+  await approve();
   assert.equal(posts(), 1);
 });
 
-test("restart mid-pipeline creates exactly one post", async () => {
-  const { store, clock, deps, intake, file, finishEdit, posts } = setup();
+test("restart mid-pipeline sends one review and creates exactly one post", async () => {
+  const { store, clock, deps, intake, reviews, file, finishEdit, posts, approve } = setup();
   await intake.handle(file(driveName("Crash", clock.now + 60 * MIN)));
   finishEdit("f1");
   const again = new Intake(store, publishers, deps);
   await Promise.all([again.resume(), intake.tick(), again.tick()]);
   await again.tick();
   await intake.tick();
+  await reviews.tick();
+  await intake.tick();
+  assert.equal(reviews.reviews.inState("preparing", "pending").length, 1, "one card waits for the user");
+  await approve();
   assert.equal(posts(), 1);
 });
 
 test("restart during download picks the file up again", async () => {
-  const { store, clock, deps, file, finishEdit, posts } = setup();
+  const { store, clock, intake, file, finishEdit, posts, approve } = setup();
   store.upsertDriveFile("f1", { name: driveName("Mid", clock.now + 60 * MIN), state: "downloading" });
-  const intake = new Intake(store, publishers, deps);
   await intake.resume();
   assert.equal(store.driveFile("f1")!.state, "processing");
   finishEdit("f1");
-  await intake.tick();
+  await approve();
   assert.equal(posts(), 1);
   assert.ok(file);
 });
 
 test("platform too short for edited video is skipped with a note", async () => {
-  const { store, accts, clock, intake, file, finishEdit } = setup({ platforms: ["x", "facebook"] });
+  const { store, accts, clock, intake, file, finishEdit, reviewOf, approve } = setup({ platforms: ["x", "facebook"] });
   await intake.handle(file(driveName("Long", clock.now + 60 * MIN)));
   finishEdit("f1", 120);
-  await intake.tick();
+  const r = await reviewOf();
+  assert.deepEqual(r.draft.accountIds, [accts[0].id], "the review covers only the accounts that can take it");
+  await approve();
   const rec = store.driveFile("f1")!;
   assert.equal(rec.state, "scheduled", rec.note ?? "");
   const jobs = store.jobsForPost(rec.postId!);
@@ -311,17 +344,18 @@ test("platform too short for edited video is skipped with a note", async () => {
 });
 
 test("no accounts left fails with the reasons", async () => {
-  const { store, clock, intake, file, finishEdit, posts } = setup({ platforms: ["facebook"] });
+  const { store, clock, intake, file, finishEdit, posts, reviews } = setup({ platforms: ["facebook"] });
   await intake.handle(file(driveName("TooLong", clock.now + 60 * MIN)));
   finishEdit("f1", 120);
   await intake.tick();
   assert.equal(store.driveFile("f1")!.state, "failed");
+  assert.equal(reviews.reviews.recent().length, 0, "nothing to review");
   assert.match(store.driveFile("f1")!.note!, /Facebook/);
   assert.equal(posts(), 0);
 });
 
 test("a file waits for Drive accounts to be chosen instead of failing", async () => {
-  const { store, accts, clock, intake, file, finishEdit, posts } = setup();
+  const { store, accts, clock, intake, file, finishEdit, posts, approve } = setup();
   store.setPref("defaults.accounts", []);
   await intake.handle(file(driveName("Early", clock.now + 60 * MIN)));
   finishEdit("f1");
@@ -329,7 +363,7 @@ test("a file waits for Drive accounts to be chosen instead of failing", async ()
   assert.equal(store.driveFile("f1")!.state, "processing");
   assert.match(store.driveFile("f1")!.note!, /Choose default accounts/);
   store.setPref("defaults.accounts", accts.map((a) => a.id));
-  await intake.tick();
+  await approve();
   assert.equal(posts(), 1);
 });
 
@@ -339,17 +373,17 @@ const noon = (days = 0) => { const d = new Date(); d.setDate(d.getDate() + days)
 const dayStart = (days = 0) => new Date(noon(days)).setHours(0, 0, 0, 0);
 
 test("a name with no time posts as soon as possible on its date", async () => {
-  const { store, clock, intake, file, finishEdit } = setup();
+  const { store, clock, intake, file, finishEdit, approve } = setup();
   clock.now = noon();
   await intake.handle(file(`Today_${dateKey(new Date(noon()))}.mp4`));
   assert.equal(store.driveFile("f1")!.scheduledAt, clock.now, "today: right away");
   clock.now += 20 * MIN; // the edit takes a while; still the same day, so not late
   finishEdit("f1");
-  await intake.tick();
+  await approve();
   const rec = store.driveFile("f1")!;
   assert.equal(rec.state, "scheduled", rec.note ?? "");
   assert.equal(rec.note, null);
-  assert.equal(store.post(rec.postId!)!.scheduledAt, clock.now);
+  assert.equal(store.post(rec.postId!)!.scheduledAt, null, "it posts as soon as it's approved");
 
   await intake.handle(file(`Later_${dateKey(new Date(noon(2)))}.mp4`, "f2"));
   assert.equal(store.driveFile("f2")!.scheduledAt, dayStart(2), "a later date: as soon as that day starts");
@@ -375,4 +409,108 @@ test("a date with no time is late once that day is over", async () => {
   assert.equal(store.driveFile("f2")!.state, "late");
   await intake.tick();
   assert.equal(posts(), 0);
+});
+
+// ---- the review: Approve (above), Reject, Redo, and a review that ends undecided ----
+
+test("Reject: nothing posts and the file says so", async () => {
+  const { store, clock, intake, reviews, file, finishEdit, posts, reviewOf } = setup();
+  await intake.handle(file(driveName("Nope", clock.now + 60 * MIN)));
+  finishEdit("f1");
+  const r = await reviewOf();
+  assert.ok((await reviews.reject(r.id, { via: "window", reason: "cuts", note: "too choppy" })).ok);
+  await intake.tick();
+  const rec = store.driveFile("f1")!;
+  assert.equal(rec.state, "rejected");
+  assert.match(rec.note!, /cuts: too choppy/);
+  assert.equal(posts(), 0);
+  await intake.tick();
+  assert.equal(posts(), 0, "a rejected file stays rejected");
+});
+
+test("Redo for one setting with no note: FreePoster makes the new edit, which comes back for review", async () => {
+  const { store, clock, intake, reviews, file, finishEdit, posts, reviewOf, approve } = setup();
+  await intake.handle(file(driveName("Zoomy", clock.now + 60 * MIN)));
+  finishEdit("f1");
+  const first = await reviewOf();
+  const oldEdit = store.driveFile("f1")!.editId!;
+  const out = await reviews.redo(first.id, { via: "window", reason: "zooms", note: null });
+  assert.ok(out.ok, out.message);
+  assert.match(out.message, /punch-in zooms off/);
+  const rec = store.driveFile("f1")!;
+  assert.equal(rec.state, "processing", "back to editing");
+  assert.notEqual(rec.editId, oldEdit);
+  assert.equal(store.edit(rec.editId!)!.parentEditId, oldEdit);
+  assert.equal(store.edit(rec.editId!)!.settings.punchIn, false);
+  assert.equal(store.edit(oldEdit)!.state, "superseded", "the old edit can't be posted");
+  await intake.tick();
+  assert.equal(store.driveFile("f1")!.state, "processing", "waits for the new edit");
+  finishEdit("f1");
+  const second = await approve();
+  assert.notEqual(second.id, first.id, "a new review, of the new edit");
+  assert.equal(second.subjectId, rec.editId);
+  assert.equal(store.driveFile("f1")!.state, "scheduled");
+  assert.equal(posts(), 1);
+});
+
+test("Redo with a note: waits for Hermes's revise_edit, then sends the new edit for review", async () => {
+  const { store, clock, intake, reviews, file, finishEdit, reviewOf } = setup();
+  await intake.handle(file(driveName("Cut", clock.now + 60 * MIN)));
+  finishEdit("f1");
+  const first = await reviewOf();
+  const oldEdit = store.edit(store.driveFile("f1")!.editId!)!;
+  const out = await reviews.redo(first.id, { via: "telegram", reason: "cuts", note: "keep the joke at 0:02" });
+  assert.ok(out.ok, out.message);
+  assert.equal(reviews.reviews.get(first.id)!.atSec, 2);
+  await intake.tick();
+  let rec = store.driveFile("f1")!;
+  assert.equal(rec.state, "reviewing");
+  assert.equal(rec.editId, oldEdit.id, "FreePoster can't read the note: no new edit yet");
+  assert.match(rec.note!, /Waiting for Hermes.*keep the joke/);
+  // What revise_edit does.
+  const next = store.createEdit(oldEdit.sourcePath, oldEdit.sha256, { ...oldEdit.settings, keep: [{ start: 1.5, end: 2.5 }] }, oldEdit.id);
+  store.closeEdit(oldEdit.id, "superseded");
+  await intake.tick();
+  rec = store.driveFile("f1")!;
+  assert.equal(rec.state, "processing");
+  assert.equal(rec.editId, next.id);
+  finishEdit("f1");
+  const second = await reviewOf();
+  assert.equal(second.subjectId, next.id);
+});
+
+test("an agent's own review of the Drive edit is the one followed, not a second card", async () => {
+  const { store, accts, clock, intake, reviews, file, finishEdit, posts } = setup();
+  await intake.handle(file(driveName("Both", clock.now + 60 * MIN)));
+  finishEdit("f1");
+  const editId = store.driveFile("f1")!.editId!;
+  const agents = await reviews.request({ subject: { kind: "edit", id: editId }, accountIds: [accts[0].id], caption: "c", title: "t", scheduledAt: null, tiktok: null, allowDuplicate: false, via: "agent" });
+  await intake.tick();
+  assert.equal(store.driveFile("f1")!.reviewId, agents.id);
+  assert.equal(reviews.reviews.recent().length, 1);
+  await reviews.tick();
+  assert.ok((await reviews.approve(agents.id, { via: "window" })).ok);
+  await intake.tick();
+  assert.equal(store.driveFile("f1")!.state, "scheduled");
+  assert.equal(posts(), 1);
+});
+
+test("a review that expires undecided can be sent again", async () => {
+  const { store, clock, intake, reviews, file, finishEdit, reviewOf, approve } = setup();
+  await intake.handle(file(driveName("Later", clock.now + 60 * MIN)));
+  finishEdit("f1");
+  const r = await reviewOf();
+  assert.ok(r.expiresAt > Date.now() + 70 * 3_600_000, "Drive reviews last 72 hours, not until the post time");
+  store.db.prepare("UPDATE reviews SET expires_at = ? WHERE id = ?").run(Date.now() - 1, r.id);
+  await reviews.tick();
+  await intake.tick();
+  const rec = store.driveFile("f1")!;
+  assert.equal(rec.state, "unreviewed");
+  assert.match(rec.note!, /without a decision/);
+  await intake.reviewAgain("f1");
+  assert.equal(store.driveFile("f1")!.state, "reviewing");
+  assert.notEqual(store.driveFile("f1")!.reviewId, r.id);
+  // reviewOf ticks again first, which keeps it reviewing.
+  await approve();
+  assert.equal(store.driveFile("f1")!.state, "scheduled");
 });

@@ -71,6 +71,60 @@ export function planCuts(words: Word[], durationSec: number, opts: { maxGap?: nu
   return merged;
 }
 
+/**
+ * The cut plan with the user's corrections: `keep` ranges are added back, then `drop` ranges are taken out.
+ * Ranges are clipped to the clip; touching segments merge.
+ */
+export function applyRanges(segs: Segment[], durationSec: number, keep: Segment[] = [], drop: Segment[] = []): Segment[] {
+  const clip = (r: Segment) => ({ start: Math.max(0, r.start), end: Math.min(durationSec, r.end) });
+  const all = [...segs, ...keep.map(clip)].filter((s) => s.end > s.start).sort((a, b) => a.start - b.start);
+  let out: Segment[] = [];
+  for (const s of all) {
+    const prev = out.at(-1);
+    if (prev && s.start - prev.end < 0.05) prev.end = Math.max(prev.end, s.end);
+    else out.push({ ...s });
+  }
+  for (const d of drop.map(clip)) {
+    out = out.flatMap((s) => {
+      if (d.end <= s.start || d.start >= s.end) return [s];
+      const parts: Segment[] = [];
+      if (d.start > s.start) parts.push({ start: s.start, end: d.start });
+      if (d.end < s.end) parts.push({ start: d.end, end: s.end });
+      return parts;
+    });
+  }
+  // A cut that leaves nothing would make an empty video.
+  out = out.filter((s) => s.end - s.start >= 0.05);
+  return out.length ? out : [{ start: 0, end: durationSec }];
+}
+
+/** Applies caption fixes to source-timeline words: the nearest matching word within 1.5 s of each fix's time. */
+export function fixWords(words: Word[], fixes: { at: number; from: string; to: string }[] = []): Word[] {
+  const out = words.map((w) => ({ ...w }));
+  for (const f of fixes) {
+    const want = norm(f.from);
+    let best = -1;
+    let bestGap = 1.5;
+    out.forEach((w, i) => {
+      const gap = Math.abs((w.start + w.end) / 2 - f.at);
+      if (norm(w.text) === want && gap <= bestGap) { best = i; bestGap = gap; }
+    });
+    if (best >= 0) out[best].text = f.to;
+  }
+  return out;
+}
+
+/** Where a moment in the edited video came from in the source (null when past the end). */
+export function sourceTime(segments: Segment[], editedSec: number): number | null {
+  let offset = 0;
+  for (const s of segments) {
+    const len = s.end - s.start;
+    if (editedSec <= offset + len) return s.start + Math.max(0, editedSec - offset);
+    offset += len;
+  }
+  return null;
+}
+
 /** The words that survive the cut, with times moved onto the edited timeline. */
 export function remapWords(words: Word[], segments: Segment[]): Word[] {
   const out: Word[] = [];

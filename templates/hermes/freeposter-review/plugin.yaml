@@ -1,0 +1,6 @@
+name: freeposter-review
+kind: standalone
+version: 1.0.0
+description: "Passes FreePoster's review buttons, replies to its redo prompts and /freeposter (pairing) straight to FreePoster, so approving a video never goes through the model."
+author: FreePoster
+license: MIT

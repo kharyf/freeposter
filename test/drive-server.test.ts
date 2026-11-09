@@ -5,6 +5,7 @@ import { before, test } from "node:test";
 import { DEFAULT_EDIT } from "../src/edit/settings.ts";
 import { Intake } from "../src/drive/intake.ts";
 import { publishers } from "../src/platforms/index.ts";
+import { ReviewService } from "../src/review/service.ts";
 import { Runner } from "../src/runner.ts";
 import { buildServer } from "../src/server.ts";
 import { account, newStore, sha256, tmp, verticalSilent } from "./helpers.ts";
@@ -16,13 +17,16 @@ function setup() {
   const store = newStore();
   const x = store.upsertAccount(account("x"));
   const tiktok = store.upsertAccount(account("tiktok"));
+  const runner = new Runner(store, publishers, tmp());
+  const reviews = new ReviewService(store, { publishers, runner, dir: tmp() });
   const intake = new Intake(store, publishers, {
     download: async () => { throw new Error("offline"); },
     transcribe: async () => ({ words: [], language: null }),
     writeCaption: async () => ({ title: "t", caption: "c" }),
+    reviews,
   });
   const polls: number[] = [];
-  const app = buildServer(store, new Runner(store, publishers, tmp()), publishers, {}, { intake, poll: async () => { polls.push(1); }, sync: async () => ({ removed: [], cancelledPosts: 0, busy: [] }) });
+  const app = buildServer(store, runner, publishers, {}, { intake, poll: async () => { polls.push(1); }, sync: async () => ({ removed: [], cancelledPosts: 0, busy: [] }) }, undefined, undefined, { service: reviews });
   const put = (body: unknown) => app.inject({ method: "PUT", url: "/api/drive", payload: body as object });
   const patch = (id: number, body: unknown) => app.inject({ method: "PATCH", url: `/api/posts/${id}`, payload: body as object });
   return { store, app, x, tiktok, intake, polls, put, patch };

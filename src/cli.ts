@@ -18,11 +18,15 @@ const USAGE = `usage: freeposter <command> [options]
 
   accounts                                   connected accounts and their ids
   publish <file> --accounts 1,4 [--caption <text>] [--title <text>] [--at <iso>] [--dry-run]
+                                             asks you to review it: nothing posts until you approve
   edit <file> [--no-tighten] [--no-captions] [--no-reframe] [--no-audio] [--no-punch-in]
   produce <spec.json | -> [--dry-run] [--wait]
   production [<id>] [--watch]                one production, or the recent ones
   revise <id> <shots-or-spec.json | ->       a JSON list = replacement shots; an object = a whole spec
-  approve <id> [--accounts 1,4] [--caption <text>] [--title <text>] [--at <iso>] [--dry-run]
+  review <id> [--accounts 1,4] [--caption <text>] [--title <text>] [--at <iso>] [--edit] [--dry-run]
+                                             sends a production (or with --edit, an edit) for review
+  reviews [<id>]                             one review, or the recent ones
+  audit                                      checks every published post against what was approved
   cancel <id> [--post]                       a production (or with --post, a post)
   posts [<id>]                               recent posts, or one
   tools                                      what productions can use (tools, templates, sound effects)
@@ -113,7 +117,7 @@ export async function main(argv: string[], io: CliIO): Promise<number> {
       const p = await call("get_production", { production_id: id });
       const line = `${p.state}${p.state === "rendering" ? ` ${Math.round(p.progress * 100)}%` : ""}`;
       if (line !== last) { io.err(`production ${id}: ${line}`); last = line; }
-      if (["ready", "approved", "failed", "cancelled"].includes(p.state)) {
+      if (["ready", "approved", "failed", "cancelled", "rejected"].includes(p.state)) {
         print(p);
         return p.state === "ready" || p.state === "approved" ? EXIT.ok : EXIT.toolError;
       }
@@ -154,9 +158,19 @@ export async function main(argv: string[], io: CliIO): Promise<number> {
         print(await call("revise_production", { production_id: int(a1, "the production id"), ...(Array.isArray(body) ? { shots: body } : { spec: body }) }));
         return EXIT.ok;
       }
-      case "approve":
-        print(await call("approve_production", clean({ production_id: int(a1, "the production id"), account_ids: ids(flags.accounts), caption: flags.caption, title: flags.title, schedule_at: flags.at, dry_run: flags["dry-run"] === true || undefined })));
+      case "review": {
+        const id = int(a1, flags.edit === true ? "the edit id" : "the production id");
+        print(await call("request_review", clean({ [flags.edit === true ? "edit_id" : "production_id"]: id, account_ids: ids(flags.accounts), caption: flags.caption, title: flags.title, schedule_at: flags.at, dry_run: flags["dry-run"] === true || undefined })));
         return EXIT.ok;
+      }
+      case "reviews":
+        print(await call("get_review", a1 ? { review_id: int(a1, "the review id") } : {}));
+        return EXIT.ok;
+      case "audit": {
+        const audit = await call("audit_reviews");
+        print(audit);
+        return audit.ok ? EXIT.ok : EXIT.toolError;
+      }
       case "cancel":
         print(flags.post === true ? await call("cancel_post", { post_id: int(a1, "the post id") }) : await call("cancel_production", { production_id: int(a1, "the production id") }));
         return EXIT.ok;

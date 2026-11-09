@@ -25,6 +25,9 @@ import { driveAuthorizeUrl, driveRedirectUri, exchangeDriveCode, folderIdFrom } 
 import type { Intake } from "./drive/intake.ts";
 import { parseEditSettings } from "./edit/settings.ts";
 import { captionTopicFor, checkDraft, DuplicateError, editView, parseSchedule, postView, saveUpload, type Draft } from "./posts.ts";
+import { isReason } from "./review/store.ts";
+import { ReviewService } from "./review/service.ts";
+import type { TelegramReview } from "./review/telegram.ts";
 import { acceptRedirect, addTikTokFile, checkRedirect, folderPath, makeFolder, redirectDone, tiktokFiles } from "./redirect-page.ts";
 import type { Runner } from "./runner.ts";
 import { PLATFORMS, type Platform } from "./types.ts";
@@ -73,8 +76,24 @@ export interface DriveServices {
   sync: () => Promise<{ removed: string[]; cancelledPosts: number; busy: string[] } | null>;
 }
 
-export function buildServer(store: Store, runner: Runner, publishers: Record<Platform, Publisher>, options: ServerOptions = {}, drive?: DriveServices, ai?: AiService, producer?: ProductionWorker): FastifyInstance {
+/** Reviews, and Telegram when it's running: made by app.ts (a plain service is made here when absent, for tests). */
+export interface ReviewServices {
+  service: ReviewService;
+  telegram?: TelegramReview;
+}
+
+export function buildServer(store: Store, runner: Runner, publishers: Record<Platform, Publisher>, options: ServerOptions = {}, drive?: DriveServices, ai?: AiService, producer?: ProductionWorker, review?: ReviewServices): FastifyInstance {
   const app = Fastify({ logger: false, bodyLimit: 1024 * 1024 });
+  const reviews = review?.service ?? new ReviewService(store, { publishers, runner, productions: () => producer?.productions });
+  const telegram = review?.telegram;
+  /** Where the user reviews, for agents (describe_production_tools) and the setup screen. */
+  const reviewChannel = () => {
+    const t = telegram?.status();
+    return {
+      telegram: t?.paired ? `sent to ${t.paired} via @${t.bot}` : t?.configured ? "bot connected, chat not paired yet" : "not set up",
+      window: "the FreePoster window always shows reviews waiting",
+    };
+  };
   app.register(multipart, { limits: { fileSize: 4 * 1024 ** 3, files: 1, fields: 20 } });
 
   // Read per request, so a password saved from the setup screen applies at once.
@@ -82,6 +101,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     const password = config.appPassword;
     if (!password || req.url === "/api/ping") return;
     if (/^\/callback([/?]|$)/.test(req.url)) return; // protected by the one-time OAuth state instead
+    if (req.url === "/api/telegram/relay") return; // the Hermes plugin's updates: checked by their signature instead
     const given = Buffer.from(req.headers.authorization?.match(/^Basic (.+)$/)?.[1] ?? "", "base64").toString().split(":").slice(1).join(":");
     const a = Buffer.from(given);
     const b = Buffer.from(password);
@@ -360,7 +380,6 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
       if (/^(WANGP_TIMEOUT_MIN|CPU_LANE_CONCURRENCY|SHOT_RETENTION_DAYS)$/.test(k) && value && !(Number.isInteger(Number(value)) && Number(value) > 0)) {
         problems.push(`${k} must be a whole number above 0`);
       }
-      if (k === "AGENT_APPROVAL" && value && !/^(on|off)$/i.test(value)) problems.push("AGENT_APPROVAL must be on or off");
       if (k === "NOTIFY_WEBHOOK_URL" && value && !/^https?:\/\/\S+$/.test(value)) problems.push("NOTIFY_WEBHOOK_URL must be an http or https address");
       if (k === "SITE_CONTACT_EMAIL" && value && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) problems.push("the contact email doesn't look like an email address");
       if (k === "BASE_URL" && value) {
@@ -396,7 +415,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
       hyperframesVersion: HYPERFRAMES_VERSION,
       found: { blender: blenderPath(), wangp: wangpDir(), wangpModel: wangpModel() },
       webhook: { url: config.produce.webhookUrl, secretSet: Boolean(config.produce.webhookSecret), lastError: store.outbox().filter((e) => !e.sentAt && e.lastError).at(-1)?.lastError ?? null },
-      agentApproval: config.produce.agentApproval,
+      review: reviewChannel(),
     };
   });
 
@@ -419,6 +438,60 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     } catch (err) {
       return reply.code(502).send({ error: `the webhook didn't take it: ${(err as Error).message}` });
     }
+  });
+
+  // ---- Telegram reviews: the bot, the paired chat, and (with Hermes's bot) the Hermes plugin ----
+
+  const noTelegram = (reply: FastifyReply) => reply.code(404).send({ error: "Telegram reviews aren't available in this FreePoster" });
+
+  app.get("/api/telegram", async (_req, reply) => (telegram ? { ...telegram.status(), relayUrl: telegram.relayUrl() } : noTelegram(reply)));
+
+  app.put<{ Body: { token?: unknown; mode?: unknown } }>("/api/telegram", async (req, reply) => {
+    if (!telegram) return noTelegram(reply);
+    const mode = req.body?.mode === "hermes" ? "hermes" : "own";
+    try {
+      return await telegram.connect(String(req.body?.token ?? ""), mode);
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
+  });
+
+  app.delete("/api/telegram", async (_req, reply) => {
+    if (!telegram) return noTelegram(reply);
+    telegram.disconnect();
+    return { ok: true };
+  });
+
+  app.post("/api/telegram/pair", async (_req, reply) => (telegram ? telegram.startPairing() : noTelegram(reply)));
+
+  app.post("/api/telegram/plugin", async (_req, reply) => {
+    if (!telegram) return noTelegram(reply);
+    try {
+      return telegram.installPlugin();
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
+  });
+
+  app.post("/api/telegram/test", async (_req, reply) => {
+    if (!telegram) return noTelegram(reply);
+    try {
+      await telegram.sendTest();
+      return { ok: true };
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
+  });
+
+  // The Hermes plugin's updates, signed with the relay secret: the signature covers the exact bytes, so they're kept raw.
+  app.register(async (scope) => {
+    scope.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body, done) => done(null, body));
+    scope.post("/api/telegram/relay", async (req, reply) => {
+      if (!telegram) return noTelegram(reply);
+      const header = (k: string) => (typeof req.headers[k] === "string" ? (req.headers[k] as string) : undefined);
+      const status = await telegram.relay(String(req.body ?? ""), header("x-webhook-timestamp"), header("x-webhook-signature-v2"));
+      return reply.code(status).send(status === 200 ? { ok: true } : { error: status === 401 ? "bad signature" : "not accepted" });
+    });
   });
 
   app.put<{ Body: { complete?: boolean } }>("/api/setup", async (req) => {
@@ -572,6 +645,34 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     return sendVideo(req, reply, edit.outputPath);
   });
 
+  // ---- reviews: what agents asked to post, decided here as well as on Telegram ----
+
+  app.get("/api/reviews", async () => ({
+    pending: reviews.reviews.inState("preparing", "pending").map((r) => ({ ...reviews.view(r), videoUrl: r.state === "pending" ? `/api/reviews/${r.id}/video` : null })),
+    recent: reviews.reviews.recent(10).filter((r) => r.state !== "preparing" && r.state !== "pending").map((r) => reviews.view(r)),
+  }));
+
+  app.get<{ Params: { id: string } }>("/api/reviews/:id/video", async (req, reply) => {
+    const r = reviews.reviews.get(Number(req.params.id));
+    const path = r?.viewPath ?? r?.masterPath;
+    if (!path || !existsSync(path)) return reply.code(404).send({ error: "the review's video isn't ready" });
+    return sendVideo(req, reply, path);
+  });
+
+  type DecisionBody = { Params: { id: string }; Body: { reason?: unknown; note?: unknown; atSec?: unknown } };
+  const decisionFrom = (body: DecisionBody["Body"] | undefined) => ({
+    via: "window" as const,
+    reason: isReason(body?.reason) ? body.reason : null,
+    note: typeof body?.note === "string" && body.note.trim() ? body.note.trim().slice(0, 2000) : null,
+    atSec: typeof body?.atSec === "number" && Number.isFinite(body.atSec) && body.atSec >= 0 ? body.atSec : null,
+  });
+  const decided = (reply: FastifyReply, outcome: { ok: boolean; message: string; review?: any }) =>
+    outcome.ok ? { ok: true, message: outcome.message, review: outcome.review && reviews.view(outcome.review) } : reply.code(409).send({ error: outcome.message });
+
+  app.post<DecisionBody>("/api/reviews/:id/approve", async (req, reply) => decided(reply, await reviews.approve(Number(req.params.id), { via: "window" })));
+  app.post<DecisionBody>("/api/reviews/:id/reject", async (req, reply) => decided(reply, await reviews.reject(Number(req.params.id), decisionFrom(req.body))));
+  app.post<DecisionBody>("/api/reviews/:id/redo", async (req, reply) => decided(reply, await reviews.redo(Number(req.params.id), decisionFrom(req.body))));
+
   // ---- productions: previews an agent downloads to show the user (same host check as /mcp) ----
 
   const productionFile = (req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply, pick: "previewPath" | "thumbPath" | "outputPath") => {
@@ -664,7 +765,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
       error: conn?.error ?? null,
       files: store.driveFiles(30).map((f) => ({
         id: f.driveId, name: f.name, state: f.state, scheduledAt: f.scheduledAt, note: f.note,
-        postId: f.postId, editId: f.editId, title: f.title, caption: f.caption, createdAt: f.createdAt,
+        postId: f.postId, editId: f.editId, reviewId: f.reviewId, title: f.title, caption: f.caption, createdAt: f.createdAt,
       })),
     };
   };
@@ -706,7 +807,13 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     return { ok: true };
   });
 
-  registerMcp(app, store, runner, publishers, producer);
+  app.post<{ Params: { id: string } }>("/api/drive/files/:id/review-again", async (req, reply) => {
+    if (store.driveFile(req.params.id)?.state !== "unreviewed") return reply.code(409).send({ error: "only files whose review ended without a decision can be sent again" });
+    void drive?.intake.reviewAgain(req.params.id);
+    return { ok: true };
+  });
+
+  registerMcp(app, store, runner, publishers, reviews, producer, reviewChannel);
 
   return app;
 }

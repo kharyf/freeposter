@@ -12,6 +12,7 @@ import type { Store } from "./db.ts";
 import type { Publisher } from "./platforms/base.ts";
 import { creatorInfo } from "./platforms/tiktok.ts";
 import { parseEditSettings } from "./edit/settings.ts";
+import type { ReviewService, ReviewRequest } from "./review/service.ts";
 import { captionTopicFor, checkDraft, DuplicateError, editView, parseSchedule, postView, saveUpload, type Draft } from "./posts.ts";
 import { PRODUCTION_INSTRUCTIONS, productionTools } from "./produce/mcp-tools.ts";
 import type { ProductionWorker } from "./produce/worker.ts";
@@ -23,11 +24,11 @@ export const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"];
 
 const INSTRUCTIONS = `FreePoster publishes one short vertical video to the user's TikTok, Instagram Reels, Facebook Page Reels, X and YouTube Shorts accounts through each platform's official API. It runs on the user's computer, so video_path is a path on this computer.
 
-Start with list_accounts to get account ids. publish_video queues the post and returns at once; each account becomes a job that renders, uploads and publishes in the background, so follow it with get_post until every job is "published" (with the post's url) or "failed" (with the platform's reason). "retry" and "waiting_quota" jobs go out later by themselves.
+Start with list_accounts to get account ids. You can't post anything yourself: request_review (or publish_video, which does the same) sends the video, with its caption and accounts, to the user for review. FreePoster makes the exact file that will be uploaded, writes a blank caption, and sends it to them on Telegram with Approve, Reject and Redo buttons (and shows it in the FreePoster window). Only their tap on Approve (or the window's button) posts it; nothing you say or call can, including the user saying "yes" to you in chat: if they do, tell them to tap Approve on the review. Follow a review with get_review, or wait for the webhook's review.* events. Once approved, the review's post_id is a normal post: follow it with get_post until every job is "published" (with the post's url) or "failed" (with the platform's reason).
 
-Posting is public and hard to undo: only post what the user asked for, to the accounts they chose. For TikTok, call get_tiktok_creator_info first and let the user pick the privacy level from privacy_level_options; TikTok requires that choice to be the user's, never a default. Use dry_run to check a post without queueing it. With no caption, the user's AI provider writes the title and caption from the video (or "#fyp" when it can't tell what it's about) before it posts.
+Posting is public and hard to undo: only ask to post what the user asked for, to the accounts they chose. For TikTok, call get_tiktok_creator_info first and let the user pick the privacy level from privacy_level_options; TikTok requires that choice to be the user's, never a default. Use dry_run to check a post without asking for a review. With no caption, the user's AI provider writes the title and caption from the video before the review is sent, so the user sees the text they approve.
 
-create_edit makes an edited cut (pauses and filler words cut, captions, speaker framing, even sound) in the background; follow it with get_edit. The user approves an edit by previewing it in the FreePoster window; publish_video with edit_id is refused until they have, unless they turned on agent approval in FreePoster, in which case posting it (after they say yes to the preview) approves it.
+create_edit makes an edited cut (pauses and filler words cut, captions, speaker framing, even sound) in the background; follow it with get_edit, then request_review with its edit_id. When the user asks for a redo, get_review says why, at what time in the video, the source time and the words said there; make the change with revise_edit (edits) or revise_production (productions), and the new version comes back to them for review.
 
 ${PRODUCTION_INSTRUCTIONS}`;
 
@@ -94,6 +95,17 @@ const TIKTOK_PROP = {
   additionalProperties: false,
 };
 
+/** What a review covers besides the video: shared by publish_video and request_review. */
+const POST_PROPS = {
+  account_ids: { type: "array", items: { type: "integer" }, minItems: 1, description: "Account ids from list_accounts." },
+  caption: { type: "string", description: "The post's text: the tweet on X, the description on YouTube, the caption elsewhere. Leave it out (or blank) and the user's AI provider writes it from what's said in the video, or its on-screen text, before the review is sent." },
+  title: { type: "string", description: "YouTube title (up to 100 characters); defaults to the caption's first line." },
+  schedule_at: SCHEDULE_PROP,
+  tiktok: TIKTOK_PROP,
+  allow_duplicate: { type: "boolean", default: false, description: "Post even though this exact file already went to some of these accounts. Only when the user confirms." },
+  dry_run: { type: "boolean", default: false, description: "Run every check and report, without asking for a review." },
+};
+
 interface Tool {
   name: string;
   title: string;
@@ -103,7 +115,7 @@ interface Tool {
   run(args: Args): Promise<unknown>;
 }
 
-export function mcpTools(store: Store, runner: Runner, publishers: Record<Platform, Publisher>, producer?: ProductionWorker): Tool[] {
+export function mcpTools(store: Store, runner: Runner, publishers: Record<Platform, Publisher>, reviews: ReviewService, producer?: ProductionWorker, reviewChannel: () => Record<string, unknown> = () => ({})): Tool[] {
   const view = (p: Parameters<typeof postView>[1]) => {
     const v = postView(store, p);
     return {
@@ -182,81 +194,106 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
     },
     {
       name: "publish_video",
-      title: "Publish a video",
-      description: "Posts a video file from this computer to the chosen accounts, now or at schedule_at. Any format works: FreePoster converts it to 1080x1920 (letterboxing other shapes). Caption, length and TikTok rules are checked first and nothing is queued if any account would refuse it. Returns the post id at once; posting happens in the background, so check get_post for each account's result. Posting the same file to the same account twice is refused unless allow_duplicate is true.",
+      title: "Ask to publish a video",
+      description: "Asks the user to approve posting a video to the chosen accounts, now or at schedule_at: the same as request_review, for an edit (edit_id) or a file on this computer (video_path). Nothing posts until the user taps Approve on the review (Telegram or the FreePoster window). Returns the review at once; follow it with get_review. Any format works: the file is converted to 1080x1920 (letterboxing other shapes). Caption, length and TikTok rules are checked first and nothing is asked if any account would refuse it.",
       inputSchema: {
         type: "object",
         properties: {
           video_path: { type: "string", description: "Absolute path of the video file on this computer. Not needed with edit_id." },
-          edit_id: { type: "integer", description: "Post this edit (from create_edit) instead of the original file. The user must have approved it in FreePoster, or turned on agent approval and said yes to its preview." },
-          account_ids: { type: "array", items: { type: "integer" }, minItems: 1, description: "Account ids from list_accounts." },
-          caption: { type: "string", description: "The post's text: the tweet on X, the description on YouTube, the caption elsewhere. Leave it out (or blank) and the user's AI provider writes it from what's said in the video, or from its on-screen text when nobody speaks, else \"#fyp\"; the post waits for it (get_post shows captionPending until it's in)." },
-          title: { type: "string", description: "YouTube title (up to 100 characters); defaults to the caption's first line." },
-          schedule_at: SCHEDULE_PROP,
-          tiktok: TIKTOK_PROP,
-          allow_duplicate: { type: "boolean", default: false, description: "Post even though this exact file already went to some of these accounts. Only when the user confirms." },
-          dry_run: { type: "boolean", default: false, description: "Run every check and report, without queueing anything." },
+          edit_id: { type: "integer", description: "Ask to post this edit (from create_edit) instead of a file." },
+          ...POST_PROPS,
         },
         required: ["account_ids"],
         additionalProperties: false,
       },
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       async run(args) {
-        const edit = args.edit_id === undefined ? undefined : store.edit(int(args, "edit_id"));
-        if (args.edit_id !== undefined && !edit) throw new ToolError("no such edit; create_edit returns its id");
-        // With agent approval on, posting a ready edit is the approval (the user said yes to its preview in chat).
-        if (edit && !edit.approvedAt && edit.state === "ready" && config.produce.agentApproval && !bool(args, "dry_run")) {
-          store.approveEdit(edit.id);
-          edit.approvedAt = Date.now();
-        }
-        const videoPath = edit ? edit.sourcePath : checkedPath(str(args, "video_path"));
-        const ids = args.account_ids;
-        if (!Array.isArray(ids) || !ids.length || !ids.every(Number.isInteger)) throw new ToolError("account_ids must be a list of account ids");
-        const tiktok = await tiktokOptions(args.tiktok, ids as number[]);
-        const dryRun = bool(args, "dry_run");
-
-        const draft: Draft = {
-          sourcePath: videoPath,
-          sha256: "",
-          caption: str(args, "caption"),
-          title: str(args, "title"),
-          accountIds: ids as number[],
-          tiktok,
-          scheduledAt: when(args, "schedule_at"),
-          editId: edit?.id ?? null,
-          captionTopic: captionTopicFor(str(args, "caption"), str(args, "title"), edit ? "" : videoPath),
-        };
-        if (edit) {
-          // The edit keeps its own copy of the video.
-          draft.sha256 = edit.sha256;
-        } else if (dryRun) {
-          const hash = createHash("sha256");
-          await pipeline(createReadStream(videoPath), hash);
-          draft.sha256 = hash.digest("hex");
-        } else {
-          // A copy of its own: the user may move or edit their file before a scheduled post goes out.
-          const saved = await saveUpload(createReadStream(videoPath), videoPath);
-          draft.sourcePath = saved.path;
-          draft.sha256 = saved.sha256;
-        }
-        try {
-          const { accounts, durationSec } = await checkDraft(store, publishers, draft, bool(args, "allow_duplicate"));
-          const to = accounts.map((a) => ({ id: a.id, platform: a.platform, name: a.name }));
-          if (dryRun) return { ok: true, dryRun: true, durationSec, accounts: to, scheduledAt: iso(draft.scheduledAt), captionWrittenByAi: Boolean(draft.captionTopic) };
-          const postId = store.createPost(draft, draft.accountIds);
-          runner.tick();
-          return { ...post(postId), next: "Call get_post with this id to follow each account's progress." };
-        } catch (err) {
-          if (!dryRun && !edit) try { unlinkSync(draft.sourcePath); } catch {}
-          if (err instanceof DuplicateError) throw new ToolError(`${err.message}. Ask the user before posting it again with allow_duplicate: true.`);
-          throw new ToolError((err as Error).message);
-        }
+        return askForReview(args, false);
+      },
+    },
+    {
+      name: "request_review",
+      title: "Ask the user to review a video",
+      description: "Sends a ready production (production_id), a ready edit (edit_id) or a video file (video_path) to the user for review, with the accounts, caption, title and schedule it would post with. FreePoster makes the exact file that will be uploaded, writes the caption if it's blank, and sends it to the user on Telegram (and the FreePoster window) with Approve, Reject and Redo. Only the user's Approve posts it. Returns the review at once (state preparing, then pending); follow it with get_review or the webhook. A new request for the same edit or production replaces an open one. For a production, fields left out come from its spec's post section.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          production_id: { type: "integer" },
+          edit_id: { type: "integer" },
+          video_path: { type: "string", description: "Absolute path of a video file on this computer." },
+          ...POST_PROPS,
+          expires_in_hours: { type: "number", minimum: 0.25, maximum: 336, default: 72, description: "How long the user has to decide (a scheduled post's review also ends at its time)." },
+        },
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      async run(args) {
+        return askForReview(args, true);
+      },
+    },
+    {
+      name: "get_review",
+      title: "Get a review",
+      description: "A review's state: preparing, pending (waiting for the user), approved (with post_id), rejected, redo (with the user's reason, note, the time in the video, and what's there: the source time and words for an edit, the shot for a production), superseded (a newer version replaced it), expired, or failed (with the error). With no review_id, the 20 most recent.",
+      inputSchema: { type: "object", properties: { review_id: { type: "integer" } }, additionalProperties: false },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+      async run(args) {
+        if (args.review_id === undefined) return { reviews: reviews.reviews.recent(20).map((r) => reviews.view(r)) };
+        const r = reviews.reviews.get(int(args, "review_id"));
+        if (!r) throw new ToolError("no such review; get_review with no id lists the recent ones");
+        return reviews.view(r);
+      },
+    },
+    {
+      name: "revise_edit",
+      title: "Revise an edit",
+      description: "Makes a new edit of the same video with changed settings, after the user asked for a redo: switch tighten, captions, reframe, audio or punchIn; keep or drop ranges of the source ([{ start, end }] in source seconds: keep overrides the cut plan, drop always cuts); captionFixes ([{ at, from, to }]: the caption word nearest source second `at` that reads `from` shows `to`). Settings not given stay as they were. The old edit is replaced (it can't be posted). Returns the new edit; follow it with get_edit, then request_review.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          edit_id: { type: "integer" },
+          settings: {
+            type: "object",
+            properties: {
+              tighten: { type: "boolean" }, captions: { type: "boolean" }, reframe: { type: "boolean" }, audio: { type: "boolean" }, punchIn: { type: "boolean" },
+              keep: { type: "array", items: { type: "object", properties: { start: { type: "number" }, end: { type: "number" } }, required: ["start", "end"] } },
+              drop: { type: "array", items: { type: "object", properties: { start: { type: "number" }, end: { type: "number" } }, required: ["start", "end"] } },
+              captionFixes: { type: "array", items: { type: "object", properties: { at: { type: "number" }, from: { type: "string" }, to: { type: "string" } }, required: ["at", "from", "to"] } },
+            },
+            additionalProperties: false,
+          },
+        },
+        required: ["edit_id", "settings"],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      async run(args) {
+        const old = store.edit(int(args, "edit_id"));
+        if (!old) throw new ToolError("no such edit");
+        if (old.approvedAt) throw new ToolError(`edit ${old.id} was approved and posted; make a new edit with create_edit instead`);
+        if (!["ready", "failed", "rejected"].includes(old.state)) throw new ToolError(`edit ${old.id} is ${old.state}; revise it once it's ready`);
+        let settings;
+        try { settings = parseEditSettings(args.settings, old.settings); } catch (err) { throw new ToolError((err as Error).message); }
+        const next = store.createEdit(old.sourcePath, old.sha256, settings, old.id);
+        if (next.id === old.id) throw new ToolError("those are the edit's settings already; change something");
+        store.closeEdit(old.id, "superseded");
+        return { ...(await editView(store, publishers, next)), parent_edit_id: old.id, next: "Call get_edit to follow it; when it's ready, request_review with its edit_id." };
+      },
+    },
+    {
+      name: "audit_reviews",
+      title: "Audit reviews",
+      description: "Checks every published post against its review: each one an agent asked for must have been approved by the user (with where and when) before it was made, and every account must have uploaded the exact file that was approved (same sha256). Lists any problem found.",
+      inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+      async run() {
+        return reviews.audit();
       },
     },
     {
       name: "create_edit",
       title: "Edit a video",
-      description: "Starts an edit of a video file on this computer, run locally in the background: cuts pauses, filler words and retakes, burns in word-synced captions, frames the speaker for 9:16, evens out the sound and zooms on cuts. Every setting defaults to on. Returns at once; follow with get_edit. The user must preview and approve it in the FreePoster window before publish_video can post it.",
+      description: "Starts an edit of a video file on this computer, run locally in the background: cuts pauses, filler words and retakes, burns in word-synced captions, frames the speaker for 9:16, evens out the sound and zooms on cuts. Every setting defaults to on. Returns at once; follow with get_edit, then request_review with its edit_id so the user can approve, reject or redo it.",
       inputSchema: {
         type: "object",
         properties: {
@@ -284,13 +321,13 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
         const saved = await saveUpload(createReadStream(videoPath), videoPath);
         const edit = store.createEdit(saved.path, saved.sha256, settings);
         if (edit.sourcePath !== saved.path) try { unlinkSync(saved.path); } catch {}
-        return { ...(await editView(store, publishers, edit)), next: "Call get_edit to follow it. When it is ready, ask the user to preview and approve it in the FreePoster window; then publish_video with edit_id." };
+        return { ...(await editView(store, publishers, edit)), next: "Call get_edit to follow it. When it's ready, request_review with its edit_id: the user approves it there." };
       },
     },
     {
       name: "get_edit",
       title: "Get an edit",
-      description: "An edit's state (queued, transcribing, editing, ready, failed), progress, edited and original length, whether the user approved it, which accounts each length fits, and preview_path (the edited file on this computer) once ready.",
+      description: "An edit's state (queued, transcribing, editing, ready, failed, rejected, superseded), progress, edited and original length, whether the user approved it, the edit it revises, which accounts each length fits, and preview_path (the edited file on this computer) once ready.",
       inputSchema: {
         type: "object",
         properties: { edit_id: { type: "integer" } },
@@ -301,7 +338,7 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
       async run(args) {
         const edit = store.edit(int(args, "edit_id"));
         if (!edit) throw new ToolError("no such edit");
-        return { ...(await editView(store, publishers, edit)), preview_path: edit.state === "ready" ? edit.outputPath : null };
+        return { ...(await editView(store, publishers, edit)), parent_edit_id: edit.parentEditId, preview_path: edit.state === "ready" ? edit.outputPath : null };
       },
     },
     {
@@ -400,10 +437,79 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
     producer: () => producer,
     store,
     publishers,
-    publish: (args) => tools.find((t) => t.name === "publish_video")!.run(args),
+    reviewChannel,
     fail: (message) => new ToolError(message),
   }));
   return tools;
+
+  /**
+   * publish_video and request_review: checks the request like a post (accounts, TikTok choices, caption rules,
+   * lengths), then asks for the review. dry_run checks only.
+   */
+  async function askForReview(args: Args, allowProduction: boolean) {
+    const given = ["production_id", "edit_id", "video_path"].filter((k) => args[k] !== undefined);
+    if (!allowProduction && args.production_id !== undefined) throw new ToolError("publish_video takes edit_id or video_path; use request_review for a production");
+    if (given.length !== 1) throw new ToolError("give exactly one of production_id, edit_id or video_path");
+    // A production's spec may say where and how it posts.
+    let defaults: Args = {};
+    if (args.production_id !== undefined) {
+      const p = producer?.productions.get(int(args, "production_id"));
+      if (!p) throw new ToolError(`no production ${args.production_id}; get_production lists the recent ones`);
+      defaults = (p.spec.post ?? {}) as Args;
+      if (args.caption === undefined && defaults.caption === undefined && p.spec.title) defaults = { ...defaults, title: defaults.title ?? p.spec.title };
+    }
+    const pick = (k: string) => (args[k] !== undefined ? args[k] : defaults[k]);
+    const merged: Args = { ...args };
+    for (const k of ["account_ids", "caption", "title", "schedule_at", "tiktok"]) if (pick(k) !== undefined) merged[k] = pick(k);
+    const ids = merged.account_ids;
+    if (!Array.isArray(ids) || !ids.length || !ids.every(Number.isInteger)) throw new ToolError("account_ids must be a list of account ids (list_accounts has them)");
+    const tiktok = await tiktokOptions(merged.tiktok, ids as number[]);
+    const caption = str(merged, "caption");
+    const title = str(merged, "title");
+    const scheduledAt = when(merged, "schedule_at");
+    const dryRun = bool(args, "dry_run");
+
+    let subject: ReviewRequest["subject"];
+    let copied: string | null = null;
+    if (args.production_id !== undefined) subject = { kind: "production", id: int(args, "production_id") };
+    else if (args.edit_id !== undefined) {
+      const edit = store.edit(int(args, "edit_id"));
+      if (!edit) throw new ToolError("no such edit; create_edit returns its id");
+      subject = { kind: "edit", id: edit.id };
+    } else {
+      const videoPath = checkedPath(str(args, "video_path"));
+      if (dryRun) subject = { kind: "file", path: videoPath };
+      else {
+        // A copy of its own: the user may move or change their file before it's reviewed.
+        copied = (await saveUpload(createReadStream(videoPath), videoPath)).path;
+        subject = { kind: "file", path: copied, name: videoPath };
+      }
+    }
+
+    if (dryRun) {
+      const source = subject.kind === "file" ? subject.path
+        : subject.kind === "edit" ? store.edit(subject.id)?.outputPath
+        : producer?.productions.get(subject.id)?.outputPath;
+      if (!source) throw new ToolError(`that ${subject.kind} isn't ready yet`);
+      try {
+        const draft: Draft = { sourcePath: source, sha256: "", caption, title, accountIds: ids as number[], tiktok, scheduledAt, captionTopic: captionTopicFor(caption, title, subject.kind === "file" ? source : "") };
+        const { accounts, durationSec } = await checkDraft(store, publishers, draft, true);
+        return { ok: true, dryRun: true, durationSec, accounts: accounts.map((a) => ({ id: a.id, platform: a.platform, name: a.name })), scheduledAt: iso(scheduledAt), captionWrittenByAi: Boolean(draft.captionTopic) };
+      } catch (err) {
+        throw new ToolError((err as Error).message);
+      }
+    }
+    try {
+      const review = await reviews.request({
+        subject, accountIds: ids as number[], caption, title, scheduledAt, tiktok, allowDuplicate: bool(args, "allow_duplicate"), via: "agent",
+        expiresInHours: args.expires_in_hours === undefined ? undefined : Number(args.expires_in_hours),
+      });
+      return { ...reviews.view(review), next: "The user decides on the review itself (Telegram or the FreePoster window). Follow it with get_review, or wait for the webhook's review.* event. Don't ask them to say yes in chat: that doesn't approve anything." };
+    } catch (err) {
+      if (copied) try { unlinkSync(copied); } catch {}
+      throw new ToolError((err as Error).message);
+    }
+  }
 
   /** An absolute path to an existing video file of at most 4 GB. */
   function checkedPath(videoPath: string): string {
@@ -460,8 +566,8 @@ export function trustedRequest(req: FastifyRequest): string | null {
   return null;
 }
 
-export function registerMcp(app: FastifyInstance, store: Store, runner: Runner, publishers: Record<Platform, Publisher>, producer?: ProductionWorker) {
-  const tools = mcpTools(store, runner, publishers, producer);
+export function registerMcp(app: FastifyInstance, store: Store, runner: Runner, publishers: Record<Platform, Publisher>, reviews: ReviewService, producer?: ProductionWorker, reviewChannel?: () => Record<string, unknown>) {
+  const tools = mcpTools(store, runner, publishers, reviews, producer, reviewChannel);
 
   async function handle(msg: any): Promise<object | null> {
     if (!msg || typeof msg !== "object" || msg.jsonrpc !== "2.0" || typeof msg.method !== "string") {
