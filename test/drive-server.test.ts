@@ -48,19 +48,29 @@ test("drive settings round-trip; Drive no longer picks accounts", async () => {
   assert.equal((await put({ folder: "not a folder" })).statusCode, 400);
 });
 
-test("default accounts and their TikTok options are FreePoster settings", async () => {
-  const { app, x, tiktok } = setup();
+test("the default set, the default style and their TikTok options are FreePoster settings", async () => {
+  const { app, store, x, tiktok } = setup();
   const putDefaults = (body: unknown) => app.inject({ method: "PUT", url: "/api/defaults", payload: body as object });
   const status = async () => (await app.inject("/api/status")).json();
-  assert.deepEqual((await status()).accounts.filter((a: any) => a.isDefault).map((a: any) => a.id).sort(), [x.id, tiktok.id].sort(), "first account per platform");
-  assert.equal((await putDefaults({ accounts: [x.id], tiktok: { allowComment: false, allowDuet: true, allowStitch: true } })).statusCode, 200);
-  const s = await status();
-  assert.deepEqual(s.accounts.filter((a: any) => a.isDefault).map((a: any) => a.id), [x.id]);
+  let s = await status();
+  assert.deepEqual(s.accountSets.map((set: any) => [set.id, set.isDefault]), [[1, true]], "the oldest set");
+  assert.deepEqual(s.accounts.filter((a: any) => a.isDefault).map((a: any) => a.id).sort(), [x.id, tiktok.id].sort(), "its accounts");
+  assert.deepEqual(s.editingStyles.map((st: any) => [st.id, st.name, st.token, st.isDefault]), [["basic", "Basic", "Basic", true]]);
+  const other = (await app.inject({ method: "POST", url: "/api/account-sets", payload: { name: "Client A" } })).json();
+  assert.equal((await putDefaults({ set: other.id, style: "basic", tiktok: { allowComment: false, allowDuet: true, allowStitch: true } })).statusCode, 200);
+  s = await status();
+  assert.deepEqual(s.accountSets.map((set: any) => set.isDefault), [false, true]);
+  assert.deepEqual(s.accounts.filter((a: any) => a.isDefault), [], "the new default set is empty");
   assert.deepEqual(s.defaultTikTok, { allowComment: false, allowDuet: true, allowStitch: true });
-  assert.equal((await putDefaults({ accounts: [999] })).statusCode, 400);
+  assert.equal((await putDefaults({ set: 999 })).statusCode, 400);
+  assert.equal((await putDefaults({ style: "fancy" })).statusCode, 400);
+  assert.equal(store.pref("accounts.defaultSet"), other.id, "a refused change leaves it");
   const privacy = await putDefaults({ tiktok: { privacyLevel: "PUBLIC_TO_EVERYONE" } });
   assert.equal(privacy.statusCode, 400);
   assert.match(privacy.json().error, /Only me/);
+  assert.equal((await app.inject("/api/styles/basic/sample.mp4")).statusCode, 404, "no sample yet");
+  assert.equal((await app.inject("/api/calendar?from=0&to=10")).json().entries.length, 0);
+  assert.equal((await app.inject("/api/calendar?from=0&to=99999999999")).statusCode, 400, "at most 45 days");
 });
 
 test("drive file list shows state and notes; retry goes to the intake", async () => {

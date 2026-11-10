@@ -78,6 +78,20 @@ export type DriveFileState =
   | "removed"; // deleted from the Drive folder; found by Sync and taken off the list
 
 /** One video seen in the watched Drive folder, and how far FreePoster got with it. */
+/**
+ * A Drive file's choices, read from its name once, when it arrived, and kept: renaming a set or changing a default
+ * afterwards doesn't move a video that's waiting.
+ */
+export interface DriveChoice {
+  /** the name part, the topic its caption is written about */
+  name: string;
+  styleId: string | null;
+  setId: number;
+  raw: boolean;
+  /** after this it's late (its set time, or the end of a date with no time) */
+  latest: number;
+}
+
 export interface DriveFileRecord {
   driveId: string;
   name: string;
@@ -96,6 +110,8 @@ export interface DriveFileRecord {
   note: string | null;
   /** when it was uploaded to Drive; the date a name without one posts on */
   uploadedAt: number | null;
+  /** what its name chose, fixed when it arrived; null until then */
+  choice: DriveChoice | null;
   createdAt: number;
   updatedAt: number;
 }

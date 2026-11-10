@@ -171,6 +171,7 @@ export class Store {
     const driveColumns = this.db.prepare("PRAGMA table_info(drive_files)").all() as { name: string }[];
     if (!driveColumns.some((c) => c.name === "uploaded_at")) this.db.exec("ALTER TABLE drive_files ADD COLUMN uploaded_at INTEGER");
     if (!driveColumns.some((c) => c.name === "review_id")) this.db.exec("ALTER TABLE drive_files ADD COLUMN review_id INTEGER");
+    if (!driveColumns.some((c) => c.name === "choice")) this.db.exec("ALTER TABLE drive_files ADD COLUMN choice TEXT");
     const connColumns = this.db.prepare("PRAGMA table_info(drive_connection)").all() as { name: string }[];
     if (!connColumns.some((c) => c.name === "changes_token")) this.db.exec("ALTER TABLE drive_connection ADD COLUMN changes_token TEXT");
     // A crash mid-run leaves jobs "running"; their progress checkpoint lets them resume safely.
@@ -383,6 +384,28 @@ export class Store {
       )
       .all(limit) as { id: number }[];
     return posts.map(({ id }) => ({ post: this.post(id)!, jobs: this.jobsForPost(id) }));
+  }
+
+  /** Posts that go (or went) out in [from, to): at their scheduled time, or when made if they had none. */
+  postsBetween(from: number, to: number) {
+    const rows = this.db
+      .prepare("SELECT id FROM posts WHERE COALESCE(scheduled_at, created_at) >= ? AND COALESCE(scheduled_at, created_at) < ? ORDER BY COALESCE(scheduled_at, created_at), id")
+      .all(from, to) as { id: number }[];
+    return rows.map(({ id }) => ({ post: this.post(id)!, jobs: this.jobsForPost(id) }));
+  }
+
+  /** Drive files with a posting time in [from, to) that haven't become a post (yet). */
+  driveFilesBetween(from: number, to: number): DriveFileRecord[] {
+    return this.db
+      .prepare("SELECT * FROM drive_files WHERE post_id IS NULL AND scheduled_at >= ? AND scheduled_at < ? AND state NOT IN ('ignored', 'pending', 'removed') ORDER BY scheduled_at")
+      .all(from, to)
+      .map(toDriveFile);
+  }
+
+  /** The Drive file a post was made for. */
+  driveFileForPost(postId: number): DriveFileRecord | undefined {
+    const r = this.db.prepare("SELECT * FROM drive_files WHERE post_id = ?").get(postId);
+    return r ? toDriveFile(r) : undefined;
   }
 
   jobsForPost(postId: number): Job[] {
@@ -697,9 +720,10 @@ export class Store {
     const cols = {
       name: "name", state: "state", size: "size", md5: "md5", scheduledAt: "scheduled_at", sourcePath: "source_path", sha256: "sha256",
       editId: "edit_id", postId: "post_id", title: "title", caption: "caption", note: "note", uploadedAt: "uploaded_at", reviewId: "review_id",
+      choice: "choice",
     } as const;
     const keys = (Object.keys(f) as (keyof typeof cols)[]).filter((k) => k in cols);
-    const values = keys.map((k) => f[k] ?? null);
+    const values = keys.map((k) => (k === "choice" ? (f.choice ? JSON.stringify(f.choice) : null) : (f[k] ?? null)));
     if (!this.driveFile(driveId)) {
       this.db
         .prepare(`INSERT INTO drive_files (drive_id, ${keys.map((k) => cols[k]).join(", ")}, created_at, updated_at) VALUES (?, ${keys.map(() => "?").join(", ")}, ?, ?)`)
@@ -836,6 +860,7 @@ function toDriveFile(r: any): DriveFileRecord {
     note: r.note,
     uploadedAt: r.uploaded_at,
     reviewId: r.review_id ?? null,
+    choice: r.choice ? JSON.parse(r.choice) : null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };

@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { pipeline } from "node:stream/promises";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { defaultAccountIds, sharedFrom } from "./accounts.ts";
+import { accountSets, defaultSetId, setToken, sharedFrom } from "./accounts.ts";
 import { config, isConfigured } from "./config.ts";
 import type { Store } from "./db.ts";
 import type { Publisher } from "./platforms/base.ts";
@@ -140,11 +140,13 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
     {
       name: "list_accounts",
       title: "List accounts",
-      description: "Lists the connected accounts (with the ids publish_video takes; default marks where FreePoster posts on its own, and shared_from marks an account Meta shares another account's posts to, which can't be posted to directly) and each platform's video length limits, plus which platforms are set up. Platforms without keys are set up in the FreePoster window; accounts are connected by opening connect_url in a browser.",
+      description: "Lists the connected accounts (with the ids publish_video takes; default marks the accounts in the default account set, where FreePoster posts Drive videos whose name picks no set, and shared_from marks an account Meta shares another account's posts to, which can't be posted to directly) and each platform's video length limits, plus which platforms are set up. Platforms without keys are set up in the FreePoster window; accounts are connected by opening connect_url in a browser.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
       annotations: { readOnlyHint: true, openWorldHint: false },
       async run() {
-        const defaults = defaultAccountIds(store);
+        const defaultSet = defaultSetId(store);
+        const sets = accountSets(store);
+        const defaults = sets.find((s) => s.id === defaultSet)?.accountIds ?? [];
         return {
           accounts: store.accounts().map((a) => ({
             id: a.id,
@@ -157,6 +159,8 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
             // Meta shares that account's posts here; publishing to this one is refused.
             shared_from: sharedFrom(store, a)?.id ?? null,
           })),
+          // A Drive filename picks a set by its filename_token: Name_11.1.26_5.30.pm_Basic_PersonalBrand.
+          account_sets: sets.map((s) => ({ id: s.id, name: s.name, filename_token: setToken(s.name), default: s.id === defaultSet, account_ids: s.accountIds })),
           platforms: PLATFORMS.map((p) => ({
             platform: p,
             label: publishers[p].label,

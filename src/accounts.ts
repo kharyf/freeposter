@@ -1,7 +1,9 @@
-// Which accounts FreePoster posts to on its own (default accounts), and Meta's automatic sharing between an
-// Instagram account and its linked Facebook Page. Both are FreePoster's decisions: Drive only hands over files.
+// Which accounts FreePoster posts to on its own (the accounts in an account set: the default set, or the one a Drive
+// filename names), and Meta's automatic sharing between an Instagram account and its linked Facebook Page. Both are
+// FreePoster's decisions: Drive only hands over files.
 import type { Store } from "./db.ts";
-import type { Account, Platform, TikTokOptions } from "./types.ts";
+import { STYLES, styleToken } from "./edit/styles.ts";
+import type { Account, TikTokOptions } from "./types.ts";
 
 /** "ig_to_fb": Meta shares the Instagram account's posts to its Page; "fb_to_ig": the reverse. */
 export type Sharing = "ig_to_fb" | "fb_to_ig";
@@ -15,7 +17,6 @@ export interface SharingPair {
 }
 
 const SHARING_PREF = "meta.sharing";
-const DEFAULTS_PREF = "defaults.accounts";
 const TIKTOK_PREF = "defaults.tiktok";
 
 /** Only clear pairs: an Instagram account whose Page is connected, and no other Instagram account on that Page. */
@@ -46,53 +47,6 @@ export function sharedFrom(store: Store, account: Account): Account | undefined 
   if (pair?.sharing === "ig_to_fb" && pair.facebook.id === account.id) return pair.instagram;
   if (pair?.sharing === "fb_to_ig" && pair.instagram.id === account.id) return pair.facebook;
   return undefined;
-}
-
-/** The first account connected on each platform. */
-function firstPerPlatform(store: Store): number[] {
-  const first = new Map<Platform, number>();
-  for (const a of store.accounts()) if (!first.has(a.platform) || a.id < first.get(a.platform)!) first.set(a.platform, a.id);
-  return [...first.values()];
-}
-
-/** The default account ids as chosen; the first time, Drive's old account list or the first account per platform. */
-export function defaultAccountIds(store: Store): number[] {
-  let ids = store.pref<number[]>(DEFAULTS_PREF);
-  if (!ids) {
-    ids = store.pref<number[]>("drive.accounts") ?? firstPerPlatform(store);
-    store.setPref(DEFAULTS_PREF, ids);
-  }
-  return ids.filter((id) => store.account(id));
-}
-
-export function setDefaultAccounts(store: Store, ids: number[]) {
-  store.setPref(DEFAULTS_PREF, [...new Set(ids)]);
-}
-
-/** Where FreePoster posts on its own: the default accounts, minus any Meta shares to. */
-export function defaultAccounts(store: Store): Account[] {
-  return defaultAccountIds(store)
-    .map((id) => store.account(id))
-    .filter((a): a is Account => Boolean(a) && !sharedFrom(store, a!));
-}
-
-/** After a sign-in: the first account on a platform that had none becomes a default. */
-export function noteConnected(store: Store, platform: Platform, hadAccounts: boolean) {
-  const ids = defaultAccountIds(store); // seeds the set on first use
-  if (hadAccounts) return;
-  const first = store.accounts().filter((a) => a.platform === platform).sort((a, b) => a.id - b.id)[0];
-  if (first && !ids.includes(first.id)) setDefaultAccounts(store, [...ids, first.id]);
-}
-
-/** Before an account is removed: the next-oldest account on its platform takes its place as a default. */
-export function noteRemoving(store: Store, account: Account) {
-  const ids = defaultAccountIds(store);
-  if (!ids.includes(account.id)) return;
-  const rest = ids.filter((id) => id !== account.id);
-  const samePlatform = store.accounts().filter((a) => a.platform === account.platform && a.id !== account.id).sort((a, b) => a.id - b.id);
-  const next = samePlatform.find((a) => !rest.includes(a.id));
-  if (next && !samePlatform.some((a) => rest.includes(a.id))) rest.push(next.id);
-  setDefaultAccounts(store, rest);
 }
 
 /** TikTok options for posts FreePoster makes on its own. Privacy is not among them: they go out as "Only me". */
@@ -144,21 +98,79 @@ export function accountSets(store: Store): AccountSet[] {
   return sets;
 }
 
-/** False when there is no set with that id. */
-export function renameAccountSet(store: Store, id: number, name: string): boolean {
-  const sets = accountSets(store);
-  const set = sets.find((s) => s.id === id);
-  if (!set) return false;
-  set.name = name;
-  store.setPref(SETS_PREF, sets);
-  return true;
+/** The word a Drive filename uses for a set: its name without spaces ("Personal Brand" is PersonalBrand). */
+export const setToken = (name: string) => name.replace(/\s+/g, "");
+
+/**
+ * Why a set can't have this name, or null when it can. Its filename word must not be empty, contain an
+ * underscore (which separates a filename's parts), or match an editing style or another set, ignoring case.
+ */
+export function setNameProblem(store: Store, name: string, exceptId?: number): string | null {
+  const token = setToken(name);
+  if (!token) return "give the set a name";
+  if (token.includes("_")) return "a set's name can't contain an underscore: underscores separate the parts of a Drive filename";
+  const key = token.toLowerCase();
+  const style = STYLES.find((s) => styleToken(s).toLowerCase() === key);
+  if (style) return `"${token}" is the editing style ${style.name}; a filename couldn't tell them apart`;
+  const other = accountSets(store).find((s) => s.id !== exceptId && setToken(s.name).toLowerCase() === key);
+  if (other) return `"${token}" is already the set ${other.name}; a filename couldn't tell them apart`;
+  return null;
 }
 
-export function createAccountSet(store: Store, name: string): AccountSet {
+/** Null when renamed, else why not. */
+export function renameAccountSet(store: Store, id: number, name: string): string | null {
+  const sets = accountSets(store);
+  const set = sets.find((s) => s.id === id);
+  if (!set) return "no such account set";
+  const problem = setNameProblem(store, name, id);
+  if (problem) return problem;
+  set.name = name;
+  store.setPref(SETS_PREF, sets);
+  return null;
+}
+
+/** The new set, or why it couldn't be made. */
+export function createAccountSet(store: Store, name: string): AccountSet | string {
+  const problem = setNameProblem(store, name);
+  if (problem) return problem;
   const sets = accountSets(store);
   const set = { id: Math.max(...sets.map((s) => s.id)) + 1, name, accountIds: [] };
   store.setPref(SETS_PREF, [...sets, set]);
   return set;
+}
+
+const DEFAULT_SET_PREF = "accounts.defaultSet";
+
+/** The default set: the one chosen, else the oldest. Exactly one set is always the default. */
+export function defaultSetId(store: Store): number {
+  const sets = accountSets(store);
+  // Defaults used to be chosen account by account; the set replaces that.
+  if (store.pref("defaults.accounts") !== undefined) store.deletePref("defaults.accounts");
+  const saved = store.pref<number>(DEFAULT_SET_PREF);
+  if (sets.some((s) => s.id === saved)) return saved!;
+  const oldest = Math.min(...sets.map((s) => s.id));
+  store.setPref(DEFAULT_SET_PREF, oldest);
+  return oldest;
+}
+
+/** False when there is no set with that id. */
+export function setDefaultSet(store: Store, id: number): boolean {
+  if (!accountSets(store).some((s) => s.id === id)) return false;
+  store.setPref(DEFAULT_SET_PREF, id);
+  return true;
+}
+
+/** Where a post to this set goes: its accounts, minus any Meta shares to. Empty when there's no such set. */
+export function setAccounts(store: Store, setId: number): Account[] {
+  const set = accountSets(store).find((s) => s.id === setId);
+  return (set?.accountIds ?? [])
+    .map((id) => store.account(id))
+    .filter((a): a is Account => Boolean(a) && !sharedFrom(store, a!));
+}
+
+/** Where FreePoster posts on its own when nothing says otherwise: the default set's accounts. */
+export function defaultAccounts(store: Store): Account[] {
+  return setAccounts(store, defaultSetId(store));
 }
 
 /** Only an empty set, and never the last one. Null when it was deleted, else why not. */
@@ -168,7 +180,10 @@ export function deleteAccountSet(store: Store, id: number): string | null {
   if (!set) return "no such account set";
   if (set.accountIds.length) return "remove the accounts in this set first";
   if (sets.length === 1) return "there must be at least one account set";
+  const wasDefault = defaultSetId(store) === id;
   store.setPref(SETS_PREF, sets.filter((s) => s.id !== id));
+  // The oldest set left takes over as the default.
+  if (wasDefault) store.deletePref(DEFAULT_SET_PREF);
   return null;
 }
 

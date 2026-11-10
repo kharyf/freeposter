@@ -1,26 +1,28 @@
 // What happens to a video dropped in the watched Drive folder: read the posting time from its name (or its upload day),
 // download it, transcribe it, edit it while the AI providers write its title and caption, then send the edit to the
-// user for review (on Telegram, through Hermes's bot or FreePoster's own, and in the window). Approve schedules it to
-// FreePoster's default accounts at the time in its name (at once if that has passed); Reject posts nothing; Redo
+// user for review (on Telegram, through Hermes's bot or FreePoster's own, and in the window). The name also picks
+// the editing style and the account set (else the defaults); those are fixed when the file arrives. Approve schedules
+// it to that set's accounts at the time in its name (at once if that has passed); Reject posts nothing; Redo
 // makes a new edit (FreePoster does it when the reason is one setting and there's no note, Hermes otherwise, with
 // revise_edit) and the new edit comes back for review. A name ending in _RAW was already edited elsewhere: it
 // skips the edit and the review, and posts as uploaded (still transcribed for its caption). A video with no speech
 // is captioned from its frames, and when that (or the AI) fails it gets the caption #fyp. Every step is saved, so a
 // restart picks up where it stopped.
 import type { Readable } from "node:stream";
-import { defaultAccounts, defaultTikTok } from "../accounts.ts";
+import { accountSets, defaultSetId, defaultTikTok, setAccounts, setToken } from "../accounts.ts";
 import { captionVideo, transcriptText, type CaptionDeps } from "../caption.ts";
 import type { Store } from "../db.ts";
-import { DEFAULT_EDIT } from "../edit/settings.ts";
+import { DEFAULT_EDIT, type EditSettings } from "../edit/settings.ts";
+import { defaultStyleId, STYLES, styleById, styleToken } from "../edit/styles.ts";
 import type { Transcript } from "../edit/transcribe.ts";
 import { probe } from "../media.ts";
 import type { Publisher } from "../platforms/base.ts";
 import { saveUpload } from "../posts.ts";
 import { SUGGESTED, type ReviewService } from "../review/service.ts";
 import type { Review } from "../review/store.ts";
-import type { Account, DriveFileRecord, Platform } from "../types.ts";
+import type { Account, DriveChoice, DriveFileRecord, Platform } from "../types.ts";
 import { uploadedAt, type DriveFile } from "./client.ts";
-import { parseDriveName } from "./filename.ts";
+import { parseDriveName, type NameVocabulary } from "./filename.ts";
 
 export interface IntakeDeps extends CaptionDeps {
   download: (driveId: string) => Promise<Readable>;
@@ -129,8 +131,7 @@ export class Intake {
       case "approved": {
         if (r.postId === null) return; // the review service finishes making the post
         // A name with no time is on time until its day ends.
-        const parsed = this.parse(f);
-        const latest = parsed.ok ? parsed.latest : f.scheduledAt;
+        const latest = this.choice(f)?.latest ?? f.scheduledAt;
         const late = latest !== null && r.decidedAt !== null && r.decidedAt - latest > 60_000;
         const note = [late ? "approved after its scheduled time; posted at once" : "", f.note ?? ""].filter(Boolean).join("; ") || null;
         this.store.linkDrivePost(f.driveId, r.postId, note);
@@ -208,7 +209,7 @@ export class Intake {
       this.store.upsertDriveFile(driveId, { state: "transcribing", note: null });
     } else {
       // "processing" writes the caption too, if it was never written.
-      const edit = this.store.createEdit(f.sourcePath, f.sha256, DEFAULT_EDIT);
+      const edit = this.store.createEdit(f.sourcePath, f.sha256, this.editSettings(f));
       this.store.upsertDriveFile(driveId, { state: "processing", editId: edit.id, note: null });
     }
     await this.advance(driveId);
@@ -234,22 +235,35 @@ export class Intake {
     const id = f.driveId;
     switch (f.state) {
       case "queued": {
-        const parsed = this.parse(f);
+        const parsed = parseDriveName(f.name, f.uploadedAt ?? f.createdAt, this.vocabulary());
         if (!parsed.ok) {
           this.store.upsertDriveFile(id, { state: "invalid", note: parsed.reason });
+          return false;
+        }
+        // The style and set are decided now and kept, whatever happens to the defaults while it waits.
+        const choice: DriveChoice = {
+          name: parsed.name,
+          styleId: parsed.raw ? null : (parsed.styleId ?? defaultStyleId(this.store)),
+          setId: parsed.setId ?? defaultSetId(this.store),
+          raw: parsed.raw,
+          latest: parsed.latest,
+        };
+        const empty = this.emptySetReason(choice.setId);
+        if (empty) {
+          this.store.upsertDriveFile(id, { state: "invalid", choice, scheduledAt: parsed.at, note: empty });
           return false;
         }
         const now = this.now();
         if (parsed.latest < now - GRACE_MS) {
           const when = parsed.latest === parsed.at ? `its time (${new Date(parsed.at).toLocaleString()})` : `its date (${new Date(parsed.at).toLocaleDateString()})`;
-          this.store.upsertDriveFile(id, { state: "late", scheduledAt: parsed.at, note: `${when} had already passed when it reached the folder` });
+          this.store.upsertDriveFile(id, { state: "late", choice, scheduledAt: parsed.at, note: `${when} had already passed when it reached the folder` });
           return false;
         }
         if (parsed.at > now + YEAR_MS) {
-          this.store.upsertDriveFile(id, { state: "invalid", scheduledAt: parsed.at, note: "posts can be scheduled up to a year ahead" });
+          this.store.upsertDriveFile(id, { state: "invalid", choice, scheduledAt: parsed.at, note: "posts can be scheduled up to a year ahead" });
           return false;
         }
-        this.store.upsertDriveFile(id, { state: "downloading", scheduledAt: Math.max(parsed.at, now), note: null });
+        this.store.upsertDriveFile(id, { state: "downloading", choice, scheduledAt: Math.max(parsed.at, now), note: null });
         return true;
       }
       case "downloading": {
@@ -279,7 +293,7 @@ export class Intake {
           transcript = { words: [], language: null };
         }
         // The edit worker picks this up and runs alongside the caption writing below. A _RAW video gets no edit.
-        const editId = this.isRaw(f) ? null : this.store.createEdit(f.sourcePath!, f.sha256!, DEFAULT_EDIT).id;
+        const editId = this.isRaw(f) ? null : this.store.createEdit(f.sourcePath!, f.sha256!, this.editSettings(f)).id;
         this.store.upsertDriveFile(id, { state: "processing", editId });
         await this.caption(this.store.driveFile(id)!, transcript);
         return false;
@@ -297,39 +311,78 @@ export class Intake {
    * fallback (#fyp), with a note saying why. The text can still be changed under Upcoming before it posts.
    */
   private async caption(f: DriveFileRecord, transcript: Transcript) {
-    const parsed = this.parse(f);
     const text = await captionVideo(
-      { topic: parsed.ok ? parsed.name : f.name, transcript: transcriptText(transcript), sourcePath: f.sourcePath!, accounts: this.accounts() },
+      { topic: this.choice(f)?.name ?? f.name, transcript: transcriptText(transcript), sourcePath: f.sourcePath!, accounts: this.accounts(f) },
       this.deps,
       (m) => log(f, m),
     );
     this.store.upsertDriveFile(f.driveId, text);
   }
 
-  /** The posting time in the name; a name without a date posts on the day it was uploaded. */
-  private parse(f: DriveFileRecord) {
-    return parseDriveName(f.name, f.uploadedAt ?? f.createdAt);
+  /** The editing styles and account sets a filename may name, by the word it uses for each. */
+  vocabulary(): NameVocabulary {
+    return {
+      styles: STYLES.map((s) => ({ id: s.id, token: styleToken(s) })),
+      sets: accountSets(this.store).map((s) => ({ id: s.id, token: setToken(s.name) })),
+    };
+  }
+
+  /**
+   * What the file's name chose, as fixed when it arrived. A file already on its way before names carried a style
+   * and set is read by the older rules, with the defaults as they are then, and that is kept from then on.
+   */
+  private choice(f: DriveFileRecord): DriveChoice | null {
+    if (f.choice) return f.choice;
+    if (f.state === "queued") return null;
+    const parsed = parseDriveName(f.name, f.uploadedAt ?? f.createdAt);
+    if (!parsed.ok) return null;
+    const choice: DriveChoice = {
+      name: parsed.name,
+      styleId: parsed.raw ? null : defaultStyleId(this.store),
+      setId: defaultSetId(this.store),
+      raw: parsed.raw,
+      latest: parsed.latest,
+    };
+    this.store.upsertDriveFile(f.driveId, { choice });
+    f.choice = choice;
+    return choice;
   }
 
   /** The name ends in _RAW: already edited elsewhere, so it posts as uploaded. */
   private isRaw(f: DriveFileRecord) {
-    const parsed = this.parse(f);
-    return parsed.ok && parsed.raw;
+    return this.choice(f)?.raw ?? false;
   }
 
-  /** Where FreePoster posts Drive videos: its default accounts. */
-  accounts(): Account[] {
-    return defaultAccounts(this.store);
+  /** The edit its style makes. */
+  private editSettings(f: DriveFileRecord): EditSettings {
+    return styleById(this.choice(f)?.styleId)?.settings ?? DEFAULT_EDIT;
   }
 
-  /** The default accounts that can take a video this long, with a note for each that can't; null when there are none. */
+  /** Why a post to this set can't go anywhere, or null when it can. */
+  private emptySetReason(setId: number): string | null {
+    const set = accountSets(this.store).find((s) => s.id === setId);
+    if (!set) return "its account set no longer exists";
+    if (!setAccounts(this.store, setId).length) return `the account set ${setToken(set.name)} has no accounts to post to`;
+    return null;
+  }
+
+  private setIdOf(f: DriveFileRecord) {
+    return this.choice(f)?.setId ?? defaultSetId(this.store);
+  }
+
+  /** Where this Drive video posts: the accounts in the set its name chose (else the default set). */
+  accounts(f: DriveFileRecord): Account[] {
+    return setAccounts(this.store, this.setIdOf(f));
+  }
+
+  /** The set's accounts that can take a video this long, with a note for each that can't; null when there are none. */
   private targets(f: DriveFileRecord, sec: number, edited: boolean): { to: Account[]; notes: string[] } | null {
-    const chosen = this.accounts();
-    if (!chosen.length) {
-      // Not set up yet: wait, and go on as soon as default accounts are chosen.
-      this.store.upsertDriveFile(f.driveId, { note: "Choose default accounts in FreePoster" });
+    const empty = this.emptySetReason(this.setIdOf(f));
+    if (empty) {
+      this.store.upsertDriveFile(f.driveId, { state: "failed", note: empty });
       return null;
     }
+    const chosen = this.accounts(f);
     const notes: string[] = [];
     const to = chosen.filter((a) => {
       const p = this.publishers[a.platform];
@@ -389,10 +442,6 @@ export class Intake {
 
   /** A _RAW name: the video posts as uploaded, with no edit or review (it was edited, and seen, elsewhere). */
   private async schedule(f: DriveFileRecord) {
-    if (!this.accounts().length) {
-      this.store.upsertDriveFile(f.driveId, { note: "Choose default accounts in FreePoster" });
-      return;
-    }
     let sec: number;
     this.busy.add(f.driveId);
     try {
@@ -409,8 +458,7 @@ export class Intake {
     const now = this.now();
     const at = Math.max(f.scheduledAt ?? now, now);
     // A name with no time is on time until its day ends.
-    const parsed = this.parse(f);
-    const latest = parsed.ok ? parsed.latest : f.scheduledAt;
+    const latest = this.choice(f)?.latest ?? f.scheduledAt;
     if (latest !== null && now - latest > 60_000) notes.unshift("the caption finished after the scheduled time; posted late");
     const postId = this.store.createDrivePost(f.driveId, {
       caption: f.caption!,

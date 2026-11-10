@@ -2,7 +2,10 @@ import "./isolated-home.ts"; // first: downloads land in a throwaway data/ folde
 import assert from "node:assert/strict";
 import { createReadStream } from "node:fs";
 import { before, test } from "node:test";
+import { createAccountSet, placeInSet, renameAccountSet, setDefaultSet, type AccountSet } from "../src/accounts.ts";
+import { calendar } from "../src/calendar.ts";
 import { Intake, type IntakeDeps } from "../src/drive/intake.ts";
+import { DEFAULT_EDIT } from "../src/edit/settings.ts";
 import type { DriveFile } from "../src/drive/client.ts";
 import { publishers } from "../src/platforms/index.ts";
 import type { Transcript } from "../src/edit/transcribe.ts";
@@ -27,7 +30,6 @@ type Caption = (input: Parameters<IntakeDeps["writeCaption"]>[0]) => Promise<{ t
 function setup(opts: { transcript?: Transcript; caption?: Caption; frames?: IntakeDeps["frames"]; platforms?: ("x" | "tiktok" | "facebook")[] } = {}) {
   const store = newStore();
   const accts = (opts.platforms ?? ["x", "tiktok"]).map((p) => store.upsertAccount(account(p)));
-  store.setPref("defaults.accounts", accts.map((a) => a.id));
   const clock = { now: new Date().setSeconds(0, 0) };
   const reviews = new ReviewService(store, { publishers, runner: { tick() {} }, dir: tmp() });
   const deps: IntakeDeps = {
@@ -354,17 +356,88 @@ test("no accounts left fails with the reasons", async () => {
   assert.equal(posts(), 0);
 });
 
-test("a file waits for Drive accounts to be chosen instead of failing", async () => {
-  const { store, accts, clock, intake, file, finishEdit, posts, approve } = setup();
-  store.setPref("defaults.accounts", []);
+test("a file for a set with no accounts is refused with the reason", async () => {
+  const { store, clock, intake, file, posts } = setup();
+  const empty = createAccountSet(store, "Client A") as AccountSet;
+  await intake.handle(file(driveName("Early", clock.now + 60 * MIN).replace(".mp4", "_ClientA.mp4")));
+  const rec = store.driveFile("f1")!;
+  assert.equal(rec.state, "invalid");
+  assert.match(rec.note!, /the account set ClientA has no accounts to post to/);
+  setDefaultSet(store, empty.id);
+  await intake.handle(file(driveName("Later", clock.now + 60 * MIN), "f2"));
+  assert.equal(store.driveFile("f2")!.state, "invalid", "the default set is empty too");
+  assert.equal(posts(), 0);
+});
+
+test("a set named in the file posts to that set's accounts, even after it's renamed", async () => {
+  const { store, accts, clock, intake, file, finishEdit, approve } = setup();
+  const client = createAccountSet(store, "Client A") as AccountSet;
+  placeInSet(store, client.id, [accts[0].id]); // x moves to Client A; tiktok stays in Personal Brand
+  await intake.handle(file(driveName("Named", clock.now + 60 * MIN).replace(".mp4", "_Basic_ClientA.mp4")));
+  assert.deepEqual(store.driveFile("f1")!.choice, { name: "Named", styleId: "basic", setId: client.id, raw: false, latest: clock.now + 60 * MIN });
+  renameAccountSet(store, client.id, "Someone Else");
+  finishEdit("f1");
+  const r = await approve();
+  assert.deepEqual(r.draft.accountIds, [accts[0].id]);
+  assert.deepEqual(store.edit(store.driveFile("f1")!.editId!)!.settings, DEFAULT_EDIT, "Basic is today's edit");
+});
+
+test("a file with no set keeps the default set it arrived with, after the default changes", async () => {
+  const { store, accts, clock, intake, file, finishEdit, approve } = setup();
+  const client = createAccountSet(store, "Client A") as AccountSet;
+  placeInSet(store, client.id, [accts[0].id]);
+  await intake.handle(file(driveName("Plain", clock.now + 60 * MIN)));
+  assert.equal(store.driveFile("f1")!.choice!.setId, 1, "no set in the name: the default set");
+  setDefaultSet(store, client.id);
+  finishEdit("f1");
+  const r = await approve();
+  assert.deepEqual(r.draft.accountIds, [accts[1].id], "still Personal Brand's");
+});
+
+test("a set emptied while its video waits fails the video with the reason", async () => {
+  const { store, accts, clock, intake, file, finishEdit, posts } = setup();
   await intake.handle(file(driveName("Early", clock.now + 60 * MIN)));
+  for (const a of accts) store.deleteAccount(a.id);
   finishEdit("f1");
   await intake.tick();
-  assert.equal(store.driveFile("f1")!.state, "processing");
-  assert.match(store.driveFile("f1")!.note!, /Choose default accounts/);
-  store.setPref("defaults.accounts", accts.map((a) => a.id));
+  const rec = store.driveFile("f1")!;
+  assert.equal(rec.state, "failed");
+  assert.match(rec.note!, /PersonalBrand has no accounts/);
+  assert.equal(posts(), 0);
+});
+
+test("a file already on its way before this change keeps the older name rules and today's defaults", async () => {
+  const { store, accts, clock, intake, finishEdit, approve } = setup();
+  const at = clock.now + 60 * MIN;
+  // Underscores in the name were allowed then; it's part-way through, with no saved choice.
+  store.upsertDriveFile("f1", { name: driveName("My_Old_Video", at), state: "processing", scheduledAt: at, sourcePath: clip, sha256: "x", caption: "Hi", title: "Hi",
+    editId: store.createEdit(clip, "x", DEFAULT_EDIT).id });
+  finishEdit("f1");
+  const r = await approve();
+  assert.deepEqual([...r.draft.accountIds].sort(), accts.map((a) => a.id).sort());
+  assert.deepEqual(store.driveFile("f1")!.choice, { name: "My_Old_Video", styleId: "basic", setId: 1, raw: false, latest: at });
+});
+
+test("the calendar lists each post at its time with its style and set, and videos still on their way", async () => {
+  const { store, clock, intake, file, finishEdit, approve } = setup();
+  const at = clock.now + 60 * MIN;
+  await intake.handle(file(driveName("First", at)));
+  await intake.handle(file(driveName("Second", at + 30 * MIN).replace(".mp4", "_RAW.mp4"), "f2"));
+  finishEdit("f1");
   await approve();
-  assert.equal(posts(), 1);
+  const entries = calendar(store, clock.now - 86_400_000, clock.now + 2 * 86_400_000);
+  assert.deepEqual(entries.map((e) => [e.name, e.at, e.style, e.set, e.raw]), [
+    ["First", at, "Basic", "PersonalBrand", false],
+    ["Second", at + 30 * MIN, null, "PersonalBrand", true],
+  ]);
+  assert.equal(entries[0].status, "scheduled");
+  assert.equal(entries[0].accounts.length, 2);
+  assert.ok(entries[0].key.startsWith("post:"));
+  assert.ok(entries[1].key.startsWith("post:"), "RAW: a post as soon as it's captioned");
+  // One still downloading shows at its time, before it's a post.
+  store.upsertDriveFile("f3", { name: "Third.mp4", state: "downloading", scheduledAt: at + 40 * MIN, choice: { name: "Third", styleId: "basic", setId: 1, raw: false, latest: at + 40 * MIN } });
+  const third = calendar(store, at + 31 * MIN, at + 86_400_000);
+  assert.deepEqual(third.map((e) => [e.key, e.name, e.style, e.set, e.status]), [["drive:f3", "Third", "Basic", "PersonalBrand", "downloading"]]);
 });
 
 /** "m.d.yy" for a local day */

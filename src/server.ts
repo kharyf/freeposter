@@ -4,7 +4,9 @@ import { timingSafeEqual } from "node:crypto";
 import { execFile } from "node:child_process";
 import { createReadStream, existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { accountSets, createAccountSet, defaultAccountIds, deleteAccountSet, noteSignInSet, placeInSet, takeSignInSet, defaultTikTokPrefs, noteConnected, noteRemoving, setDefaultAccounts, renameAccountSet, setDefaultTikTokPrefs, setSharing, sharedFrom, sharingPairs, type Sharing } from "./accounts.ts";
+import { accountSets, createAccountSet, defaultSetId, deleteAccountSet, noteSignInSet, placeInSet, takeSignInSet, defaultTikTokPrefs, renameAccountSet, setDefaultSet, setDefaultTikTokPrefs, setSharing, setToken, sharedFrom, sharingPairs, type Sharing } from "./accounts.ts";
+import { calendar } from "./calendar.ts";
+import { defaultStyleId, hasSample, sampleVideoPath, setDefaultStyle, STYLES, styleById, styleToken } from "./edit/styles.ts";
 import * as openrouter from "./ai/openrouter.ts";
 import { AI_JOBS, PROVIDER_IDS, type AiJob, type ProviderId } from "./ai/providers.ts";
 import type { AiService } from "./ai/router.ts";
@@ -117,7 +119,9 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   app.get("/api/ping", async () => ({ app: "freeposter" }));
 
   app.get("/api/status", async () => {
-    const defaults = defaultAccountIds(store);
+    const defaultSet = defaultSetId(store);
+    const defaults = accountSets(store).find((s) => s.id === defaultSet)?.accountIds ?? [];
+    const defaultStyle = defaultStyleId(store);
     return {
       desktop: Boolean(options.onQuit),
       pendingJobs: store.pendingJobCount(),
@@ -132,11 +136,13 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
         // Long-lived refresh tokens (TikTok: 1 year) need a manual reconnect before they run out.
         reconnectSoon: a.refreshExpiresAt !== null && a.refreshExpiresAt - Date.now() < 14 * 86_400_000,
         maxDurationSec: publishers[a.platform].maxDurationSec(a),
+        // In the default set: where Drive videos go when their name doesn't pick a set.
         isDefault: defaults.includes(a.id),
         // Meta shares posts to this account from that one, so FreePoster never posts to it itself.
         sharedFrom: sharedFrom(store, a)?.id ?? null,
       })),
-      accountSets: accountSets(store),
+      accountSets: accountSets(store).map((s) => ({ ...s, token: setToken(s.name), isDefault: s.id === defaultSet })),
+      editingStyles: STYLES.map((s) => ({ id: s.id, name: s.name, token: styleToken(s), description: s.description, isDefault: s.id === defaultStyle, hasSample: hasSample(s.id) })),
       sharingPairs: sharingPairs(store).map((p) => ({ pageId: p.pageId, instagramId: p.instagram.id, facebookId: p.facebook.id, sharing: p.sharing })),
       defaultTikTok: { allowComment: true, allowDuet: true, allowStitch: true, ...defaultTikTokPrefs(store) },
     };
@@ -214,11 +220,9 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
       const setId = takeSignInSet(store, q.state);
       const accounts = await publishers[platform].exchangeCode(q.code, verifier);
       const before = new Set(store.accounts().map((a) => a.id));
-      const hadAccounts = store.accounts().some((a) => a.platform === platform);
       const saved = accounts.map((a) => store.upsertAccount(a));
       // New accounts join the set the sign-in started from; reconnected ones stay in their own set.
       if (setId !== undefined) placeInSet(store, setId, saved.filter((a) => !before.has(a.id)).map((a) => a.id));
-      noteConnected(store, platform, hadAccounts);
       return back({ connected: `${publishers[platform].label}: ${accounts.map((a) => a.name).join(", ")}` });
     } catch (err) {
       return back({ error: `${platform}: ${(err as Error).message}` });
@@ -226,20 +230,18 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   }
 
   app.delete<{ Params: { id: string } }>("/api/accounts/:id", async (req) => {
-    const account = store.account(Number(req.params.id));
-    if (account) noteRemoving(store, account);
     store.deleteAccount(Number(req.params.id));
     return { ok: true };
   });
 
-  // Where FreePoster posts on its own (Drive videos), and the TikTok options those posts use.
-  app.put<{ Body: { accounts?: unknown; tiktok?: Record<string, unknown> } }>("/api/defaults", async (req, reply) => {
+  // What Drive videos get when their name doesn't say: the account set they post to and the editing style; and
+  // the TikTok options posts FreePoster makes on its own use.
+  app.put<{ Body: { set?: unknown; style?: unknown; tiktok?: Record<string, unknown> } }>("/api/defaults", async (req, reply) => {
     const body = req.body ?? {};
-    if (body.accounts !== undefined) {
-      const ids = Array.isArray(body.accounts) ? body.accounts.map(Number) : [];
-      if (!Array.isArray(body.accounts) || ids.some((id) => !store.account(id))) return reply.code(400).send({ error: "unknown account selected" });
-      setDefaultAccounts(store, ids);
-    }
+    if (body.set !== undefined && !accountSets(store).some((s) => s.id === Number(body.set))) return reply.code(400).send({ error: "no such account set" });
+    if (body.style !== undefined && !styleById(String(body.style))) return reply.code(400).send({ error: "no such editing style" });
+    if (body.set !== undefined) setDefaultSet(store, Number(body.set));
+    if (body.style !== undefined) setDefaultStyle(store, String(body.style));
     if (body.tiktok !== undefined) {
       const t = body.tiktok ?? {};
       if ("privacyLevel" in t) return reply.code(400).send({ error: "TikTok posts FreePoster makes on its own always go out as Only me" });
@@ -260,7 +262,8 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   app.post<{ Body: { name?: unknown } }>("/api/account-sets", async (req, reply) => {
     const name = setName(req.body);
     if (!name) return reply.code(400).send({ error: "a set name is 1 to 80 characters" });
-    return createAccountSet(store, name);
+    const made = createAccountSet(store, name);
+    return typeof made === "string" ? reply.code(400).send({ error: made }) : made;
   });
 
   app.delete<{ Params: { id: string } }>("/api/account-sets/:id", async (req, reply) => {
@@ -271,7 +274,8 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   app.put<{ Params: { id: string }; Body: { name?: unknown } }>("/api/account-sets/:id", async (req, reply) => {
     const name = setName(req.body);
     if (!name) return reply.code(400).send({ error: "a set name is 1 to 80 characters" });
-    if (!renameAccountSet(store, Number(req.params.id), name)) return reply.code(404).send({ error: "no such account set" });
+    const error = renameAccountSet(store, Number(req.params.id), name);
+    if (error) return reply.code(error === "no such account set" ? 404 : 400).send({ error });
     return { ok: true };
   });
 
@@ -591,6 +595,15 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
 
   app.get("/api/posts", async () => store.recentPosts().map((p) => postView(store, p)));
 
+  // The Calendar tab: what goes out between two times (ms), at most about six weeks at once.
+  app.get<{ Querystring: { from?: string; to?: string } }>("/api/calendar", async (req, reply) => {
+    const [from, to] = [Number(req.query.from), Number(req.query.to)];
+    if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from || to - from > 45 * 86_400_000) {
+      return reply.code(400).send({ error: "from and to are times in ms, at most 45 days apart" });
+    }
+    return { entries: calendar(store, from, to) };
+  });
+
   // ---- edits: made in the background, previewed and approved here before they can be posted ----
 
   app.post("/api/edits", async (req, reply) => {
@@ -638,6 +651,12 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     reply.header("content-length", size);
     return reply.send(createReadStream(path));
   };
+
+  app.get<{ Params: { id: string } }>("/api/styles/:id/sample.mp4", async (req, reply) => {
+    const style = styleById(req.params.id);
+    if (!style || !hasSample(style.id)) return reply.code(404).send({ error: "that style has no sample video yet" });
+    return sendVideo(req, reply, sampleVideoPath(style.id));
+  });
 
   app.get<{ Params: { id: string } }>("/api/edits/:id/video", async (req, reply) => {
     const edit = store.edit(Number(req.params.id));

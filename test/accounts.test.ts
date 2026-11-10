@@ -1,12 +1,18 @@
 import "./isolated-home.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { accountSets, createAccountSet, defaultAccountIds, deleteAccountSet, noteSignInSet, placeInSet, takeSignInSet, defaultAccounts, noteConnected, noteRemoving, renameAccountSet, setDefaultAccounts, setSharing, sharedFrom, sharingPairs } from "../src/accounts.ts";
+import { accountSets, createAccountSet, defaultAccounts, defaultSetId, deleteAccountSet, noteSignInSet, placeInSet, renameAccountSet, setAccounts, setDefaultSet, setNameProblem, setSharing, setToken, sharedFrom, sharingPairs, takeSignInSet, type AccountSet } from "../src/accounts.ts";
 import { publishers } from "../src/platforms/index.ts";
 import { checkDraft } from "../src/posts.ts";
 import { Runner } from "../src/runner.ts";
 import { buildServer } from "../src/server.ts";
 import { account, newStore, sha256, tmp, verticalSilent } from "./helpers.ts";
+
+/** A set that was made (createAccountSet returns why not, otherwise). */
+function made(r: AccountSet | string): AccountSet {
+  assert.equal(typeof r, "object", String(r));
+  return r as AccountSet;
+}
 
 /** An Instagram account linked to a connected Facebook Page. */
 function metaPair(store = newStore()) {
@@ -55,43 +61,55 @@ test("checkDraft refuses an account Meta shares to, naming the account to use", 
   await assert.rejects(checkDraft(store, publishers, draft([ig.id, page.id])), /post to My Page instead/);
 });
 
-test("default accounts start as the first account per platform, or Drive's old list", () => {
+test("exactly one set is the default: the oldest until another is chosen, and the old per-account defaults go", () => {
   const store = newStore();
-  const x1 = store.upsertAccount(account("x", { externalId: "x-1" }));
-  store.upsertAccount(account("x", { externalId: "x-2" }));
-  const yt = store.upsertAccount(account("youtube"));
-  assert.deepEqual(defaultAccountIds(store).sort(), [x1.id, yt.id].sort());
-
-  const old = newStore();
-  old.upsertAccount(account("x"));
-  const tt = old.upsertAccount(account("tiktok"));
-  old.setPref("drive.accounts", [tt.id]);
-  assert.deepEqual(defaultAccountIds(old), [tt.id], "nothing changes on upgrade");
+  const x = store.upsertAccount(account("x"));
+  store.setPref("defaults.accounts", [x.id]);
+  assert.equal(defaultSetId(store), 1, "the oldest set");
+  assert.equal(store.pref("defaults.accounts"), undefined, "per-account defaults are dropped");
+  const client = made(createAccountSet(store, "Client A"));
+  assert.equal(setDefaultSet(store, client.id), true);
+  assert.equal(defaultSetId(store), client.id);
+  assert.equal(setDefaultSet(store, 99), false);
+  assert.equal(defaultSetId(store), client.id);
+  assert.deepEqual(defaultAccounts(store), [], "the default set's accounts: none yet");
+  placeInSet(store, client.id, [x.id]);
+  assert.deepEqual(defaultAccounts(store).map((a) => a.id), [x.id]);
+  assert.deepEqual(setAccounts(store, 1), []);
 });
 
-test("a platform's first connect joins the defaults; removing a default promotes the next-oldest", () => {
+test("deleting the default set makes the oldest set left the default", () => {
   const store = newStore();
-  const x1 = store.upsertAccount(account("x", { externalId: "x-1" }));
-  assert.deepEqual(defaultAccountIds(store), [x1.id]);
-  const x2 = store.upsertAccount(account("x", { externalId: "x-2" }));
-  noteConnected(store, "x", true);
-  assert.deepEqual(defaultAccountIds(store), [x1.id], "a second account isn't added");
-  const tt = store.upsertAccount(account("tiktok"));
-  noteConnected(store, "tiktok", false);
-  assert.deepEqual(defaultAccountIds(store), [x1.id, tt.id]);
-  noteRemoving(store, store.account(x1.id)!);
-  store.deleteAccount(x1.id);
-  assert.deepEqual(defaultAccountIds(store).sort(), [x2.id, tt.id].sort());
-  setDefaultAccounts(store, [x2.id]);
-  noteRemoving(store, store.account(tt.id)!);
-  assert.deepEqual(defaultAccountIds(store), [x2.id], "a non-default leaves the set alone");
+  const a = made(createAccountSet(store, "A"));
+  const b = made(createAccountSet(store, "B"));
+  setDefaultSet(store, b.id);
+  assert.equal(deleteAccountSet(store, b.id), null);
+  assert.equal(defaultSetId(store), 1);
+  setDefaultSet(store, a.id);
+  assert.equal(deleteAccountSet(store, 1), null);
+  assert.equal(defaultSetId(store), a.id, "still the chosen one");
 });
 
-test("defaults leave out an account Meta shares to and keep the head", () => {
+test("a set's accounts leave out an account Meta shares to", () => {
   const { store, page, ig } = metaPair();
-  setDefaultAccounts(store, [page.id, ig.id]);
   setSharing(store, "page-1", "ig_to_fb");
   assert.deepEqual(defaultAccounts(store).map((a) => a.id), [ig.id]);
+  assert.ok(accountSets(store)[0].accountIds.includes(page.id), "it stays in the set");
+});
+
+test("a set's filename word can't be empty, hold an underscore, or match a style or another set", () => {
+  const store = newStore();
+  assert.equal(setToken("Personal Brand"), "PersonalBrand");
+  assert.match(String(createAccountSet(store, "basic")), /editing style Basic/);
+  assert.match(String(createAccountSet(store, "Ba sic")), /editing style Basic/);
+  assert.match(String(createAccountSet(store, "personalbrand")), /already the set Personal Brand/);
+  assert.match(String(createAccountSet(store, "Personal  Brand")), /already the set Personal Brand/);
+  assert.match(String(createAccountSet(store, "My_Set")), /underscore/);
+  const client = made(createAccountSet(store, "Client A"));
+  assert.match(String(renameAccountSet(store, client.id, "Personal Brand")), /already the set/);
+  assert.equal(renameAccountSet(store, client.id, "client a"), null, "a set may keep its own word");
+  assert.equal(renameAccountSet(store, 1, "PersonalBrand"), null);
+  assert.equal(setNameProblem(store, "Client B"), null);
 });
 
 test("the window and agents see defaults and sharing; /api/sharing only takes clear pairs", async () => {
@@ -112,6 +130,7 @@ test("the window and agents see defaults and sharing; /api/sharing only takes cl
   const listed = mcp.json().result.structuredContent.accounts;
   assert.equal(listed.find((a: any) => a.id === page.id).shared_from, ig.id);
   assert.equal(listed.find((a: any) => a.id === ig.id).default, true);
+  assert.deepEqual(mcp.json().result.structuredContent.account_sets.map((s: any) => [s.filename_token, s.default]), [["PersonalBrand", true]]);
   await app.close();
 });
 
@@ -123,8 +142,8 @@ test("connected accounts start in one Personal Brand set; new ones join it and r
   assert.ok(accountSets(store)[0].accountIds.includes(tiktok.id));
   store.deleteAccount(page.id);
   assert.ok(!accountSets(store)[0].accountIds.includes(page.id));
-  assert.equal(renameAccountSet(store, 1, "Client A"), true);
-  assert.equal(renameAccountSet(store, 99, "Nope"), false);
+  assert.equal(renameAccountSet(store, 1, "Client A"), null);
+  assert.equal(renameAccountSet(store, 99, "Nope"), "no such account set");
   assert.equal(accountSets(store)[0].name, "Client A");
 });
 
@@ -137,6 +156,9 @@ test("/api/account-sets renames a set and refuses empty names and unknown sets",
   assert.equal((await rename(1, { name: "  " })).statusCode, 400);
   assert.equal((await rename(7, { name: "Other" })).statusCode, 404);
   assert.equal((await rename(1, { name: " My Brand " })).statusCode, 200);
+  const dup = await rename(1, { name: "Basic" });
+  assert.equal(dup.statusCode, 400);
+  assert.match(dup.json().error, /editing style/);
   const sets = (await status()).accountSets;
   assert.equal(sets[0].name, "My Brand");
   assert.equal(sets[0].accountIds.length, 2);
@@ -145,7 +167,7 @@ test("/api/account-sets renames a set and refuses empty names and unknown sets",
 
 test("a new set starts empty; only an empty set that isn't the last can be deleted", () => {
   const { store, ig } = metaPair();
-  const client = createAccountSet(store, "Client A");
+  const client = made(createAccountSet(store, "Client A"));
   assert.deepEqual(client, { id: 2, name: "Client A", accountIds: [] });
   assert.equal(deleteAccountSet(store, 1), "remove the accounts in this set first");
   placeInSet(store, client.id, [ig.id]);
@@ -161,7 +183,7 @@ test("a new set starts empty; only an empty set that isn't the last can be delet
 
 test("a sign-in remembers the set it started from, once", () => {
   const store = newStore();
-  const set = createAccountSet(store, "Client A");
+  const set = made(createAccountSet(store, "Client A"));
   noteSignInSet(store, "s1", set.id);
   noteSignInSet(store, "s2", 99);
   assert.equal(takeSignInSet(store, "s2"), undefined, "an unknown set is not remembered");
@@ -175,7 +197,8 @@ test("/api/account-sets creates and deletes sets", async () => {
   assert.equal((await app.inject({ method: "POST", url: "/api/account-sets", payload: { name: "" } })).statusCode, 400);
   const created = (await app.inject({ method: "POST", url: "/api/account-sets", payload: { name: "Client A" } })).json();
   assert.equal(created.name, "Client A");
-  assert.deepEqual((await app.inject("/api/status")).json().accountSets.map((s: any) => s.name), ["Personal Brand", "Client A"]);
+  assert.deepEqual((await app.inject("/api/status")).json().accountSets.map((s: any) => [s.name, s.token, s.isDefault]), [["Personal Brand", "PersonalBrand", true], ["Client A", "ClientA", false]]);
+  assert.equal((await app.inject({ method: "POST", url: "/api/account-sets", payload: { name: "client a" } })).statusCode, 400, "a duplicate filename word");
   assert.equal((await app.inject({ method: "DELETE", url: "/api/account-sets/1" })).statusCode, 400);
   assert.equal((await app.inject({ method: "DELETE", url: `/api/account-sets/${created.id}` })).statusCode, 200);
   assert.equal((await app.inject("/api/status")).json().accountSets.length, 1);
@@ -189,7 +212,7 @@ test("an account signed in from a set joins that set; a reconnected one stays wh
   reloadConfig();
   const store = newStore();
   const old = store.upsertAccount(account("youtube", { externalId: "old", name: "Old channel" }));
-  const set = createAccountSet(store, "Client A");
+  const set = made(createAccountSet(store, "Client A"));
   let returned = [account("youtube", { externalId: "new", name: "New channel" }), account("youtube", { externalId: "old", name: "Old channel" })];
   const fake = { ...publishers, youtube: { ...publishers.youtube, exchangeCode: async () => returned } };
   const app = buildServer(store, new Runner(store, fake, tmp()), fake);
