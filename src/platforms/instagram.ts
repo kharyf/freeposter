@@ -62,6 +62,33 @@ export const instagram: Publisher = {
     const containerStatus = () =>
       requestJson(`${graph()}/${progress.containerId}?fields=status_code,status,video_status`, { headers: auth });
 
+    // On a retry, check the container before sending bytes: it may have expired, failed, or
+    // already received the whole file (an upload whose response was lost). Uploading to a
+    // container in any of those states fails with "not in the status to upload a video".
+    let status: any;
+    if (progress.containerId && !progress.uploaded) {
+      status = await containerStatus();
+      if (status.status_code === "EXPIRED") {
+        for (const k of Object.keys(progress)) delete progress[k];
+        ctx.save(progress);
+        status = undefined;
+      } else if (status.status_code === "ERROR") {
+        ctx.save({}); // the next attempt starts over with a fresh container
+        throw new FatalError(`Instagram rejected the upload container: ${status.status ?? "unknown reason"}; retry to upload again`);
+      } else {
+        const phase = status.video_status?.uploading_phase;
+        const done =
+          status.status_code === "FINISHED" ||
+          status.status_code === "PUBLISHED" ||
+          phase?.status === "complete" ||
+          Number(phase?.bytes_transferred ?? 0) >= videoSize;
+        if (done) {
+          progress.uploaded = true;
+          ctx.save(progress);
+        }
+      }
+    }
+
     if (!progress.containerId) {
       const c = await requestJson(`${graph()}/${userId}/media`, {
         headers: auth,
@@ -74,7 +101,7 @@ export const instagram: Publisher = {
     if (!progress.uploaded) {
       // On a retry, continue from the bytes Instagram already holds.
       const offset = progress.uploadStarted
-        ? Number((await containerStatus()).video_status?.uploading_phase?.bytes_transferred ?? 0)
+        ? Number(status?.video_status?.uploading_phase?.bytes_transferred ?? 0)
         : 0;
       progress.uploadStarted = true;
       ctx.save(progress);

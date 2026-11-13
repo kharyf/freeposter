@@ -158,7 +158,15 @@
 .review .cap { white-space: pre-wrap; margin: 6px 0; }
 .review .fp { font-family: ui-monospace, monospace; font-size: 12px; }
 .review .decide { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
-.review .why { margin-top: 8px; display: grid; gap: 6px; }
+.review .decide button[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); font-weight: 600; }
+.review .decide button.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+.review .decide button.danger[aria-pressed="true"] { border-color: var(--bad); box-shadow: inset 0 0 0 1px var(--bad); }
+.review .why { margin-top: 10px; display: grid; gap: 6px; border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+.review .why[data-action="reject"] { border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+.review .why .why-title { font-weight: 600; }
+.review .why label { margin: 4px 0 0; }
+.review .why button.go { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.review .why[data-action="reject"] button.go { background: var(--bad); border-color: var(--bad); }
   /* ---- account set default ---- */
   .set-token { font-family: ui-monospace, monospace; font-size: 11px; }
   .badge.default { color: var(--accent); border-color: var(--accent); }
@@ -1049,6 +1057,10 @@ async function telegramAction(button) {
 // ---- reviews waiting for the user ----
 
 const REASONS = [["cuts", "Cuts"], ["captions", "Captions"], ["framing", "Framing"], ["sound", "Sound"], ["zooms", "Zooms"], ["other", "Something else"]];
+const WHY_TEXT = {
+  redo: { title: "Ask for changes", reason: "What kind of change?", note: "What should change? Add a time like 0:14 if it's one spot (optional)", send: "Send back for changes" },
+  reject: { title: "Reject this video", reason: "Why reject it?", note: "Anything to add? (optional)", send: "Reject video" },
+};
 let reviewsShown = "";
 async function loadReviews() {
   const res = await fetch("/api/reviews");
@@ -1072,13 +1084,15 @@ async function loadReviews() {
       ${r.waiting_for === "the user's redo note" ? `<div class="muted">Waiting for your redo note on Telegram.</div>` : ""}
       <div class="decide">
         <button type="button" class="primary" data-decide="approve">Approve</button>
-        <button type="button" data-decide="reject">Reject</button>
-        <button type="button" data-decide="redo">Redo</button>
+        <button type="button" data-decide="redo" aria-pressed="false">Request changes</button>
+        <button type="button" class="danger" data-decide="reject" aria-pressed="false">Reject</button>
       </div>
       <div class="why" hidden>
-        <select>${REASONS.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select>
-        <textarea placeholder="What should change? Add a time like 0:14 if it's one spot (optional)"></textarea>
-        <div class="decide"><button type="button" data-decide="send">Send</button><button type="button" data-decide="cancel">Cancel</button></div>
+        <div class="why-title"></div>
+        <label for="why-reason-${r.id}"></label>
+        <select id="why-reason-${r.id}">${REASONS.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select>
+        <textarea></textarea>
+        <div class="decide"><button type="button" class="go" data-decide="send"></button><button type="button" data-decide="cancel">Cancel</button></div>
       </div>`}
     </div>`).join("");
 }
@@ -1091,12 +1105,24 @@ $("reviews").addEventListener("click", async (e) => {
   const why = card.querySelector(".why");
   const action = button.dataset.decide;
   if (action === "reject" || action === "redo") {
+    // One panel serves both; everything in it says which one it will do. The reason and note carry over on a switch.
+    const text = WHY_TEXT[action];
     why.hidden = false;
     why.dataset.action = action;
-    why.querySelector("select").options[0].selected = true;
+    why.querySelector(".why-title").textContent = text.title;
+    why.querySelector("label").textContent = text.reason;
+    why.querySelector("textarea").placeholder = text.note;
+    why.querySelector("[data-decide='send']").textContent = text.send;
+    for (const b of card.querySelectorAll(".decide [aria-pressed]")) b.setAttribute("aria-pressed", String(b === button));
+    card.querySelector("[data-decide='approve']").disabled = true;
     return;
   }
-  if (action === "cancel") { why.hidden = true; return; }
+  if (action === "cancel") {
+    why.hidden = true;
+    for (const b of card.querySelectorAll(".decide [aria-pressed]")) b.setAttribute("aria-pressed", "false");
+    card.querySelector("[data-decide='approve']").disabled = false;
+    return;
+  }
   const kind = action === "send" ? why.dataset.action : "approve";
   const body = kind === "approve" ? null : { reason: why.querySelector("select").value, note: why.querySelector("textarea").value };
   button.disabled = true;

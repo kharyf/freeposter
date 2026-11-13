@@ -247,6 +247,63 @@ test("Instagram: resumes a partial upload at the byte offset Instagram reports",
   }
 });
 
+test("Instagram: a retry after a lost upload response skips re-uploading a container that has the whole file", async () => {
+  const m = mockFetch(route([
+    ["GET https://graph.facebook.com/v24.0/c1?", (() => {
+      let n = 0;
+      return () => json(n++ === 0
+        ? { status_code: "IN_PROGRESS", video_status: { uploading_phase: { status: "complete", bytes_transferred: SIZE } } }
+        : { status_code: "FINISHED" });
+    })()],
+    ["POST https://graph.facebook.com/v24.0/instagram-1/media_publish", () => json({ id: "ig-media-4" })],
+    ["GET https://graph.facebook.com/v24.0/ig-media-4", () => json({ permalink: "https://www.instagram.com/reel/JKL/" })],
+  ]));
+  try {
+    const { c } = ctx("instagram", { containerId: "c1", uploadUri: "https://rupload.facebook.com/ig-api-upload/v24.0/c1", uploadStarted: true });
+    const r = await instagram.publish(c);
+    assert.equal(r.url, "https://www.instagram.com/reel/JKL/");
+    assert.equal(m.calls.filter((k) => k.url.startsWith("https://rupload")).length, 0);
+  } finally {
+    m.restore();
+  }
+});
+
+test("Instagram: a retry on an expired container starts over with a new one", async () => {
+  const m = mockFetch(route([
+    ["GET https://graph.facebook.com/v24.0/old?", () => json({ status_code: "EXPIRED" })],
+    ["POST https://graph.facebook.com/v24.0/instagram-1/media_publish", () => json({ id: "ig-media-5" })],
+    ["POST https://graph.facebook.com/v24.0/instagram-1/media", () => json({ id: "c2", uri: "https://rupload.facebook.com/ig-api-upload/v24.0/c2" })],
+    ["POST https://rupload.facebook.com/ig-api-upload/v24.0/c2", () => json({ success: true })],
+    ["GET https://graph.facebook.com/v24.0/c2?", () => json({ status_code: "FINISHED" })],
+    ["GET https://graph.facebook.com/v24.0/ig-media-5", () => json({ permalink: "https://www.instagram.com/reel/MNO/" })],
+  ]));
+  try {
+    const { c } = ctx("instagram", { containerId: "old", uploadUri: "https://rupload.facebook.com/ig-api-upload/v24.0/old", uploadStarted: true });
+    const r = await instagram.publish(c);
+    assert.equal(r.url, "https://www.instagram.com/reel/MNO/");
+    const upload = m.calls.find((k) => k.url.startsWith("https://rupload"))!;
+    assert.equal(upload.url, "https://rupload.facebook.com/ig-api-upload/v24.0/c2");
+    assert.equal(upload.headers.offset, "0");
+    assert.equal((upload.body as Blob).size, SIZE);
+  } finally {
+    m.restore();
+  }
+});
+
+test("Instagram: a retry on an errored container fails clearly and clears progress for the next attempt", async () => {
+  const m = mockFetch(route([
+    ["GET https://graph.facebook.com/v24.0/c1?", () => json({ status_code: "ERROR", status: "Error: 2207026" })],
+  ]));
+  try {
+    const { c, saves } = ctx("instagram", { containerId: "c1", uploadStarted: true });
+    await assert.rejects(instagram.publish(c), /rejected the upload container: Error: 2207026/);
+    assert.deepEqual(saves.at(-1), {});
+    assert.equal(m.calls.filter((k) => k.url.startsWith("https://rupload")).length, 0);
+  } finally {
+    m.restore();
+  }
+});
+
 // ---------------- Facebook ----------------
 
 test("Facebook: start → upload → finish(PUBLISHED) → publishing complete → reel URL", async () => {
