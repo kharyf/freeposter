@@ -41,8 +41,7 @@
   .acct .check { margin-left: auto; }
   .acct .check input, .share input, .defaults-tiktok .check input { width: auto; margin: 0; }
   .share { padding: 2px 0 2px 36px; color: var(--muted); }
-  .acct-set { border-top: 1px solid var(--line); padding: 6px 0; }
-  .acct-set:first-child { border-top: 0; padding-top: 0; }
+  .acct-set { border: 1px solid var(--line); border-radius: 8px; padding: 2px 10px 6px; margin-bottom: 8px; }
   .acct-set > summary { display: flex; align-items: center; gap: 8px; padding: 6px 0; cursor: pointer; list-style: none; }
   .acct-set > summary::-webkit-details-marker { display: none; }
   .acct-set > summary::before { content: "▸"; color: var(--muted); width: 12px; }
@@ -67,8 +66,16 @@
   .badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line); color: var(--muted); }
   .dfile { border-top: 1px solid var(--line); padding: 10px 0; }
   .dfile:first-child { border-top: 0; }
-  .dfile .state.scheduled { color: var(--ok); } .dfile .state.edit_failed, .dfile .state.failed, .dfile .state.invalid, .dfile .state.late { color: var(--bad); }
+  .dfile .drow { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; align-items: baseline; }
+  .dfile .dname, .dfile .dtitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dfile .state, .dfile .dwhen { text-align: right; white-space: nowrap; }
+  .dfile .dwhen { font-size: 13px; }
+  .dfile .state.scheduled, .dfile .state.posting { color: var(--accent); } .dfile .state.posted { color: var(--ok); } .dfile .state.partial { color: var(--warn); } .dfile .state.edit_failed, .dfile .state.failed, .dfile .state.invalid, .dfile .state.late { color: var(--bad); }
   .dfile .state.needs_caption, .dfile .state.reviewing, .dfile .state.unreviewed { color: var(--warn); } .dfile .state.rejected { color: var(--bad); }
+  .pager { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; border-top: 1px solid var(--line); padding-top: 10px; margin-top: 2px; font-size: 13px; }
+  .pager .size { margin-left: auto; display: flex; align-items: center; gap: 6px; font-weight: 400; margin-top: 0; margin-bottom: 0; }
+  .pager select { width: auto; padding: 2px 6px; }
+  .pager button { padding: 2px 10px; font-size: 12px; }
   .edit-box { border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-top: 8px; }
   .edit-box .opts { display: flex; flex-wrap: wrap; gap: 6px 14px; }
   .edit-box .opts label { display: flex; gap: 6px; align-items: center; font-weight: 400; margin: 0; }
@@ -169,6 +176,7 @@
 .review .why[data-action="reject"] button.go { background: var(--bad); border-color: var(--bad); }
   /* ---- account set default ---- */
   .set-token { font-family: ui-monospace, monospace; font-size: 11px; }
+  .badge.ok { color: var(--ok); border-color: var(--ok); } .badge.warn { color: var(--warn); border-color: var(--warn); } .badge.bad { color: var(--bad); border-color: var(--bad); }
   .badge.default { color: var(--accent); border-color: var(--accent); }
   .name-warn { color: var(--bad); font-size: 12px; margin: 0 0 8px 12px; }
   /* ---- Editing Styles tab ---- */
@@ -195,6 +203,7 @@
   .cal .day.today .num { background: var(--accent); color: #fff; }
   .cal .entry { font: inherit; text-align: left; color: inherit; font-size: 12px; line-height: 1.3; border: 0; border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); padding: 3px 5px; border-radius: 3px; cursor: pointer; min-width: 0; display: block; width: 100%; }
   .cal .entry.posted { border-left-color: var(--ok); background: color-mix(in srgb, var(--ok) 8%, transparent); }
+  .cal .entry.partial { border-left-color: var(--warn); background: color-mix(in srgb, var(--warn) 8%, transparent); }
   .cal .entry.waiting { border-left-color: var(--warn); background: color-mix(in srgb, var(--warn) 8%, transparent); }
   .cal .entry.stopped { border-left-color: var(--bad); background: color-mix(in srgb, var(--bad) 6%, transparent); }
   .cal .entry.stopped .t, .cal .entry.stopped .n { text-decoration: line-through; }
@@ -1567,6 +1576,7 @@ $("useOriginal").addEventListener("click", () => { $("doEdit").checked = false; 
 
 const DRIVE_STATE = {
   queued: "Found", downloading: "Downloading…", transcribing: "Listening…", processing: "Editing…", scheduled: "Scheduled",
+  posting: "Posting…", posted: "Posted", partial: "Partially Posted",
   reviewing: "Waiting for your review", rejected: "Rejected", unreviewed: "Not reviewed",
   needs_caption: "Needs a caption", edit_failed: "Edit failed", failed: "Not posted", invalid: "Name not understood", late: "Too late", cancelled: "Cancelled",
 };
@@ -1614,19 +1624,57 @@ async function saveDrive() {
   loadDrive();
 }
 
+// The From Drive list shows a page at a time; the page size is remembered on this computer.
+const DRIVE_PAGE_SIZES = [5, 10, 20, 40];
+let drivePage = 0;
+let drivePageSize = (() => {
+  try { const n = Number(localStorage.getItem("drivePageSize")); return DRIVE_PAGE_SIZES.includes(n) ? n : 5; } catch { return 5; }
+})();
+let driveFilesShown = [];
+let driveWatching = false;
+
 function renderDriveFiles(files, watching) {
+  driveFilesShown = files;
+  driveWatching = watching;
   $("driveFilesSection").hidden = !files.length && !watching;
-  $("driveFiles").innerHTML = files.length ? "" : `<div class="muted">Nothing from Drive yet.</div>`;
-  $("driveFiles").innerHTML += files.map((f) => `
+  if (!files.length) { $("driveFiles").innerHTML = `<div class="muted">Nothing from Drive yet.</div>`; return; }
+  const pages = Math.ceil(files.length / drivePageSize);
+  drivePage = Math.min(drivePage, pages - 1); // stays put as videos arrive; only pulls back if the list shrank
+  const when = (ms) => new Date(ms).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  $("driveFiles").innerHTML = files.slice(drivePage * drivePageSize, (drivePage + 1) * drivePageSize).map((f) => `
     <div class="dfile">
-      <div class="row" style="justify-content:space-between"><strong>${esc(f.name)}</strong><span class="state ${f.state}">${DRIVE_STATE[f.state] ?? esc(f.state)}</span></div>
-      ${f.scheduledAt ? `<div class="muted">${new Date(f.scheduledAt).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</div>` : ""}
-      ${f.title ? `<div>${esc(f.title)}</div>` : ""}
+      <div class="drow">
+        <strong class="dname" title="${esc(f.name)}">${esc(f.name)}</strong><span class="state ${esc(f.state)}">${DRIVE_STATE[f.state] ?? esc(f.state)}</span>
+        <div class="dtitle" title="${esc(f.title ?? "")}">${esc(f.title ?? "")}</div><div class="muted dwhen">${f.scheduledAt ? esc(when(f.scheduledAt)) : ""}</div>
+      </div>
       ${f.note ? `<div class="muted">${esc(f.note)}</div>` : ""}
       ${f.state === "edit_failed" ? `<div class="actions" style="margin-top:6px"><button type="button" data-retry-edit="${esc(f.id)}">Retry edit</button></div>` : ""}
       ${f.state === "unreviewed" ? `<div class="actions" style="margin-top:6px"><button type="button" data-review-again="${esc(f.id)}">Send for review again</button></div>` : ""}
-    </div>`).join("");
+    </div>`).join("") + (files.length > DRIVE_PAGE_SIZES[0] ? `
+    <div class="pager">
+      ${pages > 1 ? `<button type="button" data-drive-page="-1" ${drivePage === 0 ? "disabled" : ""}>‹ Prev</button>
+      <span class="muted">Page ${drivePage + 1} of ${pages}</span>
+      <button type="button" data-drive-page="1" ${drivePage >= pages - 1 ? "disabled" : ""}>Next ›</button>` : ""}
+      <label class="size">Show <select id="drivePageSize">${DRIVE_PAGE_SIZES.map((n) => `<option ${n === drivePageSize ? "selected" : ""}>${n}</option>`).join("")}</select> per page</label>
+    </div>` : "");
 }
+
+$("driveFiles").addEventListener("click", (e) => {
+  const step = e.target.closest("[data-drive-page]");
+  if (!step) return;
+  drivePage += Number(step.dataset.drivePage);
+  step.blur();
+  renderDriveFiles(driveFilesShown, driveWatching);
+});
+$("driveFiles").addEventListener("change", (e) => {
+  if (e.target.id !== "drivePageSize") return;
+  const first = drivePage * drivePageSize; // keep the first video on screen in view
+  drivePageSize = Number(e.target.value);
+  drivePage = Math.floor(first / drivePageSize);
+  try { localStorage.setItem("drivePageSize", String(drivePageSize)); } catch {}
+  e.target.blur();
+  renderDriveFiles(driveFilesShown, driveWatching);
+});
 
 const params = new URLSearchParams(location.search);
 if (params.get("error")) banner("err", params.get("error"));
@@ -1670,6 +1718,7 @@ const calTime = (ms) => new Date(ms).toLocaleTimeString([], { hour: "numeric", m
 function entryKind(e) {
   if (e.stopped) return "stopped";
   if (e.status === "posted") return "posted";
+  if (e.status === "partially posted") return "partial";
   if (e.key.startsWith("drive:")) return "waiting";
   return "";
 }
@@ -1720,7 +1769,7 @@ function renderCalDetail() {
   $("calDetail").innerHTML = `
     <div class="section-head"><h2>${esc(new Date(e.at).toLocaleString([], { weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" }))}</h2>
       <button type="button" data-cal-close>Close</button></div>
-    <div><strong>${esc(e.name)}</strong> <span class="badge">${esc(e.status)}</span></div>
+    <div><strong>${esc(e.name)}</strong> <span class="badge ${{ "posted": "ok", "partially posted": "warn", "not posted": "bad" }[e.status] ?? ""}">${esc(e.status)}</span></div>
     <div class="muted" style="margin-top:4px">${e.source === "drive"
       ? `Editing style: <strong>${esc(e.raw ? "none (RAW: posts as uploaded)" : (e.style ?? "—"))}</strong> · Account set: <strong>${esc(e.set ?? "—")}</strong>`
       : esc(entrySettings(e))}</div>

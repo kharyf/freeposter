@@ -5,7 +5,7 @@ import { execFile } from "node:child_process";
 import { createReadStream, existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { accountSets, createAccountSet, defaultSetId, deleteAccountSet, noteSignInSet, placeInSet, takeSignInSet, defaultTikTokPrefs, renameAccountSet, setDefaultSet, setDefaultTikTokPrefs, setSharing, setToken, sharedFrom, sharingPairs, type Sharing } from "./accounts.ts";
-import { calendar } from "./calendar.ts";
+import { calendar, postOutcome } from "./calendar.ts";
 import { defaultStyleId, hasSample, sampleVideoPath, setDefaultStyle, STYLES, styleById, styleToken } from "./edit/styles.ts";
 import * as openrouter from "./ai/openrouter.ts";
 import { AI_JOBS, PROVIDER_IDS, type AiJob, type ProviderId } from "./ai/providers.ts";
@@ -773,6 +773,11 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
 
   // ---- Google Drive: the watched folder, and what became of each file in it ----
 
+  /** A posted-to Drive video's state from its post's uploads ("failed" shows as Not posted). */
+  const driveOutcome = (jobs: Parameters<typeof postOutcome>[0]) => {
+    const o = postOutcome(jobs);
+    return o === null || o === "scheduled" ? "scheduled" : o;
+  };
   const driveView = () => {
     const conn = store.driveConnection();
     return {
@@ -782,8 +787,9 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
       folderId: conn?.folderId ?? null,
       folderUrl: conn?.folderId ? `https://drive.google.com/drive/folders/${conn.folderId}` : null,
       error: conn?.error ?? null,
-      files: store.driveFiles(30).map((f) => ({
-        id: f.driveId, name: f.name, state: f.state, scheduledAt: f.scheduledAt, note: f.note,
+      // A scheduled video's status follows its post once that starts going out: Posting…, Posted, Partially Posted, Not posted.
+      files: store.driveFiles(500).map((f) => ({
+        id: f.driveId, name: f.name, state: f.state === "scheduled" && f.postId !== null ? driveOutcome(store.jobsForPost(f.postId)) : f.state, scheduledAt: f.scheduledAt, note: f.note,
         postId: f.postId, editId: f.editId, reviewId: f.reviewId, title: f.title, caption: f.caption, createdAt: f.createdAt,
       })),
     };

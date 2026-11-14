@@ -172,3 +172,21 @@ test("Sync needs a folder, then reports what it took off", async () => {
   assert.deepEqual(res.json().removed, []);
   assert.ok(Array.isArray(res.json().view.files));
 });
+
+test("a scheduled Drive video's state follows its uploads: Posting…, Posted, Partially Posted, Not posted", async () => {
+  const { store, app, x, tiktok } = setup();
+  const id = postWith(store, [x.id, tiktok.id], true);
+  store.upsertDriveFile("d", { name: "D_11.2.26_9.00.am.mp4", state: "scheduled", postId: id });
+  const state = async () => (await app.inject("/api/drive")).json().files.find((f: any) => f.id === "d").state;
+  const [jx, jt] = store.jobsForPost(id).map((j) => j.id);
+  assert.equal(await state(), "scheduled");
+  store.finishJob(jx, "published", { resultUrl: "https://x.com/1" });
+  assert.equal(await state(), "posting", "one account done, the other still on its way");
+  store.finishJob(jt, "failed", { error: "nope" });
+  assert.equal(await state(), "partial");
+  store.finishJob(jt, "published", { resultUrl: "https://tiktok.com/1" });
+  assert.equal(await state(), "posted");
+  store.finishJob(jx, "failed", { error: "nope" });
+  store.finishJob(jt, "failed", { error: "nope" });
+  assert.equal(await state(), "failed", "shown as Not posted");
+});

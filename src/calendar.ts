@@ -42,15 +42,33 @@ const DRIVE_STATUS: Partial<Record<DriveFileRecord["state"], string>> = {
 };
 const STOPPED = new Set<DriveFileRecord["state"]>(["rejected", "invalid", "late", "cancelled", "failed", "edit_failed"]);
 
-function postStatus(jobs: Job[], captionPending: boolean): { status: string; stopped: boolean } {
-  if (!jobs.length) return { status: "nothing to post to", stopped: true };
+/**
+ * Where a post's uploads got to, judged only against the accounts it was actually sent to (accounts its set
+ * skipped at scheduling never get a job, so they don't count). "posting" covers a post that has started going out
+ * (one account running or done) while others are still on their way; it settles once every account is finished.
+ */
+export type PostOutcome = "scheduled" | "posting" | "posted" | "partial" | "failed";
+
+export function postOutcome(jobs: Pick<Job, "state">[]): PostOutcome | null {
+  if (!jobs.length) return null;
   const states = jobs.map((j) => j.state);
-  if (states.every((s) => s === "published")) return { status: "posted", stopped: false };
-  if (states.every((s) => s === "failed")) return { status: "failed", stopped: true };
-  if (states.some((s) => s === "running")) return { status: "posting now", stopped: false };
-  if (states.every((s) => s === "published" || s === "failed")) return { status: "posted, some failed", stopped: false };
-  if (captionPending) return { status: "waiting for its caption", stopped: false };
-  return { status: "scheduled", stopped: false };
+  const done = (s: string) => s === "published" || s === "failed";
+  if (states.every((s) => s === "published")) return "posted";
+  if (states.every((s) => s === "failed")) return "failed";
+  if (states.every(done)) return "partial";
+  if (states.some((s) => s === "running" || s === "published")) return "posting";
+  return "scheduled";
+}
+
+function postStatus(jobs: Job[], captionPending: boolean): { status: string; stopped: boolean } {
+  switch (postOutcome(jobs)) {
+    case null: return { status: "nothing to post to", stopped: true };
+    case "posted": return { status: "posted", stopped: false };
+    case "failed": return { status: "not posted", stopped: true };
+    case "partial": return { status: "partially posted", stopped: false };
+    case "posting": return { status: "posting…", stopped: false };
+    default: return { status: captionPending ? "waiting for its caption" : "scheduled", stopped: false };
+  }
 }
 
 export function calendar(store: Store, from: number, to: number): CalendarEntry[] {
