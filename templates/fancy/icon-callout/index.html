@@ -1,0 +1,81 @@
+<!doctype html>
+<!-- Fancy graphic: one large emoji inside a turning gold ring, with a short label beneath it.
+     FreePoster fills __DURATION__, __PARAMS__ ({ icon, label }), __PALETTE__ and the font file names; the TTFs sit beside this page. -->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1080, height=960" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.15.0/dist/gsap.min.js"></script>
+    <style>
+      @font-face { font-family: "Fancy Playfair"; src: url("__FONT_BOLD_ITALIC__") format("truetype"); font-style: italic; font-weight: 700; }
+      @font-face { font-family: "Fancy Playfair"; src: url("__FONT_ITALIC__") format("truetype"); font-style: italic; font-weight: 400; }
+      /* The computer's own colour emoji (Segoe UI Emoji on Windows, where FreePoster renders). */
+      @font-face { font-family: "Fancy Emoji"; src: local("Segoe UI Emoji"), local("Apple Color Emoji"), local("Noto Color Emoji"); }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 1080px; height: 960px; overflow: hidden; background: var(--ink); }
+      #root {
+        position: relative; width: 100%; height: 100%; overflow: hidden;
+        background: linear-gradient(180deg, var(--ink) 0%, var(--ink2) 100%);
+        font-family: "Fancy Playfair", serif; font-style: italic;
+      }
+      #glow { position: absolute; inset: 0; background: radial-gradient(circle 360px at 50% 40%, var(--glow) 0%, transparent 70%); }
+      #stage { position: absolute; inset: 0; }
+      #badge { position: absolute; left: 340px; top: 150px; width: 400px; height: 400px; }
+      #ring, #dash { position: absolute; inset: 0; width: 400px; height: 400px; overflow: visible; }
+      #icon-wrap { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+      #icon {
+        font-family: "Fancy Emoji", sans-serif; font-style: normal;
+        font-size: 210px; line-height: 1; filter: drop-shadow(0 10px 24px rgba(0, 0, 0, 0.6));
+      }
+      #label-wrap { position: absolute; left: 80px; right: 80px; top: 610px; display: flex; flex-direction: column; align-items: center; }
+      #label {
+        color: var(--yellow); font-weight: 700; line-height: 1.12; text-align: center;
+        text-shadow: 0 6px 22px rgba(0, 0, 0, var(--shadow));
+      }
+      #tick { width: 72px; height: 3px; background: var(--gold); margin-bottom: 30px; border-radius: 2px; }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="__DURATION__" data-width="1080" data-height="960">
+      <div id="glow"></div>
+      <div id="stage" class="clip" data-start="0" data-duration="__DURATION__" data-track-index="0">
+        <div id="badge">
+          <svg id="ring" viewBox="0 0 400 400"><circle id="ring-line" cx="200" cy="200" r="190" fill="none" stroke-width="3" pathLength="1" stroke-dasharray="1" /></svg>
+          <svg id="dash" viewBox="0 0 400 400"><circle cx="200" cy="200" r="172" fill="none" stroke-width="2" stroke-dasharray="2 14" stroke-linecap="round" /></svg>
+          <div id="icon-wrap"><span id="icon"></span></div>
+        </div>
+        <div id="label-wrap"><div id="tick"></div><div id="label"></div></div>
+      </div>
+    </div>
+    <script>
+      const P = __PARAMS__;
+      const C = __PALETTE__;
+      const D = Number(document.getElementById("root").dataset.duration);
+      const css = document.documentElement.style;
+      for (const [k, v] of Object.entries({ ink: C.ink, ink2: C.ink2, yellow: C.yellow, gold: C.gold, cream: C.cream })) css.setProperty(`--${k}`, v);
+      css.setProperty("--shadow", String(C.shadowAlpha));
+      css.setProperty("--glow", C.gold + "26");
+      document.querySelector("#ring circle").setAttribute("stroke", C.gold);
+      document.querySelector("#dash circle").setAttribute("stroke", C.gold);
+
+      const label = String(P.label);
+      document.getElementById("icon").textContent = String(P.icon);
+      const labelEl = document.getElementById("label");
+      labelEl.textContent = label;
+      labelEl.style.fontSize = `${label.length <= 14 ? 84 : label.length <= 24 ? 70 : 58}px`;
+
+      const tl = gsap.timeline({ paused: true });
+      // In: the ring draws round, the icon pops, the label rises; all by about 0.6 s.
+      tl.fromTo("#ring-line", { strokeDashoffset: 1 }, { strokeDashoffset: 0, duration: 0.55, ease: "power2.inOut" }, 0);
+      tl.fromTo("#icon", { scale: 0.55, opacity: 0 }, { scale: 1, opacity: 1, duration: 0.5, ease: "back.out(1.8)" }, 0.08);
+      tl.fromTo("#tick", { scaleX: 0 }, { scaleX: 1, duration: 0.4, ease: "power3.out" }, 0.2);
+      tl.fromTo("#label", { y: 30, opacity: 0 }, { y: 0, opacity: 1, duration: 0.45, ease: "expo.out" }, 0.15);
+      // Then, to the end: the dotted ring turns, the icon floats, the whole badge breathes.
+      tl.fromTo("#dash", { rotation: 0 }, { rotation: 40 * D, duration: D, ease: "none" }, 0);
+      tl.fromTo("#icon-wrap", { y: 0 }, { y: -12, duration: 0.9, ease: "sine.inOut", yoyo: true, repeat: Math.max(0, Math.ceil((D - 0.6) / 0.9) - 1) }, 0.6);
+      tl.fromTo("#badge", { scale: 0.98 }, { scale: 1.04, duration: D, ease: "none" }, 0);
+      window.__timelines["main"] = tl;
+      tl.seek(0);
+    </script>
+  </body>
+</html>

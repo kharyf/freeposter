@@ -1,0 +1,79 @@
+<!doctype html>
+<!-- Fancy graphic: one to four keywords sliding in from alternate sides and settling into a stack, under a gold rule.
+     FreePoster fills __DURATION__, __PARAMS__ ({ words }), __PALETTE__ and the font file names; the TTFs sit beside this page. -->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1080, height=960" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.15.0/dist/gsap.min.js"></script>
+    <style>
+      @font-face { font-family: "Fancy Playfair"; src: url("__FONT_BOLD_ITALIC__") format("truetype"); font-style: italic; font-weight: 700; }
+      @font-face { font-family: "Fancy Playfair"; src: url("__FONT_ITALIC__") format("truetype"); font-style: italic; font-weight: 400; }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 1080px; height: 960px; overflow: hidden; background: var(--ink); }
+      #root {
+        position: relative; width: 100%; height: 100%; overflow: hidden;
+        background: linear-gradient(180deg, var(--ink) 0%, var(--ink2) 100%);
+        font-family: "Fancy Playfair", serif; font-style: italic;
+      }
+      #glow { position: absolute; inset: 0; background: radial-gradient(ellipse 60% 50% at 50% 50%, var(--glow) 0%, transparent 70%); }
+      #stage { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+      #stack { display: flex; flex-direction: column; align-items: center; }
+      .line { display: block; overflow: visible; }
+      .word {
+        display: block; color: var(--yellow); font-weight: 700; line-height: 1.08; white-space: nowrap;
+        text-shadow: 0 6px 24px rgba(0, 0, 0, var(--shadow));
+      }
+      #rule { width: 420px; height: 3px; margin-top: 30px; background: var(--gold); border-radius: 2px; transform-origin: 50% 50%; position: relative; overflow: hidden; }
+      #shine { position: absolute; top: 0; left: 0; width: 120px; height: 3px; background: linear-gradient(90deg, transparent, var(--cream), transparent); }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="__DURATION__" data-width="1080" data-height="960">
+      <div id="glow"></div>
+      <div id="stage" class="clip" data-start="0" data-duration="__DURATION__" data-track-index="0">
+        <div id="stack">
+          <div class="line" id="line0"><span class="word" id="w0"></span></div>
+          <div class="line" id="line1"><span class="word" id="w1"></span></div>
+          <div class="line" id="line2"><span class="word" id="w2"></span></div>
+          <div class="line" id="line3"><span class="word" id="w3"></span></div>
+          <div id="rule"><div id="shine"></div></div>
+        </div>
+      </div>
+    </div>
+    <script>
+      const P = __PARAMS__;
+      const C = __PALETTE__;
+      const D = Number(document.getElementById("root").dataset.duration);
+      const css = document.documentElement.style;
+      for (const [k, v] of Object.entries({ ink: C.ink, ink2: C.ink2, yellow: C.yellow, gold: C.gold, cream: C.cream })) css.setProperty(`--${k}`, v);
+      css.setProperty("--shadow", String(C.shadowAlpha));
+      css.setProperty("--glow", C.gold + "1e");
+
+      const words = String(P.words).trim().split(/\s+/).slice(0, 4);
+      const n = words.length;
+      // One size for the whole stack: as big as the longest word and the stack's height allow.
+      const longest = Math.max(...words.map((w) => w.length));
+      const size = Math.min(n === 1 ? 210 : 170, 860 / (0.52 * longest), 700 / (n * 1.08));
+      for (let i = 0; i < 4; i++) {
+        const el = document.getElementById(`w${i}`);
+        if (i < n) { el.textContent = words[i]; el.style.fontSize = `${size}px`; }
+        else document.getElementById(`line${i}`).remove();
+      }
+
+      const tl = gsap.timeline({ paused: true });
+      // In: each word slides from alternate sides and settles, all in by about 0.6 s.
+      words.forEach((_, i) => {
+        const from = i % 2 === 0 ? -110 : 110;
+        tl.fromTo(`#w${i}`, { x: from, opacity: 0 }, { x: 0, opacity: 1, duration: 0.5, ease: "expo.out" }, 0.03 + i * 0.06);
+        // Then keep drifting gently the other way to the end.
+        tl.fromTo(`#line${i}`, { x: 0 }, { x: i % 2 === 0 ? 16 : -16, duration: Math.max(0.1, D - 0.5), ease: "none" }, 0.5);
+      });
+      tl.fromTo("#rule", { scaleX: 0 }, { scaleX: 1, duration: 0.5, ease: "power3.out" }, 0.3);
+      tl.fromTo("#shine", { x: -120 }, { x: 420, duration: 1.2, ease: "power1.inOut", repeat: Math.max(0, Math.ceil((D - 0.8) / 1.2) - 1) }, 0.8);
+      tl.fromTo("#stack", { scale: 1 }, { scale: 1.05, duration: D, ease: "none" }, 0);
+      window.__timelines["main"] = tl;
+      tl.seek(0);
+    </script>
+  </body>
+</html>

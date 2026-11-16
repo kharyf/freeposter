@@ -117,6 +117,22 @@ test("toShot sizes graphics 1080x960 and passes the palette", () => {
   assert.ok(shot.assets.some((a) => a.path === fancyFontFile("italic") && a.name === shot.props.italicFontUrl));
 });
 
+test("toShot fills the HyperFrames composition at 1080x960 with the shot's length and params", () => {
+  const t = fancyTemplates();
+  const shot = toShot(t["kinetic-words"], { words: "Three <times> faster" }, 2.5, "g2");
+  assert.equal(shot.kind, "hyperframes");
+  if (shot.kind !== "hyperframes") return;
+  assert.deepEqual(shot.size, { width: 1080, height: 960 });
+  assert.match(shot.html, /data-width="1080"/);
+  assert.match(shot.html, /data-height="960"/);
+  assert.match(shot.html, /data-duration="2.5"/);
+  assert.doesNotMatch(shot.html, /__[A-Z_]+__/, "every placeholder is filled");
+  assert.ok(shot.html.includes("Three \\u003ctimes> faster"), "params are injected as script-safe JSON");
+  assert.ok(shot.html.includes(PALETTE.yellow));
+  assert.deepEqual(shot.assets.map((a) => a.path).sort(), [fancyFontFile("boldItalic"), fancyFontFile("italic")].sort());
+  assert.ok(shot.assets.every((a) => shot.html.includes(a.name)), "the page loads each TTF beside it");
+});
+
 test("toShot runs the Blender templates' own scripts at 1080x960 with the font and palette", () => {
   const t = fancyTemplates();
   const shot = toShot(t["gold-3d-word"], { word: "Gold" }, 3, "g3");
