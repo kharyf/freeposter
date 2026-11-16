@@ -30,6 +30,8 @@ await build({
 copyFileSync(join(root, "public", "index.html"), join(out, "public", "index.html"));
 // Blender templates productions render from (src/produce/adapters/blender.ts reads them beside the bundle).
 cpSync(join(root, "templates"), join(out, "templates"), { recursive: true, filter: (src) => !src.includes("__pycache__") });
+// Fonts for the Fancy editing style (src/edit/fancy/palette.ts), read as plain files by the renderer.
+cpSync(join(root, "assets", "fonts"), join(out, "assets", "fonts"), { recursive: true });
 // The freeposter CLI: one dependency-free file that runs on Node 24+, plus a Windows wrapper to put on PATH.
 await build({
   entryPoints: [join(root, "src", "cli.ts")],
@@ -85,7 +87,7 @@ if (process.argv.includes("--package")) {
       files: ["**/*"],
       npmRebuild: false,
       // native DLLs can't load from inside an asar, and Blender and the CLI's users read templates/ and cli/ as plain files
-      asarUnpack: ["node_modules/onnxruntime-node/**", "templates/**", "cli/**"],
+      asarUnpack: ["node_modules/onnxruntime-node/**", "templates/**", "assets/fonts/**", "cli/**"],
       win: { icon: join(root, "build", "icon.ico"), executableName: "FreePoster" },
       nsis: {
         artifactName: "FreePoster-Setup-${version}.${ext}",
