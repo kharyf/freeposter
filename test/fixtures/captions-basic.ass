@@ -1,0 +1,21 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Caption,Arial,78,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,6,0,2,65,162,424,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:00.30,Caption,,0,0,0,,{\c&H0036D7FF&}Stop{\c&H00FFFFFF&} scrolling right
+Dialogue: 0,0:00:00.30,0:00:00.80,Caption,,0,0,0,,Stop {\c&H0036D7FF&}scrolling{\c&H00FFFFFF&} right
+Dialogue: 0,0:00:00.80,0:00:01.10,Caption,,0,0,0,,Stop scrolling {\c&H0036D7FF&}right{\c&H00FFFFFF&}
+Dialogue: 0,0:00:01.10,0:00:01.60,Caption,,0,0,0,,{\c&H0036D7FF&}now.{\c&H00FFFFFF&}
+Dialogue: 0,0:00:01.60,0:00:01.90,Caption,,0,0,0,,{\c&H0036D7FF&}This{\c&H00FFFFFF&} changes ｛a｝ everything
+Dialogue: 0,0:00:01.90,0:00:02.40,Caption,,0,0,0,,This {\c&H0036D7FF&}changes ｛a｝{\c&H00FFFFFF&} everything
+Dialogue: 0,0:00:02.40,0:00:03.25,Caption,,0,0,0,,This changes ｛a｝ {\c&H0036D7FF&}everything{\c&H00FFFFFF&}
+Dialogue: 0,0:00:04.00,0:00:04.65,Caption,,0,0,0,,{\c&H0036D7FF&}later{\c&H00FFFFFF&}

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { buildAss, SAFE_AREA } from "../src/edit/captions.ts";
@@ -54,4 +55,31 @@ test("empty words gives a valid file with no events", () => {
 test("event times are ASS clock format", () => {
   const line = dialogues(buildAss([{ text: "late", start: 65.5, end: 66.25 }]))[0];
   assert.match(line, /^Dialogue: 0,0:01:05\.50,0:01:06\.\d\d,/);
+});
+
+const WORDS: Word[] = JSON.parse(readFileSync(new URL("./fixtures/captions-words.json", import.meta.url), "utf8"));
+// Captured from buildAss(WORDS) before the Fancy look was added.
+const BASIC_SNAPSHOT = readFileSync(new URL("./fixtures/captions-basic.ass", import.meta.url), "utf8");
+
+test("Basic captions are unchanged", () => assert.equal(buildAss(WORDS), BASIC_SNAPSHOT));
+
+test("Fancy captions use the italic serif style in cream with the spoken word yellow", () => {
+  const ass = buildAss(WORDS, { look: "fancy" });
+  assert.match(ass, /^Style: FancyCaption,Playfair Display,84,&H00D6F4FF,.*,-1,-1,/m);
+  assert.match(ass, /^Style: FancyCaption,.*,&H000F1114,&H66000000,-1,-1,.*,1,3,2,/m);
+  assert.match(ass, /\{\\c&H003FD2FF&\\fscx110\\fscy110\}/);
+  assert.match(ass, /\\fscx100\\fscy100\}/);
+  assert.ok(dialogues(ass).every((l) => l.includes(",FancyCaption,")));
+});
+
+test("seam placement centres the caption at y=960, lower sits in the safe area", () => {
+  const ass = buildAss(WORDS, { look: "fancy", placeAt: (t) => (t < 1 ? "seam" : "lower") });
+  assert.match(ass, /\\an5\\pos\(540,960\)/);
+  assert.match(ass, /\\an2\\pos\(540,1\d{3}\)/);
+  const lowerY = Number(/\\an2\\pos\(540,(\d+)\)/.exec(ass)![1]);
+  assert.ok(lowerY <= 1920 - 1920 * SAFE_AREA.bottom);
+});
+
+test("Fancy captions default to the lower third", () => {
+  assert.match(buildAss(WORDS, { look: "fancy" }), /\\an2\\pos\(540,1496\)/);
 });

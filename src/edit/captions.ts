@@ -1,5 +1,6 @@
 // Word-synced captions as an ASS subtitle file, burned in by ffmpeg's ass filter. A few words show at a
 // time with the spoken word highlighted, placed clear of each app's buttons and caption overlay.
+import { assHex, FONT_FAMILY, PALETTE } from "./fancy/palette.ts";
 import type { Word } from "./transcribe.ts";
 
 /** Fractions of the 1080x1920 frame that platform UI covers: top bar, bottom caption area, right-side buttons. */
@@ -38,7 +39,21 @@ function groups(words: Word[], maxWords: number): Word[][] {
   return out;
 }
 
-export function buildAss(words: Word[], opts: { maxWords?: number } = {}): string {
+export type CaptionPlace = "seam" | "lower";
+
+const FANCY_CREAM = assHex(PALETTE.cream);
+const FANCY_YELLOW = assHex(PALETTE.yellow);
+const FANCY_SIZE = 84;
+const FANCY_POP = 110; // percent scale on the spoken word
+
+/** Where a Fancy caption is anchored: centred on the seam of a split, or in the lower third inside SAFE_AREA. */
+const placement = (place: CaptionPlace) =>
+  place === "seam" ? "{\\an5\\pos(540,960)}" : `{\\an2\\pos(540,${H - Math.ceil(H * SAFE_AREA.bottom) - 40})}`;
+
+export function buildAss(
+  words: Word[],
+  opts: { maxWords?: number; look?: "fancy"; placeAt?: (t: number) => CaptionPlace } = {},
+): string {
   const marginL = Math.ceil(W * SAFE_AREA.left);
   const marginR = Math.ceil(W * SAFE_AREA.right);
   const marginV = Math.ceil(H * SAFE_AREA.bottom) + 40;
@@ -52,7 +67,9 @@ export function buildAss(words: Word[], opts: { maxWords?: number } = {}): strin
     "",
     "[V4+ Styles]",
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-    `Style: Caption,Arial,78,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,6,0,2,${marginL},${marginR},${marginV},1`,
+    opts.look === "fancy"
+      ? `Style: FancyCaption,${FONT_FAMILY},${FANCY_SIZE},${FANCY_CREAM},${FANCY_CREAM},${assHex(PALETTE.ink)},${assHex("#000000", PALETTE.shadowAlpha)},-1,-1,0,0,100,100,0,0,1,3,2,2,${marginL},${marginR},${marginV},1`
+      : `Style: Caption,Arial,78,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,6,0,2,${marginL},${marginR},${marginV},1`,
     "",
     "[Events]",
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -65,6 +82,14 @@ export function buildAss(words: Word[], opts: { maxWords?: number } = {}): strin
       // Each word's event runs until the next word starts, so the group stays on screen without flicker.
       const start = word.start;
       const end = wi < group.length - 1 ? group[wi + 1].start : Math.min(word.end + HOLD, nextStart);
+      if (opts.look === "fancy") {
+        const pop = `{\\c${FANCY_YELLOW}&\\fscx${FANCY_POP}\\fscy${FANCY_POP}}`;
+        const rest = `{\\c${FANCY_CREAM}&\\fscx100\\fscy100}`;
+        const fancy = group.map((w, k) => (k === wi ? `${pop}${escape(w.text)}${rest}` : escape(w.text))).join(" ");
+        const where = placement(opts.placeAt?.(word.start) ?? "lower");
+        events.push(`Dialogue: 0,${clock(start)},${clock(Math.max(end, start + 0.01))},FancyCaption,,0,0,0,,${where}${fancy}`);
+        return;
+      }
       const text = group
         .map((w, k) => (k === wi ? `{\\c${ACCENT}}${escape(w.text)}{\\c${WHITE}}` : escape(w.text)))
         .join(" ");
