@@ -59,7 +59,9 @@ test("event times are ASS clock format", () => {
 
 const WORDS: Word[] = JSON.parse(readFileSync(new URL("./fixtures/captions-words.json", import.meta.url), "utf8"));
 // Captured from buildAss(WORDS) before the Fancy look was added.
-const BASIC_SNAPSHOT = readFileSync(new URL("./fixtures/captions-basic.ass", import.meta.url), "utf8");
+const BASIC_SNAPSHOT = readFileSync(new URL("./fixtures/captions-basic.ass", import.meta.url), "utf8").replace(/
+/g, "
+");
 
 test("Basic captions are unchanged", () => assert.equal(buildAss(WORDS), BASIC_SNAPSHOT));
 
