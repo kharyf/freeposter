@@ -1,0 +1,12 @@
+{
+  "tool": "hyperframes",
+  "description": "One to four keywords sliding in from alternate sides and settling into a stack, under a gold rule.",
+  "minSec": 2,
+  "maxSec": 5,
+  "params": {
+    "words": { "type": "string", "required": true, "maxLength": 40, "parts": { "separator": " ", "min": 1, "max": 4, "noun": "words" } }
+  },
+  "fallback": "keyword-card",
+  "fallbackParams": { "phrase": "$phrase" },
+  "example": { "words": "Small steps compound" }
+}

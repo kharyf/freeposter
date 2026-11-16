@@ -1,0 +1,12 @@
+{
+  "tool": "remotion",
+  "description": "Two to four numbered steps along a gold progress line that fills as each one lights up.",
+  "minSec": 3,
+  "maxSec": 6,
+  "params": {
+    "steps": { "type": "string", "required": true, "maxLength": 40, "parts": { "separator": "|", "min": 2, "max": 4, "noun": "items" } }
+  },
+  "fallback": "build-list",
+  "fallbackParams": { "items": "steps" },
+  "example": { "steps": "Film it|Cut the pauses|Post daily" }
+}

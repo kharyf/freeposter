@@ -1,0 +1,13 @@
+{
+  "tool": "blender",
+  "description": "One gold 3D object (a coin, an arrow up or down, a globe, a clock, rising bars or a lightbulb) turning on ink, with a short label.",
+  "minSec": 2,
+  "maxSec": 5,
+  "params": {
+    "object": { "type": "string", "required": true, "maxLength": 40, "enum": ["coin", "arrow-up", "arrow-down", "globe", "clock", "bars", "lightbulb"] },
+    "label": { "type": "string", "required": true, "maxLength": 40 }
+  },
+  "fallback": "icon-callout",
+  "fallbackParams": { "icon": "$icon", "label": "label" },
+  "example": { "object": "coin", "label": "Paid every month" }
+}

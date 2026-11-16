@@ -1,0 +1,13 @@
+{
+  "tool": "hyperframes",
+  "description": "One large emoji inside a turning gold ring, with a short label beneath it.",
+  "minSec": 2,
+  "maxSec": 4,
+  "params": {
+    "icon": { "type": "string", "required": true, "maxLength": 16, "emoji": true },
+    "label": { "type": "string", "required": true, "maxLength": 40 }
+  },
+  "fallback": "kinetic-words",
+  "fallbackParams": { "words": "$phrase" },
+  "example": { "icon": "🚀", "label": "Launch day" }
+}

@@ -1,0 +1,15 @@
+{
+  "tool": "remotion",
+  "description": "A number counting up in big yellow italic serif, with an optional prefix and suffix, over a short cream label (\"3× faster\", \"$40k a month\").",
+  "minSec": 2,
+  "maxSec": 5,
+  "params": {
+    "value": { "type": "number", "required": true, "min": 0, "max": 999999999 },
+    "prefix": { "type": "string", "default": "", "maxLength": 40 },
+    "suffix": { "type": "string", "default": "", "maxLength": 40 },
+    "label": { "type": "string", "required": true, "maxLength": 40 }
+  },
+  "fallback": "kinetic-words",
+  "fallbackParams": { "words": "$phrase" },
+  "example": { "value": 3, "prefix": "", "suffix": "×", "label": "faster than editing by hand" }
+}

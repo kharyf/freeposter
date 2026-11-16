@@ -1,0 +1,12 @@
+{
+  "tool": "builtin",
+  "description": "The key phrase in yellow italic serif on ink, with a gold underline. Always available.",
+  "minSec": 0.5,
+  "maxSec": 6,
+  "params": {
+    "phrase": { "type": "string", "required": true, "maxLength": 40 }
+  },
+  "fallback": null,
+  "fallbackParams": {},
+  "example": { "phrase": "Three times faster" }
+}

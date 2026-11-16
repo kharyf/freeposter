@@ -1,0 +1,12 @@
+{
+  "tool": "blender",
+  "description": "One word as extruded gold serif lettering, turning slowly under dramatic light.",
+  "minSec": 2,
+  "maxSec": 5,
+  "params": {
+    "word": { "type": "string", "required": true, "maxLength": 14 }
+  },
+  "fallback": "kinetic-words",
+  "fallbackParams": { "words": "word" },
+  "example": { "word": "Gold" }
+}

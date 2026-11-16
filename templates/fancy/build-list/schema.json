@@ -1,0 +1,12 @@
+{
+  "tool": "remotion",
+  "description": "Two to four short items appearing one by one, the newest in yellow, the earlier ones settling to cream.",
+  "minSec": 3,
+  "maxSec": 6,
+  "params": {
+    "items": { "type": "string", "required": true, "maxLength": 40, "parts": { "separator": "|", "min": 2, "max": 4, "noun": "items" } }
+  },
+  "fallback": "kinetic-words",
+  "fallbackParams": { "words": "$phrase" },
+  "example": { "items": "Hook|Story|Payoff|Call to action" }
+}
