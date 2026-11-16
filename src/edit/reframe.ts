@@ -56,39 +56,47 @@ async function* frames(source: string): AsyncGenerator<Buffer> {
   }
 }
 
-/** Centre x (0..1 of the frame width) of the largest confident face, or null. */
-function largestFace(scores: Float32Array, boxes: Float32Array): number | null {
+/** The largest confident face, as fractions (0..1) of the frame, or null. */
+interface DetectedFace { cx: number; cy: number; h: number }
+
+function largestFace(scores: Float32Array, boxes: Float32Array): DetectedFace | null {
   let best = 0;
-  let center: number | null = null;
+  let face: DetectedFace | null = null;
   for (let i = 0; i < scores.length / 2; i++) {
     if (scores[i * 2 + 1] < MIN_SCORE) continue;
     const [x1, y1, x2, y2] = boxes.subarray(i * 4, i * 4 + 4);
     const area = (x2 - x1) * (y2 - y1);
     if (area > best) {
       best = area;
-      center = (x1 + x2) / 2;
+      face = { cx: (x1 + x2) / 2, cy: (y1 + y2) / 2, h: y2 - y1 };
     }
   }
-  return center;
+  return face;
 }
 
-export async function planReframe(source: string, p: Probe, modelPath = faceModelPath()): Promise<ReframePlan | null> {
-  if (p.width / p.height <= (9 / 16) * 1.02) return null;
+/** The largest face in each sampled frame (null where none), as fractions of the frame. */
+async function detect(source: string, modelPath: string): Promise<(DetectedFace | null)[]> {
   const ort = (await import("onnxruntime-node")).default;
   const session = await ort.InferenceSession.create(await ensureFaceModel(modelPath), { logSeverityLevel: 3 });
-  const width = Math.round((p.height * 9) / 16 / 2) * 2;
-  const maxX = p.width - width;
-  const raw: (number | null)[] = [];
+  const out: (DetectedFace | null)[] = [];
   const input = new Float32Array(3 * IN_W * IN_H);
   for await (const frame of frames(source)) {
     for (let px = 0; px < IN_W * IN_H; px++) {
       for (let c = 0; c < 3; c++) input[c * IN_W * IN_H + px] = (frame[px * 3 + c] - 127) / 128;
     }
-    const out = await session.run({ input: new ort.Tensor("float32", input, [1, 3, IN_H, IN_W]) });
-    const cx = largestFace(out.scores.data as Float32Array, out.boxes.data as Float32Array);
-    raw.push(cx === null ? null : Math.min(Math.max(cx * p.width - width / 2, 0), maxX));
+    const res = await session.run({ input: new ort.Tensor("float32", input, [1, 3, IN_H, IN_W]) });
+    out.push(largestFace(res.scores.data as Float32Array, res.boxes.data as Float32Array));
   }
   await session.release();
+  return out;
+}
+
+export async function planReframe(source: string, p: Probe, modelPath = faceModelPath()): Promise<ReframePlan | null> {
+  if (p.width / p.height <= (9 / 16) * 1.02) return null;
+  const width = Math.round((p.height * 9) / 16 / 2) * 2;
+  const maxX = p.width - width;
+  const raw = (await detect(source, modelPath)).map((f) =>
+    f === null ? null : Math.min(Math.max(f.cx * p.width - width / 2, 0), maxX));
   const found = raw.filter((x) => x !== null).length;
   if (!raw.length || found / raw.length < MIN_FACE_SHARE) return null;
 
@@ -102,6 +110,55 @@ export async function planReframe(source: string, p: Probe, modelPath = faceMode
     keys.push({ t: i / SAMPLE_FPS, x });
   });
   return { width, height: p.height, keys: smoothKeys(keys, p.width * 0.25) };
+}
+
+/** The speaker's face over time, in source pixels (`size` is the face box height). */
+export interface FaceKey {
+  t: number;
+  cx: number;
+  cy: number;
+  size: number;
+}
+
+/** A face track for any orientation, or null when a face shows in too few frames. */
+export async function planFaceTrack(source: string, p: Probe, modelPath = faceModelPath()): Promise<FaceKey[] | null> {
+  const raw = await detect(source, modelPath);
+  const found = raw.filter((f) => f !== null).length;
+  if (!raw.length || found / raw.length < MIN_FACE_SHARE) return null;
+
+  // Frames without a face hold the last known one (the first known one, at the start).
+  let last = raw.find((f) => f !== null)!;
+  const held = raw.map((f) => (last = f ?? last));
+  const speed = p.width * 0.25;
+  const out: FaceKey[] = [];
+  held.forEach((f, i) => {
+    const key = { t: i / SAMPLE_FPS, cx: f.cx * p.width, cy: f.cy * p.height, size: f.h * p.height };
+    const prev = out.at(-1);
+    if (!prev) { out.push(key); return; }
+    const step = speed * (key.t - prev.t);
+    const move = (from: number, to: number) => from + Math.max(-step, Math.min(step, to - from));
+    out.push({ ...key, cx: move(prev.cx, key.cx), cy: move(prev.cy, key.cy) });
+  });
+  return out;
+}
+
+/** The largest crop of `aspect` (w/h) in `src`, divided by `zoom`, with the face centre 40% down from its top. */
+export function cropAround(
+  face: FaceKey | null,
+  src: { width: number; height: number },
+  aspect: number,
+  zoom: number,
+): { x: number; y: number; w: number; h: number } {
+  const even = (n: number) => Math.round(n / 2) * 2;
+  const evenDown = (n: number) => Math.floor(n / 2) * 2;
+  const fit = Math.min(src.width, src.height * aspect);
+  const w = Math.min(src.width, even(fit / zoom));
+  const h = Math.min(src.height, even(fit / aspect / zoom));
+  const cx = face?.cx ?? src.width / 2;
+  const cy = face ? face.cy + (0.5 - 0.4) * h : src.height / 2;
+  const x = Math.min(Math.max(even(cx - w / 2), 0), evenDown(src.width - w));
+  const y = Math.min(Math.max(even(cy - h / 2), 0), evenDown(src.height - h));
+  return { x, y, w, h };
 }
 
 /** Limits how fast the crop may pan (px per second). */
