@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createAccountSet, setNameProblem } from "../src/accounts.ts";
 import { config } from "../src/config.ts";
-import { allStyles, createStyle, defaultStyleId, deleteStyle, setDefaultStyle, styleById, styleNameProblem, thumbnailSvg, type EditingStyle } from "../src/edit/styles.ts";
+import { DEFAULT_EDIT } from "../src/edit/settings.ts";
+import { allStyles, createStyle, defaultStyleId, deleteStyle, migrateFancyName, setDefaultStyle, styleById, styleNameProblem, thumbnailSvg, type EditingStyle } from "../src/edit/styles.ts";
 import { publishers } from "../src/platforms/index.ts";
 import { ReviewService } from "../src/review/service.ts";
 import { Runner } from "../src/runner.ts";
@@ -26,7 +27,7 @@ test("a new style is listed after the built-in ones, with its steps, and can be 
   assert.equal(style.id, "fast-cuts");
   assert.equal(style.name, "Fast Cuts");
   assert.deepEqual(style.settings, { tighten: true, captions: false, reframe: true, audio: true, punchIn: true });
-  assert.deepEqual(allStyles(store).map((s) => [s.id, s.builtIn]), [["basic", true], ["fast-cuts", false]]);
+  assert.deepEqual(allStyles(store).map((s) => [s.id, s.builtIn]), [["basic", true], ["fancy", true], ["fast-cuts", false]]);
   assert.equal(defaultStyleId(store), "basic");
   assert.equal(setDefaultStyle(store, "fast-cuts"), true);
   assert.equal(defaultStyleId(store), "fast-cuts");
@@ -65,7 +66,7 @@ test("deleting hides a style but videos already given it keep its edit; built-in
   assert.equal(deleteStyle(store, "basic"), "built-in styles can't be deleted");
   assert.equal(deleteStyle(store, style.id), null);
   assert.equal(deleteStyle(store, style.id), "no such editing style");
-  assert.deepEqual(allStyles(store).map((s) => s.id), ["basic"]);
+  assert.deepEqual(allStyles(store).map((s) => s.id), ["basic", "fancy"]);
   assert.equal(styleById(store, style.id)?.settings.audio, false, "still found for a video on its way");
   assert.equal(defaultStyleId(store), "basic", "the default goes back to the first");
   assert.equal(setDefaultStyle(store, style.id), false);
@@ -111,7 +112,7 @@ test("the window adds a style with a thumbnail, shows it, and deletes it", async
   res = await post({ name: "Clean", steps: "{}" }, Buffer.from("not an image"));
   assert.equal(res.statusCode, 400);
   assert.match(res.json().error, /PNG, JPEG or WebP/);
-  assert.equal(allStyles(store).length, 1, "nothing made when the image is refused");
+  assert.equal(allStyles(store).length, 2, "nothing made when the image is refused");
 
   res = await post({ name: "Clean Look", description: "No captions.", steps: JSON.stringify({ captions: false }), makeDefault: "true" }, PNG);
   assert.equal(res.statusCode, 200, res.body);
@@ -128,7 +129,7 @@ test("the window adds a style with a thumbnail, shows it, and deletes it", async
   assert.equal((await app.inject({ method: "DELETE", url: "/api/styles/basic" })).statusCode, 400);
   assert.equal((await app.inject({ method: "DELETE", url: "/api/styles/clean-look" })).statusCode, 200);
   assert.equal((await app.inject({ method: "DELETE", url: "/api/styles/clean-look" })).statusCode, 404);
-  assert.deepEqual((await status()).editingStyles.map((x: any) => x.id), ["basic"]);
+  assert.deepEqual((await status()).editingStyles.map((x: any) => x.id), ["basic", "fancy"]);
 });
 
 test("an agent lists the styles and adds one over MCP", async () => {
@@ -138,7 +139,7 @@ test("an agent lists the styles and adds one over MCP", async () => {
     (await app.inject({ method: "POST", url: "/mcp", headers: { host: `localhost:${config.port}` }, payload: { jsonrpc: "2.0", id: ++id, method: "tools/call", params: { name, arguments: args } } })).json().result;
 
   let r = await call("list_editing_styles");
-  assert.deepEqual(r.structuredContent.styles.map((s: any) => [s.id, s.filename_token, s.default, s.built_in]), [["basic", "Basic", true, true]]);
+  assert.deepEqual(r.structuredContent.styles.map((s: any) => [s.id, s.filename_token, s.default, s.built_in]), [["basic", "Basic", true, true], ["fancy", "Fancy", false, true]]);
   assert.deepEqual(r.structuredContent.steps.map((s: any) => s.key), ["tighten", "captions", "reframe", "audio", "punchIn"]);
 
   r = await call("add_editing_style", { name: "Basic" });
@@ -179,4 +180,35 @@ test("a Drive filename can name a style the user added", async () => {
   made(createStyle(store, { name: "Fast Cuts" }));
   const parsed = parseDriveName("Tip_11.1.26_5.30.pm_FastCuts.mp4", Date.now(), intake.vocabulary());
   assert.equal(parsed.ok && parsed.styleId, "fast-cuts");
+});
+
+test("Fancy is a built-in style after Basic", () => {
+  const store = newStore();
+  assert.deepEqual(allStyles(store).map((s) => [s.id, s.builtIn]), [["basic", true], ["fancy", true]]);
+  assert.equal(styleById(store, "fancy")!.settings.look, "fancy");
+  assert.equal(deleteStyle(store, "fancy"), "built-in styles can't be deleted");
+  assert.match(styleNameProblem(store, "fancy")!, /already the editing style Fancy/);
+});
+
+test("user styles can't set look", () => {
+  assert.equal(createStyle(newStore(), { name: "X", steps: { look: true } as any }), "look is not a step a style can set; the steps are tighten, captions, reframe, audio, punchIn");
+});
+
+test("a user's own Fancy style is renamed My Fancy once", () => {
+  const store = newStore();
+  store.setPref("edit.customStyles", [{ id: "fancy-2", name: "Fancy", description: "", settings: DEFAULT_EDIT, createdAt: 1 }]);
+  assert.equal(migrateFancyName(store), "My Fancy");
+  assert.equal(styleById(store, "fancy-2")!.name, "My Fancy");
+  assert.equal(migrateFancyName(store), null);
+});
+
+test("the renamed Fancy style avoids a taken My Fancy and skips deleted styles", () => {
+  const store = newStore();
+  store.setPref("edit.customStyles", [
+    { id: "my-fancy", name: "My Fancy", description: "", settings: DEFAULT_EDIT, createdAt: 1 },
+    { id: "fancy-2", name: "fancy", description: "", settings: DEFAULT_EDIT, createdAt: 2 },
+    { id: "fancy-3", name: "Fancy", description: "", settings: DEFAULT_EDIT, createdAt: 3, deleted: true },
+  ]);
+  assert.equal(migrateFancyName(store), "My Fancy 2");
+  assert.equal(styleById(store, "fancy-3")!.name, "Fancy");
 });

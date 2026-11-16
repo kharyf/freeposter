@@ -38,6 +38,14 @@ export const BUILT_IN_STYLES: readonly EditingStyle[] = [
     settings: DEFAULT_EDIT,
     builtIn: true,
   },
+  {
+    id: "fancy",
+    name: "Fancy",
+    description:
+      "Split screen with motion graphics about what's said, the speaker switching between the top and bottom halves, a cut or zoom at least every 2 seconds, and yellow italic serif captions.",
+    settings: { ...DEFAULT_EDIT, look: "fancy" },
+    builtIn: true,
+  },
 ];
 
 /** The steps a style turns on or off, in the order they're shown, with what each does. */
@@ -89,6 +97,23 @@ export function setDefaultStyle(store: Store, id: string): boolean {
 
 /** The word a filename uses for a style. */
 export const styleToken = (s: { name: string }) => s.name.replace(/\s+/g, "");
+
+/**
+ * Fancy became a built-in, so a style the user already saved under that name would clash with it in a filename.
+ * Renames it to "My Fancy" (or "My Fancy 2", ...). Returns the new name, or null when there was nothing to rename.
+ */
+export function migrateFancyName(store: Store): string | null {
+  const all = saved(store);
+  const style = all.find((s) => !s.deleted && styleToken(s).toLowerCase() === "fancy");
+  if (!style) return null;
+  const taken = new Set([...BUILT_IN_STYLES, ...all.filter((s) => !s.deleted)].map((s) => styleToken(s).toLowerCase()));
+  let name = "My Fancy";
+  for (let n = 2; taken.has(styleToken({ name }).toLowerCase()); n++) name = `My Fancy ${n}`;
+  style.name = name;
+  store.setPref(CUSTOM_PREF, all);
+  console.log(`renamed your style "Fancy" to "${name}": Fancy is now built in`);
+  return name;
+}
 
 /**
  * Why a style can't have this name, or null when it can. Its filename word must not be empty, contain an

@@ -25,7 +25,11 @@ export interface EditSettings {
   /** source ranges always cut ("drop the cough at 0:31") */
   drop?: Range[];
   captionFixes?: CaptionFix[];
+  /** a whole different look to the edit; only the Fancy built-in style sets it */
+  look?: "fancy";
 }
+
+export const isFancy = (s: EditSettings): boolean => s.look === "fancy";
 
 export const DEFAULT_EDIT: EditSettings = { tighten: true, captions: true, reframe: true, audio: true, punchIn: true };
 
@@ -68,6 +72,9 @@ export function parseEditSettings(raw: unknown, base: EditSettings = DEFAULT_EDI
       out[k] = ranges(k, v);
     } else if (k === "captionFixes") {
       out.captionFixes = fixes(v);
+    } else if (k === "look") {
+      if (v !== "fancy") throw new Error('edit setting look must be "fancy"');
+      out.look = v;
     } else {
       throw new Error(`${k} is not an edit setting`);
     }
@@ -87,6 +94,7 @@ export function editKey(sourceSha: string, s: EditSettings): string {
   const entries: [string, unknown][] = SWITCHES.slice().sort().map((k) => [k, s[k]]);
   // Only when used, so every edit made before these existed keeps its key (and its cached file).
   for (const k of ["captionFixes", "drop", "keep"] as const) if (s[k]?.length) entries.push([k, s[k]]);
+  if (s.look) entries.push(["look", s.look]);
   const canonical = JSON.stringify([EDIT_VERSION, ...entries]);
   return `${sourceSha}-${createHash("sha256").update(canonical).digest("hex").slice(0, 16)}`;
 }
