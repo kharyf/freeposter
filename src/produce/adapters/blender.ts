@@ -55,12 +55,13 @@ export function blenderAdapter(opts: { command?: (args: string[]) => { bin: stri
       }
     },
     async render(shot: BlenderShot, ctx: RenderContext) {
-      const template = blenderTemplates()[shot.template];
+      const template = shot.script ? { script: shot.script } : blenderTemplates()[shot.template];
       if (!template) throw new Fatal(`${shot.id}: unknown template "${shot.template}"`);
+      const { width, height } = shot.size ?? { width: 1080, height: 1920 };
       const frames = join(ctx.dir, "frames");
       mkdirSync(frames, { recursive: true });
       const paramsFile = join(ctx.dir, "params.json");
-      writeFileSync(paramsFile, JSON.stringify({ params: shot.params, duration_sec: shot.duration_sec, fps: FPS, width: 1080, height: 1920, engine: shot.engine, out_dir: frames }, null, 2));
+      writeFileSync(paramsFile, JSON.stringify({ params: shot.params, duration_sec: shot.duration_sec, fps: FPS, width, height, engine: shot.engine, out_dir: frames }, null, 2));
       const total = Math.round(shot.duration_sec * FPS);
       const cmd = command(["-b", "--factory-startup", "-P", template.script, "--", paramsFile]);
       const { code, tail } = await runTool(cmd.bin, cmd.args, {

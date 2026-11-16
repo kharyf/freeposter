@@ -7,7 +7,7 @@ import { basename, join } from "node:path";
 import { randomToken } from "../../crypto.ts";
 import { probe } from "../../media.ts";
 import { runTool } from "../proc.ts";
-import type { RemotionShot } from "../spec.ts";
+import type { FrameSize, RemotionShot } from "../spec.ts";
 import { REMOTION_VERSION, remotionCommand, remotionDir, type ToolCommand } from "../tools.ts";
 import { Fatal, Retryable } from "./errors.ts";
 import type { RenderContext, ShotAdapter } from "./index.ts";
@@ -17,14 +17,14 @@ export const REMOTION_FPS = 30;
 export const REMOTION_ARGS = ["--codec", "h264", "--overwrite"];
 
 /** The entry Remotion bundles: the agent's component as the one composition, "Shot", sized and timed by FreePoster. */
-export function remotionEntry(durationSec: number): string {
+export function remotionEntry(durationSec: number, size: FrameSize = { width: 1080, height: 1920 }): string {
   const frames = Math.max(1, Math.round(durationSec * REMOTION_FPS));
   return `import { Composition, registerRoot } from "remotion";
 import Shot from "./Shot";
 import props from "./props.json";
 
 const Root = () => (
-  <Composition id="Shot" component={Shot as any} width={1080} height={1920} fps={${REMOTION_FPS}} durationInFrames={${frames}} defaultProps={props as any} />
+  <Composition id="Shot" component={Shot as any} width={${size.width}} height={${size.height}} fps={${REMOTION_FPS}} durationInFrames={${frames}} defaultProps={props as any} />
 );
 registerRoot(Root);
 `;
@@ -59,7 +59,7 @@ export function remotionAdapter(opts: { command?: () => ToolCommand | null; root
       try {
         writeFileSync(join(work, "Shot.tsx"), shot.tsx);
         writeFileSync(join(work, "props.json"), JSON.stringify(shot.props));
-        writeFileSync(join(work, "index.tsx"), remotionEntry(shot.duration_sec));
+        writeFileSync(join(work, "index.tsx"), remotionEntry(shot.duration_sec, shot.size));
         for (const a of shot.assets) copyFileSync(a.path, join(pub, a.name));
         // Kept beside the clip, so a failed shot can be looked at.
         writeFileSync(join(ctx.dir, "Shot.tsx"), shot.tsx);

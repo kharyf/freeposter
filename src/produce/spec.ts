@@ -13,12 +13,22 @@ export const LIMITS = { maxShots: 20, minShotSec: 0.5, maxShotSec: 20, maxHtmlBy
 /** A file a shot uses, and the name the shot asks for it by (its original file name). */
 export interface Asset { name: string; path: string }
 const ASSET_NAME = /^[^\\/:*?"<>|]{1,120}$/;
+/**
+ * A frame size other than the productions' 1080x1920. Internal: FreePoster sets it for the Fancy editing style's
+ * graphics, and parseSpec never takes it from an agent's spec (an unknown field there).
+ */
+export interface FrameSize { width: number; height: number }
 /** HTML HyperFrames renders; assets sit beside index.html under their names. */
-export interface HyperframesShot { id: string; kind: "hyperframes"; duration_sec: number; html: string; assets: Asset[] }
+export interface HyperframesShot { id: string; kind: "hyperframes"; duration_sec: number; html: string; assets: Asset[]; size?: FrameSize }
 /** A React component (default export) Remotion renders at 1080x1920, 30 fps; assets are served by name through staticFile(). */
-export interface RemotionShot { id: string; kind: "remotion"; duration_sec: number; tsx: string; props: Record<string, unknown>; assets: Asset[] }
+export interface RemotionShot { id: string; kind: "remotion"; duration_sec: number; tsx: string; props: Record<string, unknown>; assets: Asset[]; size?: FrameSize }
 export interface WanShot { id: string; kind: "wan"; duration_sec: number; prompt: string; negative_prompt: string; image: string | null; seed: number }
-export interface BlenderShot { id: string; kind: "blender"; duration_sec: number; template: string; params: Record<string, string | number | boolean>; engine: "eevee" | "cycles" }
+export interface BlenderShot {
+  id: string; kind: "blender"; duration_sec: number; template: string; params: Record<string, string | number | boolean>; engine: "eevee" | "cycles";
+  size?: FrameSize;
+  /** Internal, like size: a vetted template script outside the agents' catalogue (the Fancy graphics). Never parsed from a spec. */
+  script?: string;
+}
 export interface FileShot { id: string; kind: "file"; path: string; trim: [number, number] | null }
 export interface EditShot { id: string; kind: "edit"; path: string; settings: EditSettings }
 export type ShotSpec = HyperframesShot | RemotionShot | WanShot | BlenderShot | FileShot | EditShot;
@@ -298,7 +308,8 @@ function checkComposition(html: string, sec: number, at: string, problem: (m: st
   if (!d || Math.abs(Number(d[1]) - sec) > 0.01) problem(`${at}the root element needs data-duration="${sec}" (the shot's duration_sec)`);
 }
 
-function templateParams(raw: unknown, schema: TemplateSchema, at: string, problem: (m: string) => void) {
+/** A template's params checked against its schema: defaults filled in, every problem reported through `problem`. */
+export function templateParams(raw: unknown, schema: TemplateSchema, at: string, problem: (m: string) => void) {
   const out: Record<string, string | number | boolean> = {};
   const given = raw === undefined ? {} : raw;
   if (!isObj(given)) { problem(`${at}params must be an object`); return out; }

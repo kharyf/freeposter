@@ -7,7 +7,7 @@ import { hyperframesCommand, remotionCommand } from "../src/produce/tools.ts";
 import { before, test } from "node:test";
 import { blenderAdapter, blenderTemplates } from "../src/produce/adapters/blender.ts";
 import { fileAdapter } from "../src/produce/adapters/file.ts";
-import { hyperframesAdapter, HYPERFRAMES_ARGS } from "../src/produce/adapters/hyperframes.ts";
+import { hyperframesAdapter, hyperframesArgs, HYPERFRAMES_ARGS } from "../src/produce/adapters/hyperframes.ts";
 import { REMOTION_ARGS, remotionAdapter, remotionEntry } from "../src/produce/adapters/remotion.ts";
 import { Fatal, Retryable, type RenderContext } from "../src/produce/adapters/index.ts";
 import { wanAdapter, wanFrames } from "../src/produce/adapters/wan.ts";
@@ -266,4 +266,65 @@ export default function Shot({ title }: { title: string }) {
   const p = await probe(out.path);
   assert.equal(`${p.width}x${p.height}`, "1080x1920");
   assert.ok(Math.abs(p.durationSec - 2) < 0.1);
+});
+
+test("the default remotion entry is unchanged (productions render 1080x1920)", () => {
+  assert.equal(remotionEntry(2), `import { Composition, registerRoot } from "remotion";
+import Shot from "./Shot";
+import props from "./props.json";
+
+const Root = () => (
+  <Composition id="Shot" component={Shot as any} width={1080} height={1920} fps={30} durationInFrames={60} defaultProps={props as any} />
+);
+registerRoot(Root);
+`);
+});
+
+test("remotion entries take a frame size", () => {
+  const entry = remotionEntry(2, { width: 1080, height: 960 });
+  assert.match(entry, /width=\{1080\} height=\{960\}/);
+  assert.equal(entry, remotionEntry(2).replace("height={1920}", "height={960}"));
+});
+
+test("a sized remotion shot renders at its size", async () => {
+  const log = join(tmp(), "log.jsonl");
+  const restore = withEnv({ FAKE_LOG: log });
+  try {
+    await remotionAdapter({ command: () => fake("remotion"), root: () => tmp() }).render({ ...remotionShot(), size: { width: 1080, height: 960 } }, ctx());
+    const [, seen] = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.match(seen.entry, /width=\{1080\} height=\{960\} fps=\{30\}/);
+  } finally { restore(); }
+});
+
+test("a sized hyperframes shot renders at the composition's own size instead of the portrait preset", async () => {
+  const log = join(tmp(), "log.jsonl");
+  const restore = withEnv({ FAKE_LOG: log });
+  try {
+    const c = ctx();
+    const out = await hyperframesAdapter({ command: () => fake("hyperframes") }).render({ ...hfShot, size: { width: 1080, height: 960 } }, c);
+    const { args } = JSON.parse(readFileSync(log, "utf8").trim());
+    assert.deepEqual(args, ["render", c.dir, "--output", out.path, ...hyperframesArgs({ width: 1080, height: 960 })]);
+    assert.equal(args.includes("--resolution"), false);
+    assert.deepEqual(hyperframesArgs(), HYPERFRAMES_ARGS);
+  } finally { restore(); }
+});
+
+test("a sized blender shot passes its size to the template, and a vetted script outside the catalogue can render", async () => {
+  const shot: BlenderShot = { id: "logo", kind: "blender", duration_sec: 1, template: "logo-spin", params: { text: "Hi", color: "#ff5a36" }, engine: "eevee", size: { width: 1080, height: 960 } };
+  const c = ctx();
+  const out = await blenderAdapter({ command: (args) => ({ bin: process.execPath, args: [FAKE, "blender", ...args] }) }).render(shot, c);
+  const p = await probe(out.path);
+  assert.deepEqual([p.width, p.height], [1080, 960]);
+  const cfg = JSON.parse(readFileSync(join(c.dir, "params.json"), "utf8"));
+  assert.deepEqual([cfg.width, cfg.height], [1080, 960]);
+
+  const script = join(tmp(), "template.py");
+  writeFileSync(script, "# vetted");
+  const log = join(tmp(), "log.jsonl");
+  const restore = withEnv({ FAKE_LOG: log });
+  try {
+    await blenderAdapter({ command: (args) => ({ bin: process.execPath, args: [FAKE, "blender", ...args] }) }).render({ ...shot, template: "gold-3d-word", script }, ctx());
+    const { args } = JSON.parse(readFileSync(log, "utf8").trim());
+    assert.equal(args[args.indexOf("-P") + 1], script);
+  } finally { restore(); }
 });

@@ -150,3 +150,17 @@ test("hyperframes assets are named by their file, and specs stored before names 
   const old = parseSpec({ shots: [{ id: "intro", kind: "hyperframes", duration_sec: 3, html: html(3), assets: [hashed] }] }, ctx).shots[0];
   assert.deepEqual(old.kind === "hyperframes" && old.assets, [{ name: "9f2c.png", path: hashed }]);
 });
+
+test("an agent's spec can't set a shot's frame size (it is internal to the Fancy graphics)", () => {
+  const raw = { shots: [
+    { id: "a", kind: "remotion", duration_sec: 2, tsx: "export default () => null;", size: { width: 1080, height: 960 } },
+    { id: "b", kind: "hyperframes", duration_sec: 2, html: html(2), size: { width: 1080, height: 960 } },
+    { id: "c", kind: "blender", duration_sec: 2, template: "logo-spin", params: { text: "Hi" }, size: { width: 1080, height: 960 } },
+    { id: "d", kind: "blender", duration_sec: 2, template: "logo-spin", params: { text: "Hi" }, script: "C:\evil.py" },
+  ] };
+  assert.throws(() => parseSpec(raw, ctx), (err: SpecError) => {
+    const all = err.problems.join("\n");
+    for (const needle of [/a: unknown field "size"/, /b: unknown field "size"/, /c: unknown field "size"/, /d: unknown field "script"/]) assert.match(all, needle);
+    return true;
+  });
+});
