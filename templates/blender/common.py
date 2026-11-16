@@ -95,11 +95,24 @@ def fit_width(obj, max_width):
         obj.scale = (obj.scale[0] * s, obj.scale[1] * s, obj.scale[2] * s)
 
 
+def fcurves(obj):
+    """The animation curves of obj (an object, or a datablock such as a light), in any Blender: action.fcurves up to
+    4.x; from 4.4 an action keeps them per slot in a channelbag, and 5.0 drops action.fcurves altogether."""
+    data = getattr(obj, "animation_data", None)
+    action = data.action if data else None
+    if not action:
+        return []
+    if hasattr(action, "fcurves"):
+        return list(action.fcurves)
+    from bpy_extras import anim_utils  # 4.4+
+    bag = anim_utils.action_get_channelbag_for_slot(action, data.action_slot)
+    return list(bag.fcurves) if bag else []
+
+
 def linear_keys(obj):
-    if obj.animation_data and obj.animation_data.action:
-        for fc in obj.animation_data.action.fcurves:
-            for k in fc.keyframe_points:
-                k.interpolation = "LINEAR"
+    for fc in fcurves(obj):
+        for k in fc.keyframe_points:
+            k.interpolation = "LINEAR"
 
 
 def render():

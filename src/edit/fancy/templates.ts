@@ -39,6 +39,8 @@ export const OBJECT_ICONS: Record<string, string> = {
 };
 
 const FONTS = { boldItalic: "PlayfairDisplay-BoldItalic.ttf", italic: "PlayfairDisplay-Italic.ttf" } as const;
+/** GSAP 3.15.0, the version HyperFrames's own templates load; see templates/fancy/_shared/GSAP-LICENSE.txt. */
+const GSAP = "gsap.min.js";
 const TOOLS = ["remotion", "hyperframes", "blender", "builtin"];
 
 // In the installed app they are unpacked beside app.asar, since the tools read them as plain files.
@@ -126,8 +128,11 @@ export function toShot(t: FancyTemplate, params: Record<string, string | number 
         .replaceAll("__PARAMS__", scriptJson(params))
         .replaceAll("__PALETTE__", scriptJson(palette))
         .replaceAll("__FONT_BOLD_ITALIC__", FONTS.boldItalic)
-        .replaceAll("__FONT_ITALIC__", FONTS.italic);
-      return { id, kind: "hyperframes", duration_sec: durationSec, size, assets, html };
+        .replaceAll("__FONT_ITALIC__", FONTS.italic)
+        .replaceAll("__GSAP__", GSAP);
+      // GSAP ships with FreePoster (templates/fancy/_shared), so the compositions render offline.
+      const gsap = { name: GSAP, path: join(fancyTemplateDir(), "_shared", GSAP) };
+      return { id, kind: "hyperframes", duration_sec: durationSec, size, assets: [...assets, gsap], html };
     }
     case "blender":
       return {

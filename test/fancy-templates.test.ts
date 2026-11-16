@@ -1,12 +1,12 @@
 import "./isolated-home.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { test } from "node:test";
 import { renderKeywordCard } from "../src/edit/fancy/keyword-card.ts";
 import { fancyFontFile, PALETTE } from "../src/edit/fancy/palette.ts";
-import { checkParams, fallbackParamsFor, fancyTemplates, OBJECT_ICONS, toShot } from "../src/edit/fancy/templates.ts";
+import { checkParams, fallbackParamsFor, fancyTemplateDir, fancyTemplates, OBJECT_ICONS, toShot } from "../src/edit/fancy/templates.ts";
 import { probe } from "../src/media.ts";
 import { tmp } from "./helpers.ts";
 
@@ -129,8 +129,23 @@ test("toShot fills the HyperFrames composition at 1080x960 with the shot's lengt
   assert.doesNotMatch(shot.html, /__[A-Z_]+__/, "every placeholder is filled");
   assert.ok(shot.html.includes("Three \\u003ctimes> faster"), "params are injected as script-safe JSON");
   assert.ok(shot.html.includes(PALETTE.yellow));
-  assert.deepEqual(shot.assets.map((a) => a.path).sort(), [fancyFontFile("boldItalic"), fancyFontFile("italic")].sort());
-  assert.ok(shot.assets.every((a) => shot.html.includes(a.name)), "the page loads each TTF beside it");
+  const gsap = join(fancyTemplateDir(), "_shared", "gsap.min.js");
+  assert.deepEqual(shot.assets.map((a) => a.path).sort(), [fancyFontFile("boldItalic"), fancyFontFile("italic"), gsap].sort());
+  assert.ok(shot.assets.every((a) => shot.html.includes(a.name)), "the page loads each TTF and GSAP beside it");
+});
+
+test("the HyperFrames templates load the GSAP FreePoster ships, never a CDN", () => {
+  const t = fancyTemplates();
+  const gsap = join(fancyTemplateDir(), "_shared", "gsap.min.js");
+  assert.match(readFileSync(gsap, "utf8").slice(0, 200), /GSAP 3\.15\.0/);
+  assert.ok(existsSync(join(fancyTemplateDir(), "_shared", "GSAP-LICENSE.txt")));
+  for (const id of ["kinetic-words", "icon-callout"]) {
+    const shot = toShot(t[id], t[id].example, 2, id);
+    if (shot.kind !== "hyperframes") throw new Error(`${id} isn't a HyperFrames shot`);
+    assert.match(shot.html, /<script src="gsap\.min\.js"><\/script>/, id);
+    assert.doesNotMatch(shot.html, /https?:\/\//, `${id} fetches nothing from the network`);
+    assert.ok(shot.assets.some((a) => a.name === "gsap.min.js" && a.path === gsap), id);
+  }
 });
 
 test("toShot runs the Blender templates' own scripts at 1080x960 with the font and palette", () => {
