@@ -22,14 +22,19 @@ function fakeAdapters(): Adapters {
     kind, lane, version: 1, health: async () => ({ ok: true, detail: `fake ${kind}` }),
     async render(_shot, ctx) { const out = join(ctx.dir, "shot.mp4"); copyFileSync(clip, out); return { path: out, durationSec: 2 }; },
   });
-  return { hyperframes: make("hyperframes", "cpu"), wan: make("wan", "gpu"), blender: make("blender", "gpu"), file: make("file", "cpu"), edit: make("edit", "cpu") } as Adapters;
+  return { hyperframes: make("hyperframes", "cpu"), remotion: make("remotion", "cpu"), wan: make("wan", "gpu"), blender: make("blender", "gpu"), file: make("file", "cpu"), edit: make("edit", "cpu") } as Adapters;
 }
 
 function setup() {
   const store = newStore();
   const acct = store.upsertAccount(account("x"));
   const publishers = { ...real, x: { ...real.x, publish: async () => ({ url: "https://x.com/u/status/1" }) } } as Record<Platform, Publisher>;
-  const producer = new ProductionWorker(store, { adapters: fakeAdapters(), dir: tmp() });
+  const heard: string[] = [];
+  const speechFor = async (src: { sourcePath: string; sha256: string }) => {
+    heard.push(src.sha256);
+    return { words: [{ text: "Hello", start: 0.1234, end: 0.4 }, { text: "world.", start: 0.45, end: 0.9 }], language: null };
+  };
+  const producer = new ProductionWorker(store, { adapters: fakeAdapters(), dir: tmp(), speechFor });
   const app = buildServer(store, new Runner(store, publishers, tmp()), publishers, {}, undefined, undefined, producer);
   let id = 0;
   const rpc = async (method: string, params?: unknown) => {
@@ -46,25 +51,27 @@ function setup() {
     }
     throw new Error("not ready");
   };
-  return { store, acct, app, rpc, call, producer, ready };
+  return { store, acct, app, rpc, call, producer, ready, heard };
 }
 
 const spec = { title: "Teaser", shots: [{ id: "a", kind: "wan", duration_sec: 2, prompt: "a phone" }, { id: "b", kind: "file", path: "" }] };
 const withClip = () => ({ ...spec, shots: [spec.shots[0], { ...spec.shots[1], path: clip }] });
 
-test("the five production tools are listed, and none approves", async () => {
+test("the six production tools are listed, and none approves", async () => {
   const { rpc, app } = setup();
   const names = (await rpc("tools/list")).result.tools.map((t: any) => t.name);
-  for (const n of ["describe_production_tools", "start_production", "get_production", "revise_production", "cancel_production"]) assert.ok(names.includes(n), n);
+  for (const n of ["describe_production_tools", "start_production", "get_production", "revise_production", "cancel_production", "transcribe_media"]) assert.ok(names.includes(n), n);
   assert.ok(!names.includes("approve_production"));
-  assert.equal(names.length, 24);
+  assert.equal(names.length, 25);
   await app.close();
 });
 
 test("describe_production_tools reports each kind's health, templates and SFX", async () => {
   const { call, app } = setup();
   const r = (await call("describe_production_tools")).structuredContent;
-  assert.deepEqual(r.shot_kinds.map((k: any) => k.kind).sort(), ["blender", "edit", "file", "hyperframes", "wan"]);
+  assert.deepEqual(r.shot_kinds.map((k: any) => k.kind).sort(), ["blender", "edit", "file", "hyperframes", "remotion", "wan"]);
+  assert.match(r.remotion_rules, /export.*React component.*staticFile/s);
+  assert.equal(typeof r.whisper.ok, "boolean");
   assert.ok(r.shot_kinds.every((k: any) => k.ok));
   assert.ok(r.blender_templates["logo-spin"].params.text);
   assert.deepEqual(r.sfx, []);
@@ -149,5 +156,19 @@ test("cancel_production stops a production", async () => {
   const started = (await call("start_production", { spec: withClip() })).structuredContent;
   const r = (await call("cancel_production", { production_id: started.id })).structuredContent;
   assert.equal(r.state, "cancelled");
+  await app.close();
+});
+
+test("transcribe_media returns Whisper's words with their timing, keyed by the file's content", async () => {
+  const { call, app, heard } = setup();
+  const r = await call("transcribe_media", { path: clip });
+  assert.equal(r.isError, undefined);
+  assert.deepEqual(r.structuredContent.words, [{ text: "Hello", start: 0.123, end: 0.4 }, { text: "world.", start: 0.45, end: 0.9 }]);
+  assert.equal(r.structuredContent.text, "Hello world.");
+  assert.equal(r.structuredContent.duration_sec, 0.9);
+  assert.match(heard[0], /^[0-9a-f]{64}$/);
+  const missing = await call("transcribe_media", { path: join(tmp(), "nope.wav") });
+  assert.equal(missing.isError, true);
+  assert.match(missing.content[0].text, /no file at/);
   await app.close();
 });

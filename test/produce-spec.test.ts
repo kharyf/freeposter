@@ -100,3 +100,53 @@ test("a parsed spec parses again unchanged (revise re-reads stored specs)", () =
   const once = parseSpec(good(), ctx);
   assert.deepEqual(parseSpec(JSON.parse(JSON.stringify(once)), ctx), once);
 });
+
+test("a remotion shot keeps its component, props and named assets", () => {
+  const logo = join(dir, "logo.png");
+  writeFileSync(logo, "png");
+  const raw: any = good();
+  const tsx = `import { AbsoluteFill } from "remotion";\nexport default function Shot() { return <AbsoluteFill />; }`;
+  raw.shots.push({ id: "card", kind: "remotion", duration_sec: 2, tsx, props: { words: [{ text: "hi", start: 0.2, end: 0.5 }] }, assets: [logo] });
+  const shot = parseSpec(raw, ctx).shots.at(-1)!;
+  assert.deepEqual(shot, { id: "card", kind: "remotion", duration_sec: 2, tsx, props: { words: [{ text: "hi", start: 0.2, end: 0.5 }] }, assets: [{ name: "logo.png", path: logo }] });
+  const bare = parseSpec({ shots: [{ id: "c", kind: "remotion", duration_sec: 1, tsx }] }, ctx).shots[0];
+  assert.deepEqual(bare.kind === "remotion" && [bare.props, bare.assets], [{}, []]);
+});
+
+test("a remotion shot without a default export, with bad props or clashing asset names is refused", () => {
+  const other = join(tmp(), "logo.png");
+  writeFileSync(other, "png");
+  const logo = join(dir, "logo.png");
+  writeFileSync(logo, "png");
+  const raw = { shots: [
+    { id: "a", kind: "remotion", duration_sec: 2, tsx: "const Shot = () => null;" },
+    { id: "b", kind: "remotion", duration_sec: 2, tsx: "export default () => null;", props: [1] },
+    { id: "c", kind: "remotion", duration_sec: 2, tsx: "export default () => null;", assets: [logo, other] },
+    { id: "d", kind: "remotion", duration_sec: 2 },
+    { id: "e", kind: "remotion", duration_sec: 2, tsx: "export default () => null;", html: "<p>" },
+  ] };
+  assert.throws(() => parseSpec(raw, ctx), (err: SpecError) => {
+    const all = err.problems.join("\n");
+    for (const needle of [/a: tsx needs an "export default"/, /b: props must be an object/, /c: two assets are named logo\.png/, /d: tsx is required/, /e: unknown field "html"/]) assert.match(all, needle);
+    return true;
+  });
+});
+
+test("a stored remotion shot parses again with its asset names (revise re-reads stored specs)", () => {
+  const stored = join(tmp(), "9f2c.png");
+  writeFileSync(stored, "png");
+  const tsx = "export default () => null;";
+  const shot = { id: "card", kind: "remotion", duration_sec: 2, tsx, props: {}, assets: [{ name: "logo.png", path: stored }] };
+  assert.deepEqual(parseSpec({ shots: [shot] }, ctx).shots[0], shot);
+});
+
+test("hyperframes assets are named by their file, and specs stored before names were kept still parse", () => {
+  const logo = join(dir, "logo.png");
+  writeFileSync(logo, "png");
+  const fresh = parseSpec({ shots: [{ id: "intro", kind: "hyperframes", duration_sec: 3, html: html(3), assets: [logo] }] }, ctx).shots[0];
+  assert.deepEqual(fresh.kind === "hyperframes" && fresh.assets, [{ name: "logo.png", path: logo }]);
+  const hashed = join(tmp(), "9f2c.png");
+  writeFileSync(hashed, "png");
+  const old = parseSpec({ shots: [{ id: "intro", kind: "hyperframes", duration_sec: 3, html: html(3), assets: [hashed] }] }, ctx).shots[0];
+  assert.deepEqual(old.kind === "hyperframes" && old.assets, [{ name: "9f2c.png", path: hashed }]);
+});

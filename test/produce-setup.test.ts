@@ -17,7 +17,7 @@ const HOST = { host: `localhost:${config.port}` };
 function setup() {
   const store = newStore();
   const make = (kind: any, ok: boolean): ShotAdapter<any> => ({ kind, lane: "cpu", version: 1, health: async () => ({ ok, detail: `${kind} ${ok ? "ready" : "missing"}` }), render: async () => ({ path: "", durationSec: 0 }) });
-  const adapters = { hyperframes: make("hyperframes", false), wan: make("wan", true), blender: make("blender", true), file: make("file", true), edit: make("edit", true) } as Adapters;
+  const adapters = { hyperframes: make("hyperframes", false), remotion: make("remotion", true), wan: make("wan", true), blender: make("blender", true), file: make("file", true), edit: make("edit", true) } as Adapters;
   const producer = new ProductionWorker(store, { adapters, dir: tmp() });
   return buildServer(store, new Runner(store, publishers, tmp()), publishers, {}, undefined, undefined, producer);
 }

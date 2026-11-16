@@ -19,13 +19,14 @@ import { postSigned } from "./notify.ts";
 import { blenderTemplates } from "./produce/adapters/blender.ts";
 import { sfxDir, sfxLibrary } from "./produce/sfx.ts";
 import { SHOT_KINDS } from "./produce/spec.ts";
-import { blenderPath, HYPERFRAMES_VERSION, installHyperframes, wangpDir, wangpModel } from "./produce/tools.ts";
+import { blenderPath, HYPERFRAMES_VERSION, installHyperframes, installRemotion, REMOTION_VERSION, wangpDir, wangpModel } from "./produce/tools.ts";
 import type { ProductionWorker } from "./produce/worker.ts";
 import type { Publisher } from "./platforms/base.ts";
 import { creatorInfo } from "./platforms/tiktok.ts";
 import { driveAuthorizeUrl, driveRedirectUri, exchangeDriveCode, folderIdFrom } from "./drive/client.ts";
 import type { Intake } from "./drive/intake.ts";
 import { parseEditSettings } from "./edit/settings.ts";
+import { whisperHealth } from "./edit/transcribe.ts";
 import { captionTopicFor, checkDraft, DuplicateError, editView, parseSchedule, postView, saveUpload, type Draft } from "./posts.ts";
 import { hermesDetected, hermesPluginStatus, installHermesPlugin } from "./integrations/hermes.ts";
 import { isReason } from "./review/store.ts";
@@ -419,7 +420,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     return { ...(await settingsView()), restartNeeded: config.port !== portBefore };
   });
 
-  // ---- productions: what the setup screen shows about HyperFrames, WanGP, Blender, the SFX library and the webhook ----
+  // ---- productions: what the setup screen shows about HyperFrames, Remotion, WanGP, Blender, Whisper, the SFX library and the webhook ----
 
   app.get("/api/produce/health", async (_req, reply) => {
     if (!producer) return reply.code(404).send({ error: "productions aren't available" });
@@ -430,6 +431,8 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
       sfx: sfxLibrary().map((s) => s.name),
       sfxDir: sfxDir(),
       hyperframesVersion: HYPERFRAMES_VERSION,
+      remotionVersion: REMOTION_VERSION,
+      whisper: await whisperHealth(),
       found: { blender: blenderPath(), wangp: wangpDir(), wangpModel: wangpModel() },
       webhook: { url: config.produce.webhookUrl, secretSet: Boolean(config.produce.webhookSecret), lastError: store.outbox().filter((e) => e.push && !e.sentAt && e.lastError).at(-1)?.lastError ?? null },
       // When an agent last read the event feed (list_events / wait_for_events / freeposter events).
@@ -441,6 +444,15 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   app.post("/api/produce/hyperframes/install", async (_req, reply) => {
     try {
       await installHyperframes();
+      return { ok: true };
+    } catch (err) {
+      return reply.code(500).send({ error: (err as Error).message });
+    }
+  });
+
+  app.post("/api/produce/remotion/install", async (_req, reply) => {
+    try {
+      await installRemotion();
       return { ok: true };
     } catch (err) {
       return reply.code(500).send({ error: (err as Error).message });

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { parseWhisperJson, transcribe, whisperModelPath } from "../src/edit/transcribe.ts";
+import { parseWhisperJson, transcribe, whisperHealth, whisperModelPath } from "../src/edit/transcribe.ts";
 import { tmp, verticalSilent } from "./helpers.ts";
 
 const fixtures = join(import.meta.dirname, "fixtures");
@@ -38,4 +38,11 @@ test("transcribe finds the spoken words", { skip: !existsSync(realModel) && "whi
 test("a video with no audio track has no words", async () => {
   const { words } = await transcribe(verticalSilent(tmp(), 2), realModel);
   assert.deepEqual(words, []);
+});
+
+test("whisperHealth finds whisper.cpp in ffmpeg and says when the model still has to download", async () => {
+  const missing = await whisperHealth(join(tmp(), "ggml-none.bin"));
+  assert.equal(missing.ok, true);
+  assert.match(missing.detail, /downloads on first use/);
+  if (existsSync(realModel)) assert.match((await whisperHealth(realModel)).detail, /model ggml-base\.bin/);
 });

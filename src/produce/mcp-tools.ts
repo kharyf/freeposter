@@ -1,11 +1,16 @@
-// The five MCP tools for productions. They sit beside the posting tools in mcp.ts and share its conventions:
-// stateless, every call returns at once, slow work happens in the ProductionWorker.
+// The six MCP tools for productions. They sit beside the posting tools in mcp.ts and share its conventions:
+// stateless, every call returns at once, slow work happens in the ProductionWorker. The one exception is
+// transcribe_media, which waits for Whisper the first time a file is asked about (it's cached after that).
+import { existsSync, statSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import type { Store } from "../db.ts";
+import { whisperHealth } from "../edit/transcribe.ts";
 import type { Publisher } from "../platforms/base.ts";
 import type { Platform } from "../types.ts";
 import { blenderTemplates } from "./adapters/blender.ts";
 import { sfxLibrary } from "./sfx.ts";
-import { LIMITS, SHOT_KINDS, SpecError } from "./spec.ts";
+import { LIMITS, SHOT_KINDS, SpecError, toWindowsPath } from "./spec.ts";
+import { REMOTION_VERSION } from "./tools.ts";
 import type { Production } from "./store.ts";
 import { previewUrl, thumbUrl, type ProductionWorker } from "./worker.ts";
 
@@ -20,7 +25,7 @@ export interface ToolDef {
   run(args: Args): Promise<unknown>;
 }
 
-export const PRODUCTION_INSTRUCTIONS = `Productions make a new video from several shots: HyperFrames (HTML compositions rendered to video), WanGP (AI video from a prompt, optionally from a start image), Blender (3D templates filled with params), existing files, and talking-head edits. Call describe_production_tools first for what is installed, the Blender templates and their params, and the sound-effects library. start_production takes one spec and returns at once; FreePoster renders, assembles and makes a preview in the background, and logs production.ready when it is (wait_for_events, or call get_production). Show the user the preview (preview_url) before anything is posted. To post it, call request_review with its production_id: the user approves, rejects or asks for a redo on the review itself, never in chat. revise_production changes shots and re-renders only those; after a redo, revise it and the new revision comes back for review.`;
+export const PRODUCTION_INSTRUCTIONS = `Productions make a new video from several shots: HyperFrames (HTML compositions rendered to video), Remotion (React components rendered to video), WanGP (AI video from a prompt, optionally from a start image), Blender (3D templates filled with params), existing files, and talking-head edits. Call describe_production_tools first for what is installed, the Blender templates and their params, and the sound-effects library. transcribe_media runs Whisper on a voiceover or clip and returns each word's start and end, so animation can land on the words. start_production takes one spec and returns at once; FreePoster renders, assembles and makes a preview in the background, and logs production.ready when it is (wait_for_events, or call get_production). Show the user the preview (preview_url) before anything is posted. To post it, call request_review with its production_id: the user approves, rejects or asks for a redo on the review itself, never in chat. revise_production changes shots and re-renders only those; after a redo, revise it and the new revision comes back for review.`;
 
 /** A ToolError's message goes back to the model as an isError result. */
 export function productionTools(opts: {
@@ -82,7 +87,9 @@ export function productionTools(opts: {
           sfx: sfxLibrary().map((s) => s.name),
           limits: { shots: `1 to ${LIMITS.maxShots}`, generated_shot_sec: `${LIMITS.minShotSec} to ${LIMITS.maxShotSec}`, html_kb: LIMITS.maxHtmlBytes / 1024, crossfade_sec: `0.1 to ${LIMITS.maxCrossfadeSec}` },
           output: "1080x1920, 30 fps",
-          hyperframes_rules: "One self-contained HTML page. The root element carries data-composition-id, data-width=\"1080\", data-height=\"1920\" and data-duration equal to the shot's duration_sec; each animated element carries class=\"clip\" with data-start, data-duration and data-track-index; register a paused GSAP timeline as window.__timelines[\"<composition id>\"]. Renders use --strict, so lint errors fail the shot with HyperFrames's own message.",
+          remotion_rules: `Remotion ${REMOTION_VERSION} with React 19. tsx is one file whose default export is the shot's React component; FreePoster registers it as a 1080x1920, 30 fps composition lasting duration_sec and passes props to it. Import only from "remotion" and "react" (useCurrentFrame, useVideoConfig, interpolate, spring, Sequence, AbsoluteFill, Img, Audio, OffthreadVideo, staticFile). Each file in assets is served by its file name: staticFile("logo.png"). Shot audio is dropped at assembly; use the spec's voiceover and sfx.`,
+          whisper: await whisperHealth(),
+          hyperframes_rules: "One self-contained HTML page. The root element carries data-composition-id, data-width=\"1080\", data-height=\"1920\" and data-duration equal to the shot's duration_sec; each animated element carries class=\"clip\" with data-start, data-duration and data-track-index; register a paused GSAP timeline as window.__timelines[\"<composition id>\"]. Each file in assets sits beside the page under its file name: <img src=\"logo.png\">. Renders use --strict, so lint errors fail the shot with HyperFrames's own message.",
           review: { ...opts.reviewChannel(), how: "request_review with production_id; only the user's tap on Approve posts it" },
         };
       },
@@ -90,7 +97,7 @@ export function productionTools(opts: {
     {
       name: "start_production",
       title: "Start a production",
-      description: "Starts rendering a video from a spec: {title?, shots: [...], transitions?, audio?: {voiceover}, sfx?: [{name, at_sec, gain_db}], captions?: {source: \"voiceover\"|\"none\"}, post?: {account_ids, caption, title, schedule_at, tiktok}}. Shot kinds: hyperframes {id, duration_sec, html, assets?}; wan {id, duration_sec, prompt, negative_prompt?, image?, seed?}; blender {id, duration_sec, template, params, engine?}; file {id, path, trim?}; edit {id, path, settings?}. Paths are absolute paths on this computer. Every problem in the spec is reported at once. Returns the production id at once; follow with get_production or wait_for_events. dry_run only checks the spec.",
+      description: "Starts rendering a video from a spec: {title?, shots: [...], transitions?, audio?: {voiceover}, sfx?: [{name, at_sec, gain_db}], captions?: {source: \"voiceover\"|\"none\"}, post?: {account_ids, caption, title, schedule_at, tiktok}}. Shot kinds: hyperframes {id, duration_sec, html, assets?}; remotion {id, duration_sec, tsx, props?, assets?}; wan {id, duration_sec, prompt, negative_prompt?, image?, seed?}; blender {id, duration_sec, template, params, engine?}; file {id, path, trim?}; edit {id, path, settings?}. Paths are absolute paths on this computer. Every problem in the spec is reported at once. Returns the production id at once; follow with get_production or wait_for_events. dry_run only checks the spec.",
       inputSchema: {
         type: "object",
         properties: { spec: { type: "object", description: "The production spec." }, dry_run: { type: "boolean", default: false } },
@@ -149,6 +156,34 @@ export function productionTools(opts: {
           return { production_id: p.id, ...(await worker().revise(p.id, next)) };
         } catch (err) {
           throw specError(err);
+        }
+      },
+    },
+    {
+      name: "transcribe_media",
+      title: "Transcribe media",
+      description: "Runs Whisper (whisper.cpp, on this computer) on an audio or video file and returns the words spoken, each with start and end in seconds. Use it to time a HyperFrames or Remotion shot to a voiceover: pass the words in as props, or place each animation at a word's start. Sound tags and sung lyrics are left out. The first call on a file takes about as long as the file plays; later calls are instant.",
+      inputSchema: {
+        type: "object",
+        properties: { path: { type: "string", description: "Absolute path of the audio or video file on this computer." } },
+        required: ["path"],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+      async run(args) {
+        if (typeof args.path !== "string" || !args.path.trim()) throw fail("path is required");
+        const path = toWindowsPath(args.path);
+        if (!isAbsolute(path) || !existsSync(path) || !statSync(path).isFile()) throw fail(`no file at ${path}; give an absolute path on this computer`);
+        try {
+          const t = await worker().transcribeFile(path);
+          const round = (n: number) => Math.round(n * 1000) / 1000;
+          return {
+            path, language: t.language, text: t.words.map((w) => w.text).join(" "),
+            duration_sec: t.words.length ? round(t.words.at(-1)!.end) : 0,
+            words: t.words.map((w) => ({ text: w.text, start: round(w.start), end: round(w.end) })),
+          };
+        } catch (err) {
+          throw fail((err as Error).message);
         }
       },
     },

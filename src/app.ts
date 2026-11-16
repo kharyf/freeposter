@@ -56,6 +56,7 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
   const producer = new ProductionWorker(store, {
     adapters: adapters({ speechFor: (src) => editor.speechFor(src) }),
     transcribe: speech,
+    speechFor: (src) => editor.speechFor(src),
   });
   // Reviews: the only way an edited video gets posted (an agent's, or a Drive video's). The user decides on
   // Telegram or in the window.

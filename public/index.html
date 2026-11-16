@@ -883,7 +883,7 @@ function stepHtml(step) {
   }
   if (step.id === "production") {
     return `<h1>Production tools</h1>
-      <p>Optional. Your AI agent can make whole videos from several shots: HTML animations (HyperFrames), AI video (WanGP) and 3D titles (Blender), joined, previewed and posted by FreePoster. Skip this if you only post videos you made yourself.</p>
+      <p>Optional. Your AI agent can make whole videos from several shots: HTML animations (HyperFrames), React animations (Remotion), AI video (WanGP) and 3D titles (Blender), joined, previewed and posted by FreePoster. Whisper, on this computer, gives the agent each word's timing so animation lands on the voiceover. Skip this if you only post videos you made yourself.</p>
       <div id="produceHealth" class="muted">Checking the tools…</div>
       <h2 style="margin-top:16px">Where the tools are</h2>
       <div class="grid2">
@@ -894,7 +894,7 @@ function stepHtml(step) {
       </div>
       <details><summary>Advanced</summary><div class="grid2">
         ${field("HYPERFRAMES_CMD", "HyperFrames command", "Blank uses FreePoster's own copy (install it above).")}
-        ${field("CPU_LANE_CONCURRENCY", "Shots rendered side by side", "default 2 (HyperFrames, files, edits); WanGP and Blender always take turns on the GPU", "number")}
+        ${field("CPU_LANE_CONCURRENCY", "Shots rendered side by side", "default 2 (HyperFrames, Remotion, files, edits); WanGP and Blender always take turns on the GPU", "number")}
         ${field("SHOT_RETENTION_DAYS", "Keep shot files after posting (days)", "default 14; finished videos are kept", "number")}
       </div></details>
       <h2 style="margin-top:16px">Your agent</h2>
@@ -1042,17 +1042,20 @@ $("setup").addEventListener("click", async (e) => {
   }
 });
 
-/** The Production tools step: what each tool reports, the HyperFrames install, the webhook test. */
+/** The Production tools step: what each tool reports, the HyperFrames and Remotion installs, the webhook test. */
 async function loadProductionHealth() {
   const box = $("produceHealth");
   if (!box) return;
   const res = await fetch("/api/produce/health");
   if (!res.ok) { box.textContent = "Production tools aren't available in this FreePoster."; return; }
   const h = await res.json();
-  const names = { hyperframes: "HyperFrames", wan: "WanGP", blender: "Blender", file: "Video files", edit: "Talking-head edits" };
-  box.innerHTML = h.kinds.filter((k) => ["hyperframes", "wan", "blender"].includes(k.kind)).map((k) =>
-    `<div>${k.ok ? `<span class="check-ok">✓ ${names[k.kind]}</span>` : `<span class="check-bad">✗ ${names[k.kind]}</span>`} <span class="muted">${esc(k.detail)}</span>
-      ${k.kind === "hyperframes" && !k.ok ? ` <button type="button" data-produce="install">Install HyperFrames ${esc(h.hyperframesVersion)}</button>` : ""}</div>`).join("")
+  const names = { hyperframes: "HyperFrames", remotion: "Remotion", wan: "WanGP", blender: "Blender", file: "Video files", edit: "Talking-head edits" };
+  const installs = { hyperframes: h.hyperframesVersion, remotion: h.remotionVersion };
+  const line = (ok, name, detail, extra = "") =>
+    `<div>${ok ? `<span class="check-ok">✓ ${name}</span>` : `<span class="check-bad">✗ ${name}</span>`} <span class="muted">${esc(detail)}</span>${extra}</div>`;
+  box.innerHTML = h.kinds.filter((k) => ["hyperframes", "remotion", "wan", "blender"].includes(k.kind)).map((k) =>
+    line(k.ok, names[k.kind], k.detail, k.kind in installs && !k.ok ? ` <button type="button" data-produce="install" data-tool="${k.kind}">Install ${names[k.kind]} ${esc(installs[k.kind])}</button>` : "")).join("")
+    + (h.whisper ? line(h.whisper.ok, "Whisper", h.whisper.detail) : "")
     + `<div class="muted" style="margin-top:8px">Blender templates: ${h.templates.map(esc).join(", ") || "none"}. Sound effects: ${h.sfx.length} in <code>${esc(h.sfxDir)}</code>.</div>`
     + `<div class="muted" style="margin-top:4px">${h.feedLastRead ? `Your agent last read FreePoster's events ${esc(new Date(h.feedLastRead).toLocaleString())}.` : "No agent has read FreePoster's events yet."}</div>`
     + (h.webhook.lastError ? `<div class="banner err" style="margin:8px 0 0">The webhook last failed: ${esc(h.webhook.lastError)}</div>` : "");
@@ -1221,7 +1224,7 @@ async function produceAction(button) {
   try {
     if (action === "install") {
       button.textContent = "Installing… (a minute or two)";
-      const res = await fetch("/api/produce/hyperframes/install", { method: "POST" });
+      const res = await fetch(`/api/produce/${button.dataset.tool === "remotion" ? "remotion" : "hyperframes"}/install`, { method: "POST" });
       if (!res.ok) throw new Error((await res.json()).error);
       await loadProductionHealth();
     } else if (action === "webhook-test") {

@@ -1,4 +1,4 @@
-// Runs an external tool (HyperFrames, WanGP, Blender) as a child process: never inside FreePoster's own process,
+// Runs an external tool (HyperFrames, Remotion, WanGP, Blender) as a child process: never inside FreePoster's own process,
 // so a crash there can't take posting down. Cancelling kills the whole process tree, so a GPU job doesn't keep
 // holding the card; the last lines of output are kept for the error message.
 import { execFile, spawn } from "node:child_process";

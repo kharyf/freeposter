@@ -6,6 +6,7 @@ import { blenderAdapter } from "./blender.ts";
 import { editAdapter } from "./edit.ts";
 import { fileAdapter } from "./file.ts";
 import { hyperframesAdapter } from "./hyperframes.ts";
+import { remotionAdapter } from "./remotion.ts";
 import { wanAdapter } from "./wan.ts";
 
 export { Fatal, Retryable } from "./errors.ts";
@@ -33,6 +34,7 @@ export type Adapters = { [K in ShotKind]: ShotAdapter<Extract<ShotSpec, { kind: 
 export function adapters(opts: { speechFor: (src: { sourcePath: string; sha256: string }) => Promise<Transcript> }): Adapters {
   return {
     hyperframes: hyperframesAdapter(),
+    remotion: remotionAdapter(),
     wan: wanAdapter(),
     blender: blenderAdapter(),
     file: fileAdapter(),

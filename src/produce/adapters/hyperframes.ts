@@ -1,18 +1,18 @@
 // HyperFrames: HTML compositions rendered to video by headless Chrome. The agent writes the HTML; FreePoster
 // renders it with its own pinned HyperFrames install. --strict refuses compositions with lint errors.
-import { copyFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { probe } from "../../media.ts";
 import { runTool } from "../proc.ts";
 import type { HyperframesShot } from "../spec.ts";
-import { HYPERFRAMES_VERSION, hyperframesCommand } from "../tools.ts";
+import { HYPERFRAMES_VERSION, hyperframesCommand, type ToolCommand } from "../tools.ts";
 import { Fatal, Retryable } from "./errors.ts";
 import type { RenderContext, ShotAdapter } from "./index.ts";
 
 /** Every render: 30 fps portrait, default "looks" quality, fail on lint errors, never wait on another render. */
 export const HYPERFRAMES_ARGS = ["--fps", "30", "--resolution", "portrait", "--quality", "looks", "--strict", "--no-wait", "--json"];
 
-export function hyperframesAdapter(opts: { command?: () => { bin: string; args: string[] } | null } = {}): ShotAdapter<HyperframesShot> {
+export function hyperframesAdapter(opts: { command?: () => ToolCommand | null } = {}): ShotAdapter<HyperframesShot> {
   const command = opts.command ?? hyperframesCommand;
   return {
     kind: "hyperframes",
@@ -22,8 +22,10 @@ export function hyperframesAdapter(opts: { command?: () => { bin: string; args: 
       const cmd = command();
       if (!cmd) return { ok: false, detail: `version ${HYPERFRAMES_VERSION} isn't installed yet (Setup → Production tools)` };
       try {
-        const { code, tail } = await runTool(cmd.bin, [...cmd.args, "--version"], { signal: AbortSignal.timeout(60_000) });
-        return code === 0 ? { ok: true, detail: `HyperFrames ${tail.trim().split("\n").at(-1)}` } : { ok: false, detail: tail };
+        const { code, tail } = await runTool(cmd.bin, [...cmd.args, "--version"], { signal: AbortSignal.timeout(60_000), env: cmd.env });
+        const version = tail.trim().split("\n").at(-1)?.trim();
+        if (code === 0 && !version) return { ok: false, detail: `${cmd.bin} exited without printing a version; it isn't running HyperFrames` };
+        return code === 0 ? { ok: true, detail: `HyperFrames ${version}` } : { ok: false, detail: tail };
       } catch (err) {
         return { ok: false, detail: (err as Error).message };
       }
@@ -32,10 +34,11 @@ export function hyperframesAdapter(opts: { command?: () => { bin: string; args: 
       const cmd = command();
       if (!cmd) throw new Retryable(`HyperFrames ${HYPERFRAMES_VERSION} isn't installed yet; install it from FreePoster's Setup`);
       writeFileSync(join(ctx.dir, "index.html"), shot.html);
-      for (const asset of shot.assets) copyFileSync(asset, join(ctx.dir, basename(asset)));
+      for (const asset of shot.assets) copyFileSync(asset.path, join(ctx.dir, asset.name));
       const out = join(ctx.dir, "shot.mp4");
-      const { code, tail } = await runTool(cmd.bin, [...cmd.args, "render", ctx.dir, "--output", out, ...HYPERFRAMES_ARGS], { cwd: ctx.dir, signal: ctx.signal, timeoutMs: 30 * 60_000 });
+      const { code, tail } = await runTool(cmd.bin, [...cmd.args, "render", ctx.dir, "--output", out, ...HYPERFRAMES_ARGS], { cwd: ctx.dir, signal: ctx.signal, timeoutMs: 30 * 60_000, env: cmd.env });
       if (code !== 0) throw new Fatal(`${shot.id}: HyperFrames couldn't render the composition:\n${tail}`);
+      if (!existsSync(out)) throw new Fatal(`${shot.id}: HyperFrames exited without writing ${basename(out)}${tail.trim() ? `:\n${tail}` : ` (${cmd.bin} printed nothing)`}`);
       const p = await probe(out);
       return { path: out, durationSec: Math.min(p.durationSec, shot.duration_sec) };
     },

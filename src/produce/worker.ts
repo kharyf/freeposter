@@ -27,6 +27,8 @@ export interface WorkerOptions {
   assemble?: typeof realAssemble;
   /** the voiceover's words, for captions */
   transcribe?: (path: string) => Promise<Transcript>;
+  /** Whisper's transcript of any file, by its content hash (EditWorker.speechFor): what transcribe_media returns */
+  speechFor?: (src: { sourcePath: string; sha256: string }) => Promise<Transcript>;
   retryDelayMs?: (attempt: number) => number;
 }
 
@@ -42,6 +44,7 @@ export class ProductionWorker {
   dir: string;
   assemble: typeof realAssemble;
   transcribe?: (path: string) => Promise<Transcript>;
+  speechFor?: (src: { sourcePath: string; sha256: string }) => Promise<Transcript>;
   retryDelayMs: (attempt: number) => number;
   /** running shot rows → their cancel switch */
   running = new Map<number, { controller: AbortController; productionId: number; lane: Lane }>();
@@ -56,6 +59,7 @@ export class ProductionWorker {
     this.dir = opts.dir ?? join(dataDir, "productions");
     this.assemble = opts.assemble ?? realAssemble;
     this.transcribe = opts.transcribe;
+    this.speechFor = opts.speechFor;
     this.retryDelayMs = opts.retryDelayMs ?? backoffMs;
     this.productions.requeueInterrupted();
   }
@@ -118,6 +122,14 @@ export class ProductionWorker {
     return true;
   }
 
+  /** The words spoken in a file and when, from Whisper; cached by content, so asking again is instant. */
+  async transcribeFile(path: string): Promise<Transcript> {
+    if (!this.speechFor) throw new Error("transcription isn't available in this FreePoster");
+    const hash = createHash("sha256");
+    await pipeline(createReadStream(path), hash);
+    return this.speechFor({ sourcePath: path, sha256: hash.digest("hex") });
+  }
+
   /** Checks the spec, copies its input files in (by content, so a later change to the original doesn't matter), and plans its shots. */
   async prepare(raw: unknown): Promise<{ spec: ProductionSpec; plan: ShotPlan[] }> {
     const spec = parseSpec(raw, this.context());
@@ -133,7 +145,8 @@ export class ProductionWorker {
     for (const s of spec.shots) {
       if (s.kind === "file" || s.kind === "edit") s.path = await copy(s.path);
       if (s.kind === "wan" && s.image) s.image = await copy(s.image);
-      if (s.kind === "hyperframes") s.assets = await Promise.all(s.assets.map(copy));
+      // Copied by content like the rest, but keeping each one's name: the HTML or component asks for it by that name.
+      if (s.kind === "hyperframes" || s.kind === "remotion") s.assets = await Promise.all(s.assets.map(async (a) => ({ name: a.name, path: await copy(a.path) })));
     }
     if (spec.audio.voiceover) spec.audio.voiceover = await copy(spec.audio.voiceover);
     const plan = spec.shots.map((s): ShotPlan => {

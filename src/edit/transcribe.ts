@@ -2,7 +2,7 @@
 // line per word, {"start": ms, "end": ms, "text": " word"}, which is the word timing cutting and captions need.
 import { execFile } from "node:child_process";
 import { createWriteStream, existsSync, readFileSync, renameSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
@@ -94,4 +94,21 @@ export async function transcribe(source: string, model = whisperModelPath()): Pr
   } finally {
     try { unlinkSync(out); } catch {}
   }
+}
+
+/**
+ * Whether transcription can run: this ffmpeg was built with whisper.cpp, and the speech model is here (when it
+ * isn't, the first transcription downloads it, so that's still usable).
+ */
+export async function whisperHealth(model = whisperModelPath()): Promise<{ ok: boolean; detail: string }> {
+  let filters: string;
+  try {
+    filters = (await run(config.ffmpeg, ["-hide_banner", "-filters"], { maxBuffer: 4 * 1024 * 1024, windowsHide: true })).stdout;
+  } catch (err) {
+    return { ok: false, detail: `can't run ffmpeg: ${(err as Error).message}` };
+  }
+  if (!/^\s*\S+\s+whisper\s/m.test(filters)) return { ok: false, detail: "this ffmpeg wasn't built with whisper.cpp; install an ffmpeg 8 or newer build that has the whisper filter" };
+  return existsSync(model)
+    ? { ok: true, detail: `whisper.cpp in ffmpeg, model ${basename(model)}` }
+    : { ok: true, detail: `whisper.cpp in ffmpeg; the speech model (${basename(model)}, about 150 MB) downloads on first use` };
 }

@@ -63,7 +63,7 @@ test("MCP handshake and tool list", async () => {
   assert.equal(note.statusCode, 202);
 
   const names = (await rpc("tools/list")).body.result.tools.map((t: any) => t.name);
-  assert.deepEqual(names.sort(), ["add_editing_style", "audit_reviews", "cancel_post", "cancel_production", "create_edit", "describe_production_tools", "get_edit", "get_post", "get_production", "get_review", "get_tiktok_creator_info", "list_accounts", "list_editing_styles", "list_events", "list_posts", "list_reviews", "publish_video", "request_review", "reschedule_post", "retry_job", "revise_edit", "revise_production", "start_production", "wait_for_events"]);
+  assert.deepEqual(names.sort(), ["add_editing_style", "audit_reviews", "cancel_post", "cancel_production", "create_edit", "describe_production_tools", "get_edit", "get_post", "get_production", "get_review", "get_tiktok_creator_info", "list_accounts", "list_editing_styles", "list_events", "list_posts", "list_reviews", "publish_video", "request_review", "reschedule_post", "retry_job", "revise_edit", "revise_production", "start_production", "transcribe_media", "wait_for_events"]);
   // Agents have no way to approve: only the user does, on a review (review.test.ts).
   assert.ok(!names.some((n: string) => /approve|decide|accept/.test(n)), "no approve tool");
   assert.equal((await rpc("nope")).body.error.code, -32601);

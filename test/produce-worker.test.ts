@@ -1,6 +1,6 @@
 import "./isolated-home.ts";
 import assert from "node:assert/strict";
-import { copyFileSync, existsSync } from "node:fs";
+import { copyFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { before, test } from "node:test";
 import { config } from "../src/config.ts";
@@ -32,7 +32,7 @@ function fakes(behave: Behaviour = () => {}) {
       }
     },
   });
-  const adapters = { hyperframes: make("hyperframes", "cpu"), wan: make("wan", "gpu"), blender: make("blender", "gpu"), file: make("file", "cpu"), edit: make("edit", "cpu") } as Adapters;
+  const adapters = { hyperframes: make("hyperframes", "cpu"), remotion: make("remotion", "cpu"), wan: make("wan", "gpu"), blender: make("blender", "gpu"), file: make("file", "cpu"), edit: make("edit", "cpu") } as Adapters;
   return { adapters, stats };
 }
 
@@ -82,6 +82,26 @@ test("inputs are copied into the production, so later changes to the original do
   const p = await w.create(rawSpec());
   const take = p.spec.shots.find((s) => s.id === "take")!;
   assert.ok(take.kind === "file" && take.path !== clip && existsSync(take.path));
+});
+
+test("hyperframes and remotion assets are copied in under their own names, which the shot refers to", async () => {
+  const w = new ProductionWorker(newStore(), { adapters: fakes().adapters, dir: tmp() });
+  const logo = join(tmp(), "logo.png");
+  writeFileSync(logo, "png");
+  const p = await w.create({ shots: [
+    { id: "card", kind: "remotion", duration_sec: 2, tsx: "export default () => null;", assets: [logo] },
+    { id: "intro", kind: "hyperframes", duration_sec: 2, html, assets: [logo] },
+  ] });
+  for (const shot of p.spec.shots) {
+    assert.ok(shot.kind === "remotion" || shot.kind === "hyperframes");
+    assert.equal(shot.assets[0].name, "logo.png", shot.kind);
+    assert.notEqual(shot.assets[0].path, logo, "copied in by content");
+    assert.ok(existsSync(shot.assets[0].path));
+  }
+  // Revising re-reads the stored spec: the names survive it.
+  await w.revise(p.id, { ...p.spec, title: "again" });
+  const revised = w.productions.get(p.id)!.spec.shots;
+  assert.deepEqual(revised.map((s) => (s.kind === "remotion" || s.kind === "hyperframes") && s.assets[0].name), ["logo.png", "logo.png"]);
 });
 
 test("a second production reuses cached renders", async () => {

@@ -2,20 +2,26 @@
 // Everything is checked before anything renders, and every problem is reported at once so the agent can fix
 // the whole spec in one go. Unknown fields are refused, so a typo fails instead of being silently ignored.
 import { statSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { basename, isAbsolute } from "node:path";
 import { DEFAULT_EDIT, type EditSettings } from "../edit/settings.ts";
 
-export const SHOT_KINDS = ["hyperframes", "wan", "blender", "file", "edit"] as const;
+export const SHOT_KINDS = ["hyperframes", "remotion", "wan", "blender", "file", "edit"] as const;
 export type ShotKind = (typeof SHOT_KINDS)[number];
 
-export const LIMITS = { maxShots: 20, minShotSec: 0.5, maxShotSec: 20, maxHtmlBytes: 256 * 1024, maxFileBytes: 4 * 1024 ** 3, maxCrossfadeSec: 2 } as const;
+export const LIMITS = { maxShots: 20, minShotSec: 0.5, maxShotSec: 20, maxHtmlBytes: 256 * 1024, maxTsxBytes: 256 * 1024, maxPropsBytes: 256 * 1024, maxFileBytes: 4 * 1024 ** 3, maxCrossfadeSec: 2 } as const;
 
-export interface HyperframesShot { id: string; kind: "hyperframes"; duration_sec: number; html: string; assets: string[] }
+/** A file a shot uses, and the name the shot asks for it by (its original file name). */
+export interface Asset { name: string; path: string }
+const ASSET_NAME = /^[^\\/:*?"<>|]{1,120}$/;
+/** HTML HyperFrames renders; assets sit beside index.html under their names. */
+export interface HyperframesShot { id: string; kind: "hyperframes"; duration_sec: number; html: string; assets: Asset[] }
+/** A React component (default export) Remotion renders at 1080x1920, 30 fps; assets are served by name through staticFile(). */
+export interface RemotionShot { id: string; kind: "remotion"; duration_sec: number; tsx: string; props: Record<string, unknown>; assets: Asset[] }
 export interface WanShot { id: string; kind: "wan"; duration_sec: number; prompt: string; negative_prompt: string; image: string | null; seed: number }
 export interface BlenderShot { id: string; kind: "blender"; duration_sec: number; template: string; params: Record<string, string | number | boolean>; engine: "eevee" | "cycles" }
 export interface FileShot { id: string; kind: "file"; path: string; trim: [number, number] | null }
 export interface EditShot { id: string; kind: "edit"; path: string; settings: EditSettings }
-export type ShotSpec = HyperframesShot | WanShot | BlenderShot | FileShot | EditShot;
+export type ShotSpec = HyperframesShot | RemotionShot | WanShot | BlenderShot | FileShot | EditShot;
 
 export interface Transition { type: "cut" | "crossfade"; sec: number }
 export interface SfxCue { name: string; at_sec: number; gain_db: number }
@@ -104,6 +110,24 @@ export function parseSpec(raw: unknown, ctx: SpecContext): ProductionSpec {
     return p;
   };
 
+  /**
+   * A shot's assets: each a path, which the shot sees under its file name; or {name, path}, how a stored spec keeps
+   * that name once the file has been copied in under its content hash. Two with the same name would clash.
+   */
+  const namedAssets = (raw: unknown, at: string, why: string): Asset[] => {
+    if (raw === undefined || raw === null) return [];
+    if (!Array.isArray(raw)) { problem(`${at}assets must be a list of paths`); return []; }
+    const assets: Asset[] = [];
+    raw.forEach((a: unknown, j: number) => {
+      const named = isObj(a) && typeof a.name === "string" && ASSET_NAME.test(a.name);
+      const path = file(named ? a : (raw as unknown as Obj), named ? "path" : String(j), `${at}assets `, true);
+      if (path) assets.push({ name: named ? ((a as Obj).name as string) : basename(path), path });
+    });
+    const names = assets.map((a) => a.name.toLowerCase());
+    for (const n of new Set(names.filter((n, j) => names.indexOf(n) !== j))) problem(`${at}two assets are named ${n}; ${why}`);
+    return assets;
+  };
+
   if (!isObj(raw)) throw new SpecError(["the spec must be a JSON object"]);
   only(raw, ["version", "title", "shots", "transitions", "audio", "sfx", "captions", "post"], "");
   if (raw.version !== undefined && raw.version !== 1) problem("version must be 1");
@@ -126,8 +150,22 @@ export function parseSpec(raw: unknown, ctx: SpecContext): ProductionSpec {
         const sec = duration();
         const html = text(s, "html", at, true);
         if (html) checkComposition(html, sec, at, problem);
-        const assets = Array.isArray(s.assets) ? s.assets : s.assets === undefined ? [] : (problem(`${at}assets must be a list of paths`), []);
-        shots.push({ id, kind: "hyperframes", duration_sec: sec, html, assets: assets.map((_: unknown, j: number) => file(assets as unknown as Obj, String(j), `${at}assets `, true) ?? "") });
+        shots.push({ id, kind: "hyperframes", duration_sec: sec, html, assets: namedAssets(s.assets, at, "the composition refers to assets by file name") });
+        break;
+      }
+      case "remotion": {
+        only(s, ["id", "kind", "duration_sec", "tsx", "props", "assets"], at);
+        const sec = duration();
+        const tsx = text(s, "tsx", at, true);
+        if (tsx && Buffer.byteLength(tsx) > LIMITS.maxTsxBytes) problem(`${at}tsx is larger than 256 KB`);
+        else if (tsx && !/\bexport\s+default\b/.test(tsx)) problem(`${at}tsx needs an "export default" React component (the shot)`);
+        let props: Record<string, unknown> = {};
+        if (s.props !== undefined && s.props !== null) {
+          if (!isObj(s.props)) problem(`${at}props must be an object`);
+          else if (Buffer.byteLength(JSON.stringify(s.props)) > LIMITS.maxPropsBytes) problem(`${at}props is larger than 256 KB`);
+          else props = s.props;
+        }
+        shots.push({ id, kind: "remotion", duration_sec: sec, tsx, props, assets: namedAssets(s.assets, at, "staticFile() finds assets by file name") });
         break;
       }
       case "wan": {
