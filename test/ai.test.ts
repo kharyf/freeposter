@@ -202,6 +202,14 @@ test("only providers that can look at images are asked about a silent video's fr
   assert.equal(frames.order.find((p) => p.id === "google")!.canDo, false);
 });
 
+test("the Fancy style's graphics job is in the job list, and needs no images", async () => {
+  const { ai } = service({ claude: {}, google: {} });
+  await ai.connect("google");
+  const graphics = (await ai.view()).jobs.find((j) => j.id === "graphics")!;
+  assert.equal(graphics.label, "Graphics for the Fancy editing style");
+  assert.ok(graphics.order.every((p) => p.canDo));
+});
+
 test("when every provider fails, the error says what each one said", async () => {
   const { ai } = service({ claude: new Error("signed out"), copilot: new Error("no premium requests left") });
   await ai.connect("copilot").catch(() => {});

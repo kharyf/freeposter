@@ -7,13 +7,14 @@ import { askClaude, findClaude } from "../claude.ts";
 import { findAnswer, promptText } from "./answer.ts";
 import { findProgram, lastWords, planEnv, runProgram, type ProgramRun } from "./cli.ts";
 
-export const AI_JOBS = ["caption", "frames", "lyrics"] as const;
+export const AI_JOBS = ["caption", "frames", "lyrics", "graphics"] as const;
 export type AiJob = (typeof AI_JOBS)[number];
 
 export const JOB_LABELS: Record<AiJob, string> = {
   caption: "Titles and captions (from what's said)",
   frames: "Titles and captions (from the picture, when nobody speaks)",
   lyrics: "Spotting song lyrics in the captions",
+  graphics: "Graphics for the Fancy editing style",
 };
 
 export const PROVIDER_IDS = ["claude", "chatgpt", "google", "copilot", "cursor", "grok", "muse", "openrouter"] as const;
