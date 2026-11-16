@@ -1,10 +1,10 @@
 // What happens to a video dropped in the watched Drive folder: read the posting time from its name (or its upload day),
 // download it, transcribe it, edit it while the AI providers write its title and caption, then send the edit to the
-// user for review (on Telegram, through Hermes's bot or FreePoster's own, and in the window). The name also picks
+// user for review (on Telegram, through FreePoster's own bot or one it shares with the user's agent, and in the window). The name also picks
 // the editing style and the account set (else the defaults); those are fixed when the file arrives. Approve schedules
 // it to that set's accounts at the time in its name (at once if that has passed); Reject posts nothing; Redo
-// makes a new edit (FreePoster does it when the reason is one setting and there's no note, Hermes otherwise, with
-// revise_edit) and the new edit comes back for review. A name ending in _RAW was already edited elsewhere: it
+// makes a new edit (FreePoster does it when the reason is one setting and there's no note, the user's agent
+// otherwise, with revise_edit) and the new edit comes back for review. A name ending in _RAW was already edited elsewhere: it
 // skips the edit and the review, and posts as uploaded (still transcribed for its caption). A video with no speech
 // is captioned from its frames, and when that (or the AI) fails it gets the caption #fyp. Every step is saved, so a
 // restart picks up where it stopped.
@@ -13,7 +13,7 @@ import { accountSets, defaultSetId, defaultTikTok, setAccounts, setToken } from 
 import { captionVideo, transcriptText, type CaptionDeps } from "../caption.ts";
 import type { Store } from "../db.ts";
 import { DEFAULT_EDIT, type EditSettings } from "../edit/settings.ts";
-import { defaultStyleId, STYLES, styleById, styleToken } from "../edit/styles.ts";
+import { allStyles, defaultStyleId, styleById, styleToken } from "../edit/styles.ts";
 import type { Transcript } from "../edit/transcribe.ts";
 import { probe } from "../media.ts";
 import type { Publisher } from "../platforms/base.ts";
@@ -159,7 +159,7 @@ export class Intake {
           else this.store.upsertDriveFile(f.driveId, { state: "unreviewed", note: `its review was closed: ${r.error ?? "the edit changed"}` });
           return;
         }
-        const waiting = "Waiting for Hermes to make the change you asked for";
+        const waiting = "Waiting for your agent to make the change you asked for";
         if (!f.note?.startsWith(waiting)) this.store.upsertDriveFile(f.driveId, { note: `${waiting}${r.note ? `: "${r.note}"` : ""}` });
         return;
       }
@@ -180,7 +180,7 @@ export class Intake {
 
   /**
    * A redo of a Drive video's review. With no note and a reason that means one setting (zooms, framing, sound),
-   * FreePoster makes the new edit itself; anything else is Hermes's to change (revise_edit, from the redo event),
+   * FreePoster makes the new edit itself; anything else is the agent's to change (revise_edit, from the redo event),
    * and tick() picks up the edit it makes. Returns what FreePoster did, or null.
    */
   applyRedo(r: Review): string | null {
@@ -191,7 +191,7 @@ export class Intake {
     const change = !r.note && r.reason ? SUGGESTED[r.reason] : undefined;
     if (!edit || !change) return null;
     const next = this.store.createEdit(edit.sourcePath, edit.sha256, { ...edit.settings, ...change }, edit.id);
-    if (next.id === edit.id) return null; // already that way: Hermes decides what else to change
+    if (next.id === edit.id) return null; // already that way: the agent decides what else to change
     this.store.closeEdit(edit.id, "superseded");
     const what = `${describeChange(change)}, edit ${next.id}`;
     this.store.upsertDriveFile(f.driveId, { state: "processing", editId: next.id, reviewId: null, note: `redoing it with ${what}; it comes back for review` });
@@ -322,7 +322,7 @@ export class Intake {
   /** The editing styles and account sets a filename may name, by the word it uses for each. */
   vocabulary(): NameVocabulary {
     return {
-      styles: STYLES.map((s) => ({ id: s.id, token: styleToken(s) })),
+      styles: allStyles(this.store).map((s) => ({ id: s.id, token: styleToken(s) })),
       sets: accountSets(this.store).map((s) => ({ id: s.id, token: setToken(s.name) })),
     };
   }
@@ -355,7 +355,7 @@ export class Intake {
 
   /** The edit its style makes. */
   private editSettings(f: DriveFileRecord): EditSettings {
-    return styleById(this.choice(f)?.styleId)?.settings ?? DEFAULT_EDIT;
+    return styleById(this.store, this.choice(f)?.styleId)?.settings ?? DEFAULT_EDIT;
   }
 
   /** Why a post to this set can't go anywhere, or null when it can. */

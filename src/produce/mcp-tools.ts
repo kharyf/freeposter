@@ -20,7 +20,7 @@ export interface ToolDef {
   run(args: Args): Promise<unknown>;
 }
 
-export const PRODUCTION_INSTRUCTIONS = `Productions make a new video from several shots: HyperFrames (HTML compositions rendered to video), WanGP (AI video from a prompt, optionally from a start image), Blender (3D templates filled with params), existing files, and talking-head edits. Call describe_production_tools first for what is installed, the Blender templates and their params, and the sound-effects library. start_production takes one spec and returns at once; FreePoster renders, assembles and makes a preview in the background, and tells the webhook when it is ready (or call get_production). Show the user the preview (preview_url) before anything is posted. To post it, call request_review with its production_id: the user approves, rejects or asks for a redo on the review itself, never in chat. revise_production changes shots and re-renders only those; after a redo, revise it and the new revision comes back for review.`;
+export const PRODUCTION_INSTRUCTIONS = `Productions make a new video from several shots: HyperFrames (HTML compositions rendered to video), WanGP (AI video from a prompt, optionally from a start image), Blender (3D templates filled with params), existing files, and talking-head edits. Call describe_production_tools first for what is installed, the Blender templates and their params, and the sound-effects library. start_production takes one spec and returns at once; FreePoster renders, assembles and makes a preview in the background, and logs production.ready when it is (wait_for_events, or call get_production). Show the user the preview (preview_url) before anything is posted. To post it, call request_review with its production_id: the user approves, rejects or asks for a redo on the review itself, never in chat. revise_production changes shots and re-renders only those; after a redo, revise it and the new revision comes back for review.`;
 
 /** A ToolError's message goes back to the model as an isError result. */
 export function productionTools(opts: {
@@ -90,7 +90,7 @@ export function productionTools(opts: {
     {
       name: "start_production",
       title: "Start a production",
-      description: "Starts rendering a video from a spec: {title?, shots: [...], transitions?, audio?: {voiceover}, sfx?: [{name, at_sec, gain_db}], captions?: {source: \"voiceover\"|\"none\"}, post?: {account_ids, caption, title, schedule_at, tiktok}}. Shot kinds: hyperframes {id, duration_sec, html, assets?}; wan {id, duration_sec, prompt, negative_prompt?, image?, seed?}; blender {id, duration_sec, template, params, engine?}; file {id, path, trim?}; edit {id, path, settings?}. Paths are absolute paths on this computer. Every problem in the spec is reported at once. Returns the production id at once; follow with get_production or wait for the webhook. dry_run only checks the spec.",
+      description: "Starts rendering a video from a spec: {title?, shots: [...], transitions?, audio?: {voiceover}, sfx?: [{name, at_sec, gain_db}], captions?: {source: \"voiceover\"|\"none\"}, post?: {account_ids, caption, title, schedule_at, tiktok}}. Shot kinds: hyperframes {id, duration_sec, html, assets?}; wan {id, duration_sec, prompt, negative_prompt?, image?, seed?}; blender {id, duration_sec, template, params, engine?}; file {id, path, trim?}; edit {id, path, settings?}. Paths are absolute paths on this computer. Every problem in the spec is reported at once. Returns the production id at once; follow with get_production or wait_for_events. dry_run only checks the spec.",
       inputSchema: {
         type: "object",
         properties: { spec: { type: "object", description: "The production spec." }, dry_run: { type: "boolean", default: false } },
@@ -103,7 +103,7 @@ export function productionTools(opts: {
         try {
           if (args.dry_run === true) return { ok: true, dry_run: true, spec: w.check(args.spec) };
           const p = await w.create(args.spec);
-          return { ...view(p), next: "FreePoster is rendering it. Wait for the production.ready webhook or call get_production; then show the user the preview." };
+          return { ...view(p), next: "FreePoster is rendering it. Wait for production.ready with wait_for_events, or call get_production; then show the user the preview." };
         } catch (err) {
           throw specError(err);
         }

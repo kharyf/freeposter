@@ -6,7 +6,7 @@ import { createReadStream, existsSync, readFileSync, statSync, unlinkSync, write
 import { join } from "node:path";
 import { accountSets, createAccountSet, defaultSetId, deleteAccountSet, noteSignInSet, placeInSet, takeSignInSet, defaultTikTokPrefs, renameAccountSet, setDefaultSet, setDefaultTikTokPrefs, setSharing, setToken, sharedFrom, sharingPairs, type Sharing } from "./accounts.ts";
 import { calendar, postOutcome } from "./calendar.ts";
-import { defaultStyleId, hasSample, sampleVideoPath, setDefaultStyle, STYLES, styleById, styleToken } from "./edit/styles.ts";
+import { allStyles, createStyle, defaultStyleId, deleteStyle, hasSample, MAX_THUMBNAIL_BYTES, sampleVideoPath, saveThumbnail, setDefaultStyle, STYLE_STEPS, styleById, styleToken, thumbnail, thumbnailProblem, thumbnailSvg, uploadedThumbnail } from "./edit/styles.ts";
 import * as openrouter from "./ai/openrouter.ts";
 import { AI_JOBS, PROVIDER_IDS, type AiJob, type ProviderId } from "./ai/providers.ts";
 import type { AiService } from "./ai/router.ts";
@@ -27,6 +27,7 @@ import { driveAuthorizeUrl, driveRedirectUri, exchangeDriveCode, folderIdFrom } 
 import type { Intake } from "./drive/intake.ts";
 import { parseEditSettings } from "./edit/settings.ts";
 import { captionTopicFor, checkDraft, DuplicateError, editView, parseSchedule, postView, saveUpload, type Draft } from "./posts.ts";
+import { hermesDetected, hermesPluginStatus, installHermesPlugin } from "./integrations/hermes.ts";
 import { isReason } from "./review/store.ts";
 import { ReviewService } from "./review/service.ts";
 import type { TelegramReview } from "./review/telegram.ts";
@@ -103,7 +104,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     const password = config.appPassword;
     if (!password || req.url === "/api/ping") return;
     if (/^\/callback([/?]|$)/.test(req.url)) return; // protected by the one-time OAuth state instead
-    if (req.url === "/api/telegram/relay") return; // the Hermes plugin's updates: checked by their signature instead
+    if (req.url === "/api/telegram/relay") return; // a shared bot's relayed updates: checked by their signature instead
     const given = Buffer.from(req.headers.authorization?.match(/^Basic (.+)$/)?.[1] ?? "", "base64").toString().split(":").slice(1).join(":");
     const a = Buffer.from(given);
     const b = Buffer.from(password);
@@ -142,7 +143,19 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
         sharedFrom: sharedFrom(store, a)?.id ?? null,
       })),
       accountSets: accountSets(store).map((s) => ({ ...s, token: setToken(s.name), isDefault: s.id === defaultSet })),
-      editingStyles: STYLES.map((s) => ({ id: s.id, name: s.name, token: styleToken(s), description: s.description, isDefault: s.id === defaultStyle, hasSample: hasSample(s.id) })),
+      editingStyles: allStyles(store).map((s) => ({
+        id: s.id,
+        name: s.name,
+        token: styleToken(s),
+        description: s.description,
+        builtIn: s.builtIn,
+        steps: Object.fromEntries(STYLE_STEPS.map((step) => [step.key, s.settings[step.key]])),
+        isDefault: s.id === defaultStyle,
+        hasSample: hasSample(s.id),
+        // Changes when a new image is given, so the window doesn't show an old one from its cache.
+        thumbnailUrl: `/api/styles/${encodeURIComponent(s.id)}/thumbnail${uploadedThumbnail(s.id) ? `?v=${statSync(uploadedThumbnail(s.id)!.path).mtimeMs}` : ""}`,
+      })),
+      styleSteps: STYLE_STEPS,
       sharingPairs: sharingPairs(store).map((p) => ({ pageId: p.pageId, instagramId: p.instagram.id, facebookId: p.facebook.id, sharing: p.sharing })),
       defaultTikTok: { allowComment: true, allowDuet: true, allowStitch: true, ...defaultTikTokPrefs(store) },
     };
@@ -239,7 +252,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   app.put<{ Body: { set?: unknown; style?: unknown; tiktok?: Record<string, unknown> } }>("/api/defaults", async (req, reply) => {
     const body = req.body ?? {};
     if (body.set !== undefined && !accountSets(store).some((s) => s.id === Number(body.set))) return reply.code(400).send({ error: "no such account set" });
-    if (body.style !== undefined && !styleById(String(body.style))) return reply.code(400).send({ error: "no such editing style" });
+    if (body.style !== undefined && !allStyles(store).some((s) => s.id === String(body.style))) return reply.code(400).send({ error: "no such editing style" });
     if (body.set !== undefined) setDefaultSet(store, Number(body.set));
     if (body.style !== undefined) setDefaultStyle(store, String(body.style));
     if (body.tiktok !== undefined) {
@@ -418,7 +431,9 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
       sfxDir: sfxDir(),
       hyperframesVersion: HYPERFRAMES_VERSION,
       found: { blender: blenderPath(), wangp: wangpDir(), wangpModel: wangpModel() },
-      webhook: { url: config.produce.webhookUrl, secretSet: Boolean(config.produce.webhookSecret), lastError: store.outbox().filter((e) => !e.sentAt && e.lastError).at(-1)?.lastError ?? null },
+      webhook: { url: config.produce.webhookUrl, secretSet: Boolean(config.produce.webhookSecret), lastError: store.outbox().filter((e) => e.push && !e.sentAt && e.lastError).at(-1)?.lastError ?? null },
+      // When an agent last read the event feed (list_events / wait_for_events / freeposter events).
+      feedLastRead: store.outbox().reduce<number | null>((at, e) => (e.readAt && (!at || e.readAt > at) ? e.readAt : at), null),
       review: reviewChannel(),
     };
   });
@@ -444,15 +459,27 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     }
   });
 
-  // ---- Telegram reviews: the bot, the paired chat, and (with Hermes's bot) the Hermes plugin ----
+  // ---- Telegram reviews: the bot, the paired chat, and (with a shared bot) the relay and Hermes's ready-made plugin ----
 
   const noTelegram = (reply: FastifyReply) => reply.code(404).send({ error: "Telegram reviews aren't available in this FreePoster" });
 
-  app.get("/api/telegram", async (_req, reply) => (telegram ? { ...telegram.status(), relayUrl: telegram.relayUrl() } : noTelegram(reply)));
+  app.get("/api/telegram", async (_req, reply) => {
+    if (!telegram) return noTelegram(reply);
+    const shared = telegram.mode() === "shared";
+    // Hermes's ready-made relay is offered when Hermes is on this computer (or already chosen); other agents bring their own.
+    return { ...telegram.status(), relayUrl: telegram.relayUrl(), hermes: shared || hermesDetected() ? hermesPluginStatus(telegram.relayUrl(), telegram.relaySecret()) : null };
+  });
+
+  // For an agent's own relay (any agent but Hermes, whose plugin gets it written in): behind the app password like the rest.
+  app.get("/api/telegram/relay-secret", async (_req, reply) => {
+    if (!telegram) return noTelegram(reply);
+    const secret = telegram.mode() === "shared" ? telegram.relaySecret() : null;
+    return secret ? { secret } : reply.code(400).send({ error: "connect the shared bot first" });
+  });
 
   app.put<{ Body: { token?: unknown; mode?: unknown } }>("/api/telegram", async (req, reply) => {
     if (!telegram) return noTelegram(reply);
-    const mode = req.body?.mode === "hermes" ? "hermes" : "own";
+    const mode = req.body?.mode === "shared" || req.body?.mode === "hermes" ? "shared" : "own";
     try {
       return await telegram.connect(String(req.body?.token ?? ""), mode);
     } catch (err) {
@@ -471,7 +498,8 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   app.post("/api/telegram/plugin", async (_req, reply) => {
     if (!telegram) return noTelegram(reply);
     try {
-      return telegram.installPlugin();
+      if (telegram.mode() !== "shared") throw new Error("connect the shared bot first");
+      return installHermesPlugin(telegram.relayUrl(), telegram.relaySecret());
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
     }
@@ -487,13 +515,14 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     }
   });
 
-  // The Hermes plugin's updates, signed with the relay secret: the signature covers the exact bytes, so they're kept raw.
+  // A shared bot's relayed updates (from Hermes's plugin or any agent's relay), signed with the relay secret: the signature covers the exact bytes, so they're kept raw.
   app.register(async (scope) => {
     scope.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body, done) => done(null, body));
     scope.post("/api/telegram/relay", async (req, reply) => {
       if (!telegram) return noTelegram(reply);
       const header = (k: string) => (typeof req.headers[k] === "string" ? (req.headers[k] as string) : undefined);
-      const status = await telegram.relay(String(req.body ?? ""), header("x-webhook-timestamp"), header("x-webhook-signature-v2"));
+      const status = await telegram.relay(String(req.body ?? ""), header("x-webhook-timestamp"), header("x-webhook-signature-v2"),
+        { id: header("webhook-id"), timestamp: header("webhook-timestamp"), signature: header("webhook-signature") });
       return reply.code(status).send(status === 200 ? { ok: true } : { error: status === 401 ? "bad signature" : "not accepted" });
     });
   });
@@ -652,8 +681,62 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     return reply.send(createReadStream(path));
   };
 
+  // ---- editing styles: the built-in ones and the ones the user adds, each with a thumbnail ----
+
+  app.get<{ Params: { id: string } }>("/api/styles/:id/thumbnail", async (req, reply) => {
+    const style = styleById(store, req.params.id);
+    if (!style) return reply.code(404).send({ error: "no such editing style" });
+    const t = thumbnail(style);
+    return reply.type(t.type).header("cache-control", "no-cache").send(t.body);
+  });
+
+  // What a style with these steps would look like, for the Add form before it's saved: ?captions=0&punchIn=1...
+  app.get<{ Querystring: Record<string, string> }>("/api/styles/thumbnail-preview", async (req, reply) => {
+    const steps = Object.fromEntries(STYLE_STEPS.map((s) => [s.key, req.query[s.key] !== "0"])) as Parameters<typeof thumbnailSvg>[0];
+    return reply.type("image/svg+xml").send(thumbnailSvg(steps));
+  });
+
+  // A new style: name, description, steps (JSON of true/false), makeDefault ("true"), and an optional thumbnail image.
+  app.post("/api/styles", async (req, reply) => {
+    const fields: Record<string, string> = {};
+    let image: Buffer | undefined;
+    try {
+      for await (const part of req.parts()) {
+        if (part.type === "file") {
+          const chunks: Buffer[] = [];
+          let size = 0;
+          for await (const chunk of part.file) {
+            size += chunk.length;
+            if (size > MAX_THUMBNAIL_BYTES) throw new Error("the thumbnail is larger than 5 MB");
+            chunks.push(chunk);
+          }
+          if (size) image = Buffer.concat(chunks);
+        } else {
+          fields[part.fieldname] = String(part.value);
+        }
+      }
+      let steps: unknown;
+      try { steps = fields.steps ? JSON.parse(fields.steps) : undefined; } catch { throw new Error("steps must be JSON"); }
+      const imageProblem = image ? thumbnailProblem(image) : null;
+      if (imageProblem) throw new Error(imageProblem);
+      const made = createStyle(store, { name: fields.name ?? "", description: fields.description, steps: steps as never });
+      if (typeof made === "string") throw new Error(made);
+      if (image) saveThumbnail(made.id, image);
+      if (fields.makeDefault === "true") setDefaultStyle(store, made.id);
+      return { id: made.id, name: made.name, token: styleToken(made) };
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
+  });
+
+  app.delete<{ Params: { id: string } }>("/api/styles/:id", async (req, reply) => {
+    const error = deleteStyle(store, req.params.id);
+    if (error) return reply.code(error === "no such editing style" ? 404 : 400).send({ error });
+    return { ok: true };
+  });
+
   app.get<{ Params: { id: string } }>("/api/styles/:id/sample.mp4", async (req, reply) => {
-    const style = styleById(req.params.id);
+    const style = styleById(store, req.params.id);
     if (!style || !hasSample(style.id)) return reply.code(404).send({ error: "that style has no sample video yet" });
     return sendVideo(req, reply, sampleVideoPath(style.id));
   });

@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { config } from "../src/config.ts";
 import type { Publisher } from "../src/platforms/base.ts";
 import { publishers as real } from "../src/platforms/index.ts";
+import { queueEvent } from "../src/notify.ts";
 import { ReviewService } from "../src/review/service.ts";
 import { Runner } from "../src/runner.ts";
 import { buildServer } from "../src/server.ts";
@@ -52,6 +53,9 @@ test("MCP handshake and tool list", async () => {
   assert.equal(init.body.result.protocolVersion, "2025-06-18");
   assert.equal(init.body.result.serverInfo.name, "freeposter");
   assert.ok(init.body.result.capabilities.tools);
+  assert.ok(init.body.result.capabilities.prompts);
+  assert.match(init.body.result.serverInfo.version, /^\d+\.\d+\.\d+/);
+  assert.doesNotMatch(init.body.result.instructions, /hermes/i, "the instructions suit any agent");
   // an unknown version gets the newest
   assert.equal((await rpc("initialize", { protocolVersion: "1999-01-01" })).body.result.protocolVersion, "2025-11-25");
 
@@ -59,7 +63,7 @@ test("MCP handshake and tool list", async () => {
   assert.equal(note.statusCode, 202);
 
   const names = (await rpc("tools/list")).body.result.tools.map((t: any) => t.name);
-  assert.deepEqual(names.sort(), ["audit_reviews", "cancel_post", "cancel_production", "create_edit", "describe_production_tools", "get_edit", "get_post", "get_production", "get_review", "get_tiktok_creator_info", "list_accounts", "list_posts", "publish_video", "request_review", "reschedule_post", "retry_job", "revise_edit", "revise_production", "start_production"]);
+  assert.deepEqual(names.sort(), ["add_editing_style", "audit_reviews", "cancel_post", "cancel_production", "create_edit", "describe_production_tools", "get_edit", "get_post", "get_production", "get_review", "get_tiktok_creator_info", "list_accounts", "list_editing_styles", "list_events", "list_posts", "list_reviews", "publish_video", "request_review", "reschedule_post", "retry_job", "revise_edit", "revise_production", "start_production", "wait_for_events"]);
   // Agents have no way to approve: only the user does, on a review (review.test.ts).
   assert.ok(!names.some((n: string) => /approve|decide|accept/.test(n)), "no approve tool");
   assert.equal((await rpc("nope")).body.error.code, -32601);
@@ -230,4 +234,55 @@ test("revise_edit replaces an edit after a redo; the old one can't be reviewed o
   assert.equal(store.edit(editId)!.state, "superseded");
   assert.match((await call("request_review", { edit_id: editId, account_ids: [x.id], caption: "old" })).content[0].text, /superseded/);
   assert.match((await call("revise_edit", { edit_id: editId, settings: { audio: false } })).content[0].text, /superseded/);
+});
+
+test("prompts: check_freeposter and handle_redo, ready for agents that offer them", async () => {
+  const { app, rpc } = setup();
+  const list = (await rpc("prompts/list")).body.result.prompts;
+  assert.deepEqual(list.map((p: any) => p.name).sort(), ["check_freeposter", "handle_redo"]);
+  const check = (await rpc("prompts/get", { name: "check_freeposter" })).body.result;
+  assert.match(check.messages[0].content.text, /list_events/);
+  const redo = (await rpc("prompts/get", { name: "handle_redo", arguments: { review_id: "7" } })).body.result;
+  assert.match(redo.messages[0].content.text, /review_id 7/);
+  assert.equal((await rpc("prompts/get", { name: "handle_redo" })).body.error.code, -32602);
+  assert.equal((await rpc("prompts/get", { name: "nope" })).body.error.code, -32602);
+  await app.close();
+});
+
+test("list_events and wait_for_events: any agent follows what happens without a webhook", async () => {
+  const { app, call, store } = setup();
+  queueEvent(store, "edit.ready", "edit.ready:1", { edit_id: 1 }, "Edit 1 is ready.");
+  const first = (await call("list_events")).structuredContent;
+  assert.deepEqual(first.events.map((e: any) => [e.event_type, e.edit_id, e.summary]), [["edit.ready", 1, "Edit 1 is ready."]]);
+  assert.equal((await call("list_events")).structuredContent.events.length, 0, "read once returned");
+  assert.equal((await call("list_events", { since: 0 })).structuredContent.events.length, 1, "since re-reads");
+  assert.equal((await call("list_events", { types: ["nope"] })).isError, true);
+
+  // Nothing new: wait_for_events returns as soon as something happens.
+  const started = Date.now();
+  setTimeout(() => queueEvent(store, "post.done", "post.done:4", { post_id: 4 }, "Post 4 is done."), 50);
+  const waited = (await call("wait_for_events", { since: first.next_since, timeout_sec: 10 })).structuredContent;
+  assert.deepEqual(waited.events.map((e: any) => e.event_type), ["post.done"]);
+  assert.ok(Date.now() - started < 5_000);
+  // And with nothing at all, an empty list after the timeout.
+  const none = (await call("wait_for_events", { since: waited.next_since, timeout_sec: 0 })).structuredContent;
+  assert.deepEqual(none.events, []);
+  assert.equal(none.next_since, waited.next_since);
+  await app.close();
+});
+
+test("list_reviews filters by state; get_review on a redo marks it picked up", async () => {
+  const { app, call, store, reviews } = setup();
+  assert.deepEqual((await call("list_reviews", { needs_agent: true })).structuredContent.reviews, []);
+  assert.equal((await call("list_reviews", { state: "nope" })).isError, true);
+  const r = reviews.reviews.create({ subjectKind: "file", subjectId: null, revision: 1, sourcePath: "x.mp4", expiresAt: Date.now() + 3_600_000, requestedVia: "agent",
+    draft: { accountIds: [], caption: "c", title: "", scheduledAt: null, tiktok: null, allowDuplicate: false, captionTopic: null } }).review;
+  store.db.prepare("UPDATE reviews SET state = 'redo', decided_at = ? WHERE id = ?").run(Date.now(), r.id);
+  queueEvent(store, "review.redo", `review.redo:${r.id}`, { review_id: r.id, handled_by: "agent" }, "redo it");
+  assert.deepEqual((await call("list_reviews", { needs_agent: true })).structuredContent.reviews.map((x: any) => x.id), [r.id]);
+  assert.deepEqual((await call("list_reviews", { state: "redo" })).structuredContent.reviews.map((x: any) => x.id), [r.id]);
+  await call("get_review", { review_id: r.id });
+  assert.ok(store.eventByKey(`review.redo:${r.id}`)!.readAt);
+  assert.deepEqual((await call("list_reviews", { needs_agent: true })).structuredContent.reviews, [], "a file redo an agent read is in its hands");
+  await app.close();
 });

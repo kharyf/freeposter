@@ -30,9 +30,9 @@ const LEGACY_FORMAT = "the name must look like name_m.d.yy_h.mm.am (for example 
 const FORMAT = "the name must look like name_m.d.yy_h.mm.am_style_set_RAW (for example Gatekeeping_11.1.26_5.30.pm); every part after the name may be left off";
 
 // Anything shaped like a date or time is read as one, so a typo is reported instead of posting right away.
-const looksLikeTime = (s: string) => /^\d[\d.:]*\s*(am|pm)$/i.test(s);
-const looksLikeDate = (s: string) => /^\d+(\.\d+)+$/.test(s);
-const isRaw = (s: string) => /^raw$/i.test(s.trim());
+export const looksLikeTime = (s: string) => /^\d[\d.:]*\s*(am|pm)$/i.test(s);
+export const looksLikeDate = (s: string) => /^\d+(\.\d+)+$/.test(s);
+export const isRaw = (s: string) => /^raw$/i.test(s.trim());
 
 // Drop a file extension (it has a letter), but not a time's trailing ".pm"/".30pm" or a date's ".26".
 const stripExtension = (filename: string) => filename.trim().replace(/\.(?!\d*\s*(?:am|pm)$)(?=[^._]*[a-z])[^._]{1,5}$/i, "");

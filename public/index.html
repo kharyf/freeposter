@@ -7,7 +7,8 @@
 <style>
   :root {
     --bg: #f6f5f2; --panel: #fff; --ink: #1c1b19; --muted: #6b6862; --line: #e4e1da;
-    --accent: #1f5eff; --ok: #1d7a46; --warn: #a15c00; --bad: #b42318;
+    /* --accent is FreePoster Blue; --trim is its light companion for borders and outlines */
+    --accent: #1f5eff; --trim: #8fbeff; --ok: #1d7a46; --warn: #a15c00; --bad: #b42318;
     --tiktok: #111; --instagram: #c13584; --facebook: #1877f2; --x: #000; --youtube: #e00;
   }
   @media (prefers-color-scheme: dark) {
@@ -41,7 +42,7 @@
   .acct .check { margin-left: auto; }
   .acct .check input, .share input, .defaults-tiktok .check input { width: auto; margin: 0; }
   .share { padding: 2px 0 2px 36px; color: var(--muted); }
-  .acct-set { border: 1px solid var(--line); border-radius: 8px; padding: 2px 10px 6px; margin-bottom: 8px; }
+  .acct-set { border: 2px solid var(--trim); border-radius: 8px; padding: 2px 10px 6px; margin-bottom: 8px; }
   .acct-set > summary { display: flex; align-items: center; gap: 8px; padding: 6px 0; cursor: pointer; list-style: none; }
   .acct-set > summary::-webkit-details-marker { display: none; }
   .acct-set > summary::before { content: "▸"; color: var(--muted); width: 12px; }
@@ -191,6 +192,37 @@
   .style-card .head input { margin: 0; }
   .style-card video { display: block; max-height: 480px; }
   .style-card .no-sample { margin-top: 8px; padding: 32px 12px; text-align: center; border: 1px dashed var(--line); border-radius: 8px; }
+  .style-card .body { display: flex; gap: 14px; margin-top: 10px; align-items: flex-start; }
+  .style-card .body > div { min-width: 0; flex: 1; }
+  .style-thumb { width: 112px; aspect-ratio: 9 / 16; flex: none; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); background: #0d0e12; display: block; }
+  .steps-on { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+  .step-chip { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .step-chip.on { border-color: var(--trim); color: var(--ink); }
+  .step-chip.off { text-decoration: line-through; opacity: .7; }
+  .style-card .card-actions { margin-top: 10px; display: flex; justify-content: flex-end; }
+  .style-card .card-actions button { padding: 2px 8px; font-size: 12px; }
+  .styles-head { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 16px; }
+  .styles-head p { margin: 0; flex: 1; }
+  .styles-head button { flex: none; display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+  .styles-head button svg { width: 14px; height: 14px; stroke: currentColor; stroke-width: 2; stroke-linecap: round; fill: none; }
+  @media (max-width: 600px) { .styles-head { flex-direction: column; gap: 10px; } }
+  .style-form { max-width: 820px; }
+  .style-form[hidden] { display: none; }
+  .style-form .layout { display: grid; grid-template-columns: minmax(0, 1fr) 180px; gap: 24px; }
+  @media (max-width: 700px) { .style-form .layout { grid-template-columns: 1fr; } .style-form .preview { order: -1; } }
+  .style-form h3 { margin: 0; font-size: 17px; }
+  .style-form textarea { min-height: 70px; }
+  .style-form fieldset { border: 0; padding: 0; margin: 12px 0 0; }
+  .style-form legend { font-weight: 600; font-size: 13px; padding: 0; margin-bottom: 4px; }
+  .style-form .step { display: flex; gap: 8px; align-items: flex-start; font-weight: 400; margin: 6px 0; }
+  .style-form .step input { width: auto; margin: 3px 0 0; }
+  .style-form .step > span > span { display: block; }
+  .style-form .preview .style-thumb { width: 180px; }
+  .style-form .preview .muted { margin-top: 6px; }
+  .style-form .field-note { margin-top: 4px; }
+  .style-form .field-note.err { color: var(--bad); font-size: 13px; }
+  .style-form .form-actions { display: flex; gap: 8px; margin-top: 16px; }
+  .style-form .form-actions button.primary { width: auto; margin: 0; padding: 8px 16px; }
   /* ---- Calendar tab ---- */
   .cal-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
   .cal-head h2 { margin: 0 auto 0 0; font-size: 20px; text-transform: none; letter-spacing: -0.01em; color: var(--ink); }
@@ -240,7 +272,7 @@
     </section>
     <section id="agents">
       <h2>AI agents</h2>
-      <p class="muted" style="margin-top:0">Claude, Cursor, Codex and other agents can post for you through FreePoster's MCP server, built in while FreePoster runs. Point your agent at this address:</p>
+      <p class="muted" style="margin-top:0">Claude Code, Codex, Cursor, Hermes or any other agent that speaks MCP can work with FreePoster through its MCP server, built in while FreePoster runs. Point your agent at this address:</p>
       <div id="agentsBody"></div>
     </section>
     <section>
@@ -326,7 +358,35 @@
 </main>
 
 <div id="styles" class="page" role="tabpanel" aria-label="Editing styles" hidden>
-  <p class="muted" style="margin-top:0">A Drive video is edited in the style its name gives, as in <code>Gatekeeping_11.1.26_5.30.pm_<strong>Basic</strong>.mp4</code>, or in the default style when its name gives none.</p>
+  <div class="styles-head">
+    <p class="muted">A Drive video is edited in the style its name gives, as in <code>Gatekeeping_11.1.26_5.30.pm_<strong>Basic</strong>.mp4</code>, or in the default style when its name gives none.</p>
+    <button type="button" id="addStyle" aria-expanded="false" aria-controls="styleForm"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>Add Editing Style</button>
+  </div>
+  <form id="styleForm" class="style-form" hidden novalidate>
+    <section>
+      <h3>New editing style</h3>
+      <div class="layout">
+        <div>
+          <label for="styleName">Name</label>
+          <input type="text" id="styleName" maxlength="40" autocomplete="off" placeholder="Fast Cuts">
+          <div id="styleNameNote" class="field-note muted">Its name in a Drive filename is written without spaces.</div>
+          <label for="styleDesc">Description <span class="muted" style="font-weight:400">(optional)</span></label>
+          <textarea id="styleDesc" maxlength="500" placeholder="What this style does, shown on its card."></textarea>
+          <fieldset id="styleSteps"><legend>What the edit does</legend></fieldset>
+          <label for="styleThumb">Thumbnail <span class="muted" style="font-weight:400">(optional)</span></label>
+          <input type="file" id="styleThumb" accept="image/png,image/jpeg,image/webp">
+          <div class="field-note muted">A PNG, JPEG or WebP up to 5 MB, ideally 9:16: a frame from a video edited this way. Without one, FreePoster draws an example from the steps.</div>
+          <label class="step" style="margin-top:14px"><input type="checkbox" id="styleDefault"><span>Make this the default style<span class="muted">Drive videos whose name gives no style are edited this way.</span></span></label>
+          <div id="styleFormError"></div>
+          <div class="form-actions"><button type="submit" class="primary" id="styleSave">Add style</button><button type="button" id="styleCancel">Cancel</button></div>
+        </div>
+        <div class="preview">
+          <img id="stylePreview" class="style-thumb" alt="Example frame for the new style">
+          <div id="stylePreviewNote" class="muted">Example drawn from the steps</div>
+        </div>
+      </div>
+    </section>
+  </form>
   <div id="stylesBody" class="styles-grid"></div>
 </div>
 
@@ -838,12 +898,13 @@ function stepHtml(step) {
         ${field("SHOT_RETENTION_DAYS", "Keep shot files after posting (days)", "default 14; finished videos are kept", "number")}
       </div></details>
       <h2 style="margin-top:16px">Your agent</h2>
-      <p>FreePoster tells your agent when a video is ready, an edit is done or a post went out, so it doesn't have to keep asking. For Hermes Agent, the address is <code>http://localhost:8644/webhooks/freeposter</code>, and the secret is the one in its <code>freeposter</code> webhook route.</p>
+      <p>Any agent connected to FreePoster (see <em>AI agents</em> on the home screen) learns what happened from FreePoster's event feed: when a video is ready, how you decided on a review, what to redo, which posts went out. It reads the feed with its <code>list_events</code> and <code>wait_for_events</code> tools, so nothing here is needed for that.</p>
+      <p>If your agent runs all the time and takes webhooks (Hermes Agent, n8n, your own server), FreePoster can also push each event to it the moment it happens. Each one is signed with the secret below, both the <a href="https://www.standardwebhooks.com/" target="_blank" rel="noopener">Standard Webhooks</a> way and as <code>X-Webhook-Signature-V2</code>.</p>
       <div class="grid2">
-        ${field("NOTIFY_WEBHOOK_URL", "Webhook address", "Blank sends nothing.")}
+        ${field("NOTIFY_WEBHOOK_URL", "Webhook address", "Blank pushes nothing (agents still read the feed).")}
         ${field("NOTIFY_WEBHOOK_SECRET", "Webhook secret", "The same text as in your agent's webhook settings.")}
       </div>
-      <p><button type="button" data-produce="webhook-test">Send a test event</button> <span id="webhookTest"></span></p>
+      <p><button type="button" data-produce="webhook-test">Send a test event</button> <button type="button" data-produce="webhook-hermes">Fill in Hermes Agent's address</button> <span id="webhookTest"></span></p>
       <h2 style="margin-top:16px">Review on Telegram</h2>
       <p>Your agent can't post on its own, and Drive videos wait for you too. When a video is ready to post, FreePoster sends you the exact file on Telegram with <strong>Approve</strong>, <strong>Reject</strong> and <strong>Redo</strong> buttons, and shows it here under <em>Waiting for your review</em>. Only those buttons post anything; telling your agent "yes" doesn't.</p>
       <div id="tgBody" class="muted">Loading…</div>`;
@@ -993,6 +1054,7 @@ async function loadProductionHealth() {
     `<div>${k.ok ? `<span class="check-ok">✓ ${names[k.kind]}</span>` : `<span class="check-bad">✗ ${names[k.kind]}</span>`} <span class="muted">${esc(k.detail)}</span>
       ${k.kind === "hyperframes" && !k.ok ? ` <button type="button" data-produce="install">Install HyperFrames ${esc(h.hyperframesVersion)}</button>` : ""}</div>`).join("")
     + `<div class="muted" style="margin-top:8px">Blender templates: ${h.templates.map(esc).join(", ") || "none"}. Sound effects: ${h.sfx.length} in <code>${esc(h.sfxDir)}</code>.</div>`
+    + `<div class="muted" style="margin-top:4px">${h.feedLastRead ? `Your agent last read FreePoster's events ${esc(new Date(h.feedLastRead).toLocaleString())}.` : "No agent has read FreePoster's events yet."}</div>`
     + (h.webhook.lastError ? `<div class="banner err" style="margin:8px 0 0">The webhook last failed: ${esc(h.webhook.lastError)}</div>` : "");
 }
 
@@ -1011,29 +1073,34 @@ async function loadTelegram() {
   if (!t.configured) {
     box.innerHTML = `
       <div class="field"><label>Which bot</label>
-        <label class="row" style="font-weight:400"><input type="radio" name="tgMode" value="hermes" checked style="width:auto;margin:0"> The bot Hermes already talks to me through</label>
-        <label class="row" style="font-weight:400"><input type="radio" name="tgMode" value="own" style="width:auto;margin:0"> A separate bot only FreePoster uses</label>
-        <div class="hint">With Hermes's bot, reviews arrive in the same chat, and a small Hermes plugin passes your taps straight to FreePoster (Hermes's model never sees them). Hermes's token is <code>TELEGRAM_BOT_TOKEN</code> in <code>%LOCALAPPDATA%\\hermes\\.env</code>. A separate bot comes from @BotFather and keeps reviews out of Hermes entirely.</div></div>
+        <label class="row" style="font-weight:400"><input type="radio" name="tgMode" value="own" checked style="width:auto;margin:0"> A separate bot only FreePoster uses</label>
+        <label class="row" style="font-weight:400"><input type="radio" name="tgMode" value="shared" style="width:auto;margin:0"> The bot my agent already talks to me through</label>
+        <div class="hint">A separate bot comes from @BotFather and works with any agent: FreePoster reads its messages itself, and reviews stay out of your agent's chat. With your agent's own bot, reviews arrive in the same chat, but only one program can read a bot's messages, so your agent must pass FreePoster's taps on to it (its relay, see docs/agents.md).${t.hermes?.detected ? " Hermes Agent has a ready-made plugin for this; its token is <code>TELEGRAM_BOT_TOKEN</code> in <code>%LOCALAPPDATA%\\hermes\\.env</code>." : ""}</div></div>
       <div class="field"><label for="tgToken">Bot token</label><input id="tgToken" type="password" autocomplete="off" placeholder="123456789:AA…"></div>
       <p><button type="button" data-tg="connect">Connect</button></p>${err}`;
     return;
   }
-  const hermes = t.mode === "hermes";
+  const shared = t.mode === "shared";
+  const p = t.hermes;
   const pairLine = t.paired
     ? `<span class="check-ok">✓ Paired with ${esc(t.paired)}</span>`
     : t.pairCode
-      ? `To pair, send <code>${hermes ? `/freeposter ${esc(t.pairCode)}` : esc(t.pairCode)}</code> to <strong>@${esc(t.bot)}</strong> in a private chat (within 15 minutes).${hermes && !(t.plugin?.installed && t.plugin?.enabled) ? " Install and enable the Hermes plugin first: Hermes passes the code on through it." : ""}`
+      ? `To pair, send <code>${shared ? `/freeposter ${esc(t.pairCode)}` : esc(t.pairCode)}</code> to <strong>@${esc(t.bot)}</strong> in a private chat (within 15 minutes).${shared ? ` Set up your agent's relay first${p?.detected ? " (for Hermes, install and enable the plugin below)" : ""}: it passes the code on.` : ""}`
       : `<button type="button" data-tg="pair">Get a pairing code</button>`;
-  const p = t.plugin;
-  const plugin = hermes ? `
-      <div style="margin-top:10px"><strong>Hermes plugin</strong>
+  const relay = shared ? `
+      <div style="margin-top:10px"><strong>Your agent's relay</strong>
+        <div class="muted">Your agent reads this bot's messages, so it passes FreePoster's on: taps on buttons whose data starts with <code>fp:</code>, replies to messages starting "🔁 FreePoster redo", and <code>/freeposter</code>. It POSTs each raw Telegram update to the address below, signed with the relay secret (docs/agents.md).</div>
+        ${copyBox(t.relayUrl)}
+        <div id="tgRelaySecret"><button type="button" data-tg="secret">Show the relay secret</button></div>
+        ${t.lastRelay ? `<div class="muted">Last update passed on ${new Date(t.lastRelay).toLocaleString()}</div>` : `<div class="muted">Nothing passed on yet.</div>`}</div>` : "";
+  const plugin = shared && p?.detected ? `
+      <div style="margin-top:10px"><strong>Hermes Agent plugin</strong> <span class="muted">(a ready-made relay)</span>
         <div>${p.installed && p.configured ? `<span class="check-ok">✓ installed</span>` : `<span class="check-bad">✗ not installed</span>`} <span class="muted">${esc(p.dir)}</span></div>
         <div>${p.enabled ? `<span class="check-ok">✓ enabled in Hermes</span>` : `<span class="check-bad">✗ not enabled</span> <span class="muted">run <code>hermes plugins enable freeposter-review</code>, then restart Hermes</span>`}</div>
-        ${p.lastRelay ? `<div class="muted">Last tap passed on ${new Date(p.lastRelay).toLocaleString()}</div>` : ""}
         <p><button type="button" data-tg="plugin">${p.installed && p.configured ? "Reinstall the plugin" : "Install the plugin"}</button></p></div>` : "";
   box.innerHTML = `
-      <div><span class="check-ok">✓ @${esc(t.bot)}</span> <span class="muted">${hermes ? "Hermes's bot: Hermes reads its messages, the plugin passes FreePoster's on" : "FreePoster's own bot"}</span></div>
-      <div style="margin-top:6px">${pairLine}</div>${plugin}${err}
+      <div><span class="check-ok">✓ @${esc(t.bot)}</span> <span class="muted">${shared ? "your agent's bot: it reads the messages and passes FreePoster's on" : "FreePoster's own bot"}</span></div>
+      <div style="margin-top:6px">${pairLine}</div>${relay}${plugin}${err}
       <p><button type="button" data-tg="test" ${t.paired ? "" : "disabled"}>Send a test message</button> <button type="button" data-tg="disconnect">Disconnect</button> <span id="tgResult"></span></p>`;
   if (!t.paired) tgPoll = setTimeout(loadTelegram, 3000);
 }
@@ -1052,6 +1119,11 @@ async function telegramAction(button) {
       await call("PUT", "/api/telegram", { token: $("tgToken").value, mode });
     } else if (action === "pair") await call("POST", "/api/telegram/pair");
     else if (action === "plugin") await call("POST", "/api/telegram/plugin");
+    else if (action === "secret") {
+      const { secret } = await call("GET", "/api/telegram/relay-secret");
+      $("tgRelaySecret").innerHTML = copyBox(secret);
+      return;
+    }
     else if (action === "test") { await call("POST", "/api/telegram/test"); }
     else if (action === "disconnect") { if (!confirm("Stop sending reviews to Telegram? They'll still show here.")) return; await call("DELETE", "/api/telegram"); }
     await loadTelegram();
@@ -1161,6 +1233,11 @@ async function produceAction(button) {
       settings = await saved.json();
       const res = await fetch("/api/notify/test", { method: "POST" });
       $("webhookTest").innerHTML = res.ok ? `<span class="check-ok">✓ delivered</span>` : `<span class="check-bad">✗ ${esc((await res.json()).error)}</span>`;
+    } else if (action === "webhook-hermes") {
+      // Hermes Agent's webhook adapter, with a route named freeposter (docs/hermes.md); the secret is still the user's.
+      const url = $("stepBody").querySelector("[data-key='NOTIFY_WEBHOOK_URL']");
+      if (url) url.value = "http://localhost:8644/webhooks/freeposter";
+      $("webhookTest").innerHTML = `<span class="muted">Now set the secret to the one in Hermes's <code>freeposter</code> route, and send a test event.</span>`;
     }
   } catch (err) {
     $("setupError").innerHTML = `<div class="banner err" style="margin:16px 0 0">${esc(err.message)}</div>`;
@@ -1680,21 +1757,29 @@ const params = new URLSearchParams(location.search);
 if (params.get("error")) banner("err", params.get("error"));
 if (params.get("connected")) banner("ok", `Connected ${params.get("connected")}`);
 if (params.size) history.replaceState(null, "", "/");
-// ---- Editing Styles tab: each style, its sample, and which one is the default (no adding or renaming here) ----
+// ---- Editing Styles tab: each style with its thumbnail and sample, which one is the default, and adding new ones ----
 
 function renderStyles() {
   const many = status.editingStyles.length > 1;
+  const steps = status.styleSteps;
   $("stylesBody").innerHTML = status.editingStyles.map((s) => `
     <section class="style-card">
       <div class="head"><h3>${esc(s.name)}</h3>
         ${s.isDefault ? `<span class="badge default">Default</span>` : ""}
         ${many ? `<label title="Drive videos whose name gives no style are edited this way">
           <input type="radio" name="defaultStyle" value="${esc(s.id)}" ${s.isDefault ? "checked" : ""}> Default</label>` : ""}</div>
-      <div class="muted" style="margin-top:4px">In a Drive filename: <span class="set-token">_${esc(s.token)}</span></div>
-      <p style="margin:8px 0 0">${esc(s.description)}</p>
+      <div class="body">
+        <img class="style-thumb" src="${esc(s.thumbnailUrl)}" alt="Example frame of the ${esc(s.name)} style" loading="lazy">
+        <div>
+          <div class="muted">In a Drive filename: <span class="set-token">_${esc(s.token)}</span></div>
+          ${s.description ? `<p style="margin:8px 0 0">${esc(s.description)}</p>` : ""}
+          <div class="steps-on">${steps.map((st) => `<span class="step-chip ${s.steps[st.key] ? "on" : "off"}" title="${esc(st.help)}">${esc(st.label)}</span>`).join("")}</div>
+        </div>
+      </div>
       ${s.hasSample
-        ? `<video controls preload="metadata" playsinline src="/api/styles/${encodeURIComponent(s.id)}/sample.mp4" style="display:block"></video>`
+        ? `<video controls preload="metadata" playsinline poster="${esc(s.thumbnailUrl)}" src="/api/styles/${encodeURIComponent(s.id)}/sample.mp4" style="display:block;margin-top:10px"></video>`
         : `<div class="no-sample muted">No sample video yet</div>`}
+      ${s.builtIn ? "" : `<div class="card-actions"><button type="button" data-delete-style="${esc(s.id)}">Delete</button></div>`}
     </section>`).join("");
 }
 
@@ -1704,6 +1789,115 @@ $("stylesBody").addEventListener("change", async (e) => {
   if (!res.ok) banner("err", (await res.json()).error);
   await loadStatus();
   renderStyles();
+});
+
+$("stylesBody").addEventListener("click", async (e) => {
+  const id = e.target.closest("[data-delete-style]")?.dataset.deleteStyle;
+  if (!id) return;
+  const style = status.editingStyles.find((s) => s.id === id);
+  if (!confirm(`Delete the ${style?.name ?? ""} style? Videos already given it keep its edit; new ones named with _${style?.token ?? ""} will be refused.`)) return;
+  const res = await fetch(`/api/styles/${encodeURIComponent(id)}`, { method: "DELETE" });
+  if (!res.ok) banner("err", (await res.json()).error);
+  await loadStatus();
+  renderStyles();
+});
+
+// The Add form: its steps start all on, and its preview follows them until an image is chosen.
+let styleThumbUrl = null;
+
+const styleFormSteps = () => Object.fromEntries(status.styleSteps.map((st) => [st.key, $(`step_${st.key}`).checked]));
+
+function updateStylePreview() {
+  if (styleThumbUrl) { $("stylePreview").src = styleThumbUrl; $("stylePreviewNote").textContent = "Your thumbnail"; return; }
+  const q = new URLSearchParams(Object.entries(styleFormSteps()).map(([k, v]) => [k, v ? "1" : "0"]));
+  $("stylePreview").src = `/api/styles/thumbnail-preview?${q}`;
+  $("stylePreviewNote").textContent = "Example drawn from the steps";
+}
+
+const styleTokenOf = (name) => name.trim().replace(/\s+/g, "");
+
+/** Why a style can't have this name, or null. The server checks the same. */
+function styleNameProblem(name) {
+  const token = styleTokenOf(name);
+  if (!token) return null;
+  if (token.includes("_")) return "A style's name can't contain an underscore: underscores separate the parts of a Drive filename.";
+  if (/[\\/:*?"<>|]/.test(token)) return "A style's name can't contain \\ / : * ? \" < > or |, which filenames can't hold.";
+  if (/^raw$/i.test(token)) return "RAW already means \"don't edit\" in a Drive filename.";
+  if (/^\d+(\.\d+)+$/.test(token) || /^\d[\d.:]*\s*(am|pm)$/i.test(token)) return `"${token}" reads as a date or time in a Drive filename.`;
+  const key = token.toLowerCase();
+  const style = status.editingStyles.find((s) => s.token.toLowerCase() === key);
+  if (style) return `"${token}" is already the editing style ${style.name}.`;
+  const set = status.accountSets.find((s) => s.token.toLowerCase() === key);
+  if (set) return `"${token}" is the account set ${set.name}, so a filename couldn't tell them apart.`;
+  return null;
+}
+
+function updateStyleName() {
+  const name = $("styleName").value;
+  const problem = styleNameProblem(name);
+  const token = styleTokenOf(name);
+  const note = $("styleNameNote");
+  note.className = `field-note ${problem ? "err" : "muted"}`;
+  note.innerHTML = problem ? esc(problem)
+    : token ? `In a Drive filename: <span class="set-token">_${esc(token)}</span>, as in <code>Gatekeeping_11.1.26_5.30.pm_${esc(token)}.mp4</code>`
+    : "Its name in a Drive filename is written without spaces.";
+  $("styleSave").disabled = Boolean(problem) || !token;
+}
+
+function openStyleForm(open) {
+  const form = $("styleForm");
+  form.hidden = !open;
+  $("addStyle").setAttribute("aria-expanded", String(open));
+  if (!open) return;
+  form.reset();
+  $("styleFormError").innerHTML = "";
+  if (styleThumbUrl) URL.revokeObjectURL(styleThumbUrl);
+  styleThumbUrl = null;
+  $("styleSteps").innerHTML = `<legend>What the edit does</legend>` + status.styleSteps.map((st) => `
+    <label class="step"><input type="checkbox" id="step_${esc(st.key)}" checked><span>${esc(st.label)}<span class="muted">${esc(st.help)}</span></span></label>`).join("");
+  updateStyleName();
+  updateStylePreview();
+  $("styleName").focus();
+}
+
+$("addStyle").addEventListener("click", () => openStyleForm($("styleForm").hidden));
+$("styleCancel").addEventListener("click", () => openStyleForm(false));
+$("styleName").addEventListener("input", updateStyleName);
+$("styleSteps").addEventListener("change", updateStylePreview);
+$("styleThumb").addEventListener("change", () => {
+  if (styleThumbUrl) URL.revokeObjectURL(styleThumbUrl);
+  const file = $("styleThumb").files[0];
+  styleThumbUrl = file ? URL.createObjectURL(file) : null;
+  updateStylePreview();
+});
+
+$("styleForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const steps = styleFormSteps();
+  const fail = (message) => { $("styleFormError").innerHTML = `<div class="banner err" style="margin:12px 0 0">${esc(message)}</div>`; };
+  if (!Object.values(steps).some(Boolean)) return fail("Turn on at least one step. A video that shouldn't be edited at all ends its filename in _RAW.");
+  const file = $("styleThumb").files[0];
+  if (file && file.size > 5 * 1024 * 1024) return fail("The thumbnail is larger than 5 MB.");
+  const body = new FormData();
+  body.append("name", $("styleName").value.trim());
+  body.append("description", $("styleDesc").value.trim());
+  body.append("steps", JSON.stringify(steps));
+  body.append("makeDefault", String($("styleDefault").checked));
+  if (file) body.append("thumbnail", file);
+  $("styleSave").disabled = true;
+  try {
+    const res = await fetch("/api/styles", { method: "POST", body });
+    const out = await res.json();
+    if (!res.ok) return fail(out.error);
+    openStyleForm(false);
+    await loadStatus();
+    renderStyles();
+    banner("ok", `Added the ${out.name} style. Name a Drive video with _${out.token} to use it.`);
+  } catch (err) {
+    fail(err.message);
+  } finally {
+    $("styleSave").disabled = false;
+  }
 });
 
 // ---- Calendar tab: a month of what goes out, each day's posts earliest first ----
@@ -1984,6 +2178,7 @@ setInterval(() => { if (!aiBusy.size && !$("aiBody").contains(document.activeEle
 {
   const url = `${location.origin}/mcp`;
   const json = JSON.stringify({ mcpServers: { freeposter: { type: "http", url } } }, null, 2);
+  const hermesYaml = `mcp_servers:\n  freeposter:\n    url: ${url}\n    enabled: true`;
   $("agentsBody").innerHTML = `${copyBox(url)}
     <details><summary>How to add it</summary>
       <p><strong>Claude Code</strong></p>${copyBox(`claude mcp add --transport http freeposter ${url}`)}
@@ -1991,7 +2186,10 @@ setInterval(() => { if (!aiBusy.size && !$("aiBody").contains(document.activeEle
       <p><strong>Claude Desktop</strong>: Settings → Connectors → Add custom connector, with the address above.</p>
       <p><strong>Cursor, VS Code, Windsurf and others</strong>: add it to the app's MCP settings file:</p>
       <div class="copy"><code style="white-space:pre">${esc(json)}</code><button type="button" data-copy="${esc(json)}">Copy</button></div>
-      <p class="muted">An agent that only runs local commands can reach it through <code>npx mcp-remote ${esc(url)}</code>. With an app password set, agents must send it as HTTP Basic auth (any user name).</p>
+      <p><strong>Hermes Agent</strong>: in its <code>config.yaml</code>, under <code>mcp_servers</code>:</p>
+      <div class="copy"><code style="white-space:pre">${esc(hermesYaml)}</code><button type="button" data-copy="${esc(hermesYaml)}">Copy</button></div>
+      <p class="muted">An agent that only runs local commands can reach it through <code>npx mcp-remote ${esc(url)}</code>, or use the <code>freeposter</code> command line. With an app password set, agents must send it as HTTP Basic auth (any user name).</p>
+      <p class="muted">Agents hear what happened (videos ready, your review decisions, redos to make, posts done) by reading FreePoster's events, so it works the same whichever agent you use. Ask yours to "check FreePoster" when you come back to it, or pick the <code>check_freeposter</code> prompt if it lists prompts.</p>
     </details>`;
   $("agents").addEventListener("click", async (e) => {
     const copy = e.target.closest("[data-copy]");

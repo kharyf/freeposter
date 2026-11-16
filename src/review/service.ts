@@ -19,6 +19,10 @@ import { OPEN_STATES, ReviewStore, type Decision, type Reason, type Review, type
 
 export const DEFAULT_EXPIRY_HOURS = 72;
 const MIN_LIFETIME_MS = 15 * 60_000;
+/** A redo that's the agent's to make and no agent has read in this long: the user is told, once. */
+export const NUDGE_AFTER_MS = 10 * 60_000;
+/** How long a redo counts as waiting for an agent (the event log keeps a week). */
+const AGENT_WINDOW_MS = 7 * 86_400_000;
 
 /** A file's `name` is the user's own file name (the path is FreePoster's copy): a blank caption is written about it. */
 export type Subject = { kind: "edit"; id: number } | { kind: "production"; id: number } | { kind: "file"; path: string; name?: string };
@@ -101,6 +105,11 @@ export class ReviewService {
    * and says what it did; null leaves it to the agent, which the redo event asks to make the change.
    */
   autoRedo: (r: Review) => string | null = () => null;
+  /**
+   * Tells the user that no agent has picked up a redo that's theirs to make (the Telegram side sends it under the
+   * card). Resolves true once the user was told; false leaves it to try again later.
+   */
+  nudge: (r: Review, text: string) => Promise<boolean> = async () => false;
   timer: NodeJS.Timeout | undefined;
 
   constructor(store: Store, deps: ReviewDeps) {
@@ -198,6 +207,7 @@ export class ReviewService {
   async tick() {
     this.resumeApproved();
     this.sweep();
+    await this.nudgeUnpicked().catch((err) => console.error(`reviews: nudge: ${(err as Error).message}`));
     // Each review is prepared once at a time; a tick also waits for preparations already under way.
     await Promise.all(this.reviews.inState("preparing").map((r) => this.busy.get(r.id) ?? this.prepare(r)));
   }
@@ -429,6 +439,52 @@ export class ReviewService {
     return { ok: true, message: done ? `Sent back for a redo: ${done}. The new version will come to you for review.` : "Sent back for a redo. The new version will come to you for review.", review: decided };
   }
 
+  // ---- redos that are the agent's to make ----
+
+  /** Whether a newer version of the review's subject exists (the redo was made). */
+  revised(r: Review): boolean {
+    if (r.subjectKind === "edit") return this.store.latestRevision(r.subjectId!) !== r.subjectId;
+    if (r.subjectKind === "production") return (this.productions?.get(r.subjectId!)?.revision ?? r.revision) > r.revision;
+    return false;
+  }
+
+  /** The review.redo event of a review, from the event log. */
+  redoEvent(r: Review) {
+    return this.store.eventByKey(`review.redo:${r.id}`);
+  }
+
+  /** A redo the user asked for that FreePoster left to the agent, and no newer version has come of it yet. */
+  awaitingAgent(r: Review): boolean {
+    if (r.state !== "redo" || !r.decidedAt || r.decidedAt < Date.now() - AGENT_WINDOW_MS || this.revised(r)) return false;
+    const ev = this.redoEvent(r);
+    if (!ev) return false;
+    let handledBy: unknown;
+    try { handledBy = JSON.parse(ev.body).handled_by; } catch {}
+    if (handledBy !== "agent") return false;
+    // A plain file has no versions to watch: an agent reading the redo is as far as FreePoster can see.
+    return r.subjectKind === "file" ? !ev.readAt && !ev.sentAt : true;
+  }
+
+  /** Reviews waiting for an agent to make a redo, newest first. */
+  agentTodo(): Review[] {
+    return this.reviews.inState("redo").filter((r) => this.awaitingAgent(r)).sort((a, b) => (b.decidedAt ?? 0) - (a.decidedAt ?? 0));
+  }
+
+  /** Tells the user about redos no agent has read for a while (by the feed, the webhook, or get_review). */
+  private async nudgeUnpicked() {
+    const before = Date.now() - NUDGE_AFTER_MS;
+    for (const r of this.reviews.inState("redo")) {
+      if (!r.decidedAt || r.decidedAt > before || !this.awaitingAgent(r)) continue;
+      const ev = this.redoEvent(r)!;
+      if (ev.readAt || ev.sentAt || ev.nudgedAt) continue;
+      const text = `No agent has picked up your redo of ${this.label(r).toLowerCase()} yet. Ask your agent to check FreePoster (it reads the redo with list_events or get_review ${r.id}), or open FreePoster to see it.`;
+      if (await this.nudge(r, text)) {
+        this.store.markEventNudged(ev.id);
+        log(r.id, "told the user no agent has picked up the redo yet");
+      }
+    }
+  }
+
   // ---- what an agent needs to act on a redo ----
 
   redoContext(r: Review): Record<string, unknown> | null {
@@ -495,7 +551,7 @@ export class ReviewService {
     return {
       id: r.id,
       state: r.state,
-      waiting_for: r.state === "pending" ? (r.step === "redo_note" ? "the user's redo note" : "the user's decision") : null,
+      waiting_for: r.state === "pending" ? (r.step === "redo_note" ? "the user's redo note" : "the user's decision") : this.awaitingAgent(r) ? "the agent to make the redo" : null,
       subject: this.subjectView(r),
       label: this.label(r),
       accounts: r.draft.accountIds.map((id) => {

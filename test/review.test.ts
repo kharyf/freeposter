@@ -12,7 +12,8 @@ import { config } from "../src/config.ts";
 import type { Publisher } from "../src/platforms/base.ts";
 import { publishers as real } from "../src/platforms/index.ts";
 import { parseTime, ReviewService } from "../src/review/service.ts";
-import { keyboard, pluginEnabled, TelegramReview } from "../src/review/telegram.ts";
+import { hermesPluginStatus, installHermesPlugin, pluginEnabled } from "../src/integrations/hermes.ts";
+import { keyboard, TelegramReview } from "../src/review/telegram.ts";
 import { Runner } from "../src/runner.ts";
 import type { Platform } from "../src/types.ts";
 import { account, json, newStore, tmp, verticalSilent } from "./helpers.ts";
@@ -50,7 +51,7 @@ function fakeTelegram() {
   return { fetchImpl, calls, issued, updates, all, last: (method: string) => all(method).at(-1) };
 }
 
-async function setup(mode: "own" | "hermes" = "own") {
+async function setup(mode: "own" | "shared" = "own") {
   const dir = tmp();
   const store = newStore(dir);
   const x = store.upsertAccount(account("x"));
@@ -89,7 +90,7 @@ async function setup(mode: "own" | "hermes" = "own") {
 
   // Pair the chat with the code the setup screen shows.
   const code = telegram.status().pairCode!;
-  await telegram.handleUpdate(message(mode === "hermes" ? `/freeposter ${code}` : `/start ${code}`));
+  await telegram.handleUpdate(message(mode === "shared" ? `/freeposter ${code}` : `/start ${code}`));
   assert.equal(telegram.status().paired, "@khary");
 
   /** An edit an agent asked to post, prepared and sent: its card's message id and buttons. */
@@ -316,6 +317,45 @@ test("Redo takes a reason and a note, maps its time to the source, and tells the
   }
 });
 
+test("a redo no agent picks up: listed as the agent's, and the user is told once, under the card", async () => {
+  const { sendReview, reviews, store, tg } = await setup();
+  const { review, cardId } = await sendReview();
+  await reviews.redo(review.id, { via: "window", reason: "captions", note: "fix the spelling at 0:01" });
+  assert.deepEqual(reviews.agentTodo().map((r) => r.id), [review.id]);
+  assert.equal(reviews.view(reviews.reviews.get(review.id)!).waiting_for, "the agent to make the redo");
+  const nudged = () => tg.all("sendMessage").filter((c) => /No agent has picked up/.test(c.params.text));
+
+  await reviews.tick();
+  assert.equal(nudged().length, 0, "not before the wait is up");
+  store.db.prepare("UPDATE reviews SET decided_at = ? WHERE id = ?").run(Date.now() - 11 * 60_000, review.id);
+  await reviews.tick();
+  await reviews.tick();
+  assert.equal(nudged().length, 1, "once");
+  assert.equal(nudged()[0].params.reply_to_message_id, cardId);
+  assert.ok(store.eventByKey(`review.redo:${review.id}`)!.nudgedAt);
+  assert.deepEqual(reviews.agentTodo().map((r) => r.id), [review.id], "still the agent's until a new version comes");
+
+  // The agent makes the new edit: nothing is waiting for it any more.
+  const edit = store.edit(review.subjectId!)!;
+  store.createEdit(edit.sourcePath, edit.sha256, { ...edit.settings, captions: false }, edit.id);
+  assert.deepEqual(reviews.agentTodo(), []);
+});
+
+test("a redo an agent read from the feed isn't nudged; one FreePoster made itself isn't the agent's", async () => {
+  const { sendReview, reviews, store, tg } = await setup();
+  const { review } = await sendReview();
+  await reviews.redo(review.id, { via: "window", reason: "cuts", note: "tighter" });
+  store.markEventsRead([store.eventByKey(`review.redo:${review.id}`)!.id]);
+  store.db.prepare("UPDATE reviews SET decided_at = ? WHERE id = ?").run(Date.now() - 11 * 60_000, review.id);
+  await reviews.tick();
+  assert.equal(tg.all("sendMessage").filter((c) => /No agent has picked up/.test(c.params.text)).length, 0);
+
+  const second = await sendReview();
+  reviews.autoRedo = () => "zooms off, edit 99";
+  await reviews.redo(second.review.id, { via: "window", reason: "zooms", note: null });
+  assert.equal(reviews.awaitingAgent(reviews.reviews.get(second.review.id)!), false);
+});
+
 test("a decision in the window updates the Telegram card: outcome on, buttons off", async () => {
   const { sendReview, reviews, telegram, tg } = await setup();
   const { review, cardId } = await sendReview();
@@ -344,8 +384,8 @@ test("updates are confirmed only after they're handled", async () => {
   assert.equal(posts(), 1);
 });
 
-test("with Hermes's bot: taps come through the signed relay, and FreePoster never reads the bot's updates", async () => {
-  const { sendReview, telegram, tapUpdate, reviews, posts, tg, store } = await setup("hermes");
+test("with a shared bot: taps come through the signed relay, and FreePoster never reads the bot's updates", async () => {
+  const { sendReview, telegram, tapUpdate, reviews, posts, tg, store } = await setup("shared");
   const secret = store.secretPref("telegram.relaySecret")!;
   const sign = (body: string, ts = Math.floor(Date.now() / 1000)) => ({ ts: String(ts), sig: createHmac("sha256", secret).update(`${ts}.${body}`).digest("hex") });
   const { review, approve, cardId } = await sendReview();
@@ -366,16 +406,37 @@ test("with Hermes's bot: taps come through the signed relay, and FreePoster neve
   assert.equal(await telegram.relay(real, s2.ts, s2.sig), 200);
   assert.equal(reviews.reviews.get(review.id)!.state, "approved");
   assert.equal(posts(), 1);
-  assert.equal(tg.all("getUpdates").length, 0, "Hermes reads the bot's updates, not FreePoster");
+  assert.equal(tg.all("getUpdates").length, 0, "the agent reads the bot's updates, not FreePoster");
+});
+
+test("a relay can sign the Standard Webhooks way instead", async () => {
+  const { sendReview, telegram, tapUpdate, reviews, store } = await setup("shared");
+  const secret = store.secretPref("telegram.relaySecret")!;
+  const { review, approve, cardId } = await sendReview();
+  const body = JSON.stringify(tapUpdate(approve, { messageId: cardId }));
+  const ts = String(Math.floor(Date.now() / 1000));
+  const good = `v1,${createHmac("sha256", secret).update(`msg_1.${ts}.${body}`).digest("base64")}`;
+  assert.equal(await telegram.relay(body, undefined, undefined, { id: "msg_1", timestamp: ts, signature: "v1,AAAA" }), 401);
+  assert.equal(await telegram.relay(body, undefined, undefined, { id: "msg_2", timestamp: ts, signature: good }), 401, "the id is signed too");
+  assert.equal(await telegram.relay(body, undefined, undefined, { id: "msg_1", timestamp: ts, signature: `v1,old ${good}` }), 200);
+  assert.equal(reviews.reviews.get(review.id)!.state, "approved");
+});
+
+test("a Telegram mode saved as \"hermes\" (before relays were generic) still means a shared bot", async () => {
+  const { telegram, store } = await setup("shared");
+  store.setPref("telegram.mode", "hermes");
+  assert.equal(telegram.mode(), "shared");
+  assert.equal(telegram.status().mode, "shared");
 });
 
 test("installing the Hermes plugin writes its address and secret; config.yaml decides whether it's on", async () => {
   const home = tmp();
   process.env.HERMES_HOME = home;
   try {
-    const { telegram } = await setup("hermes");
+    const { telegram } = await setup("shared");
     writeFileSync(join(home, "config.yaml"), "model: x\nplugins:\n  enabled:\n    - something-else\n  disabled: []\nmcp_servers: {}\n");
-    const status = telegram.installPlugin();
+    const status = installHermesPlugin(telegram.relayUrl(), telegram.relaySecret());
+    assert.equal(status.detected, true);
     assert.equal(status.installed, true);
     assert.equal(status.configured, true);
     assert.equal(status.enabled, false);
@@ -383,7 +444,7 @@ test("installing the Hermes plugin writes its address and secret; config.yaml de
     assert.equal(settings.url, `${config.baseUrl}/api/telegram/relay`);
     assert.ok(existsSync(join(home, "plugins", "freeposter-review", "plugin.yaml")));
     writeFileSync(join(home, "config.yaml"), "plugins:\n  enabled:\n    - something-else\n    - freeposter-review\n  disabled: []\n");
-    assert.equal(telegram.pluginStatus().enabled, true);
+    assert.equal(hermesPluginStatus(telegram.relayUrl(), telegram.relaySecret()).enabled, true);
   } finally {
     delete process.env.HERMES_HOME;
   }

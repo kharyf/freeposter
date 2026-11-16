@@ -114,7 +114,10 @@ CREATE TABLE IF NOT EXISTS notify_outbox (
   next_try_at INTEGER NOT NULL,
   sent_at INTEGER,
   last_error TEXT,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  push INTEGER NOT NULL DEFAULT 1,
+  read_at INTEGER,
+  nudged_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS oauth_states (
   state TEXT PRIMARY KEY,
@@ -134,11 +137,18 @@ export interface OutboxRow {
   sentAt: number | null;
   lastError: string | null;
   createdAt: number;
+  /** whether the webhook delivers it (one was set when it happened) */
+  push: boolean;
+  /** when an agent first read it from the feed (list_events / wait_for_events) */
+  readAt: number | null;
+  /** when the user was told no agent had picked it up */
+  nudgedAt: number | null;
 }
 
 const toOutbox = (r: any): OutboxRow => ({
   id: r.id, key: r.key, event: r.event, body: r.body, attempts: r.attempts,
   nextTryAt: r.next_try_at, sentAt: r.sent_at, lastError: r.last_error, createdAt: r.created_at,
+  push: r.push !== 0, readAt: r.read_at ?? null, nudgedAt: r.nudged_at ?? null,
 });
 
 export class Store {
@@ -174,6 +184,11 @@ export class Store {
     if (!driveColumns.some((c) => c.name === "choice")) this.db.exec("ALTER TABLE drive_files ADD COLUMN choice TEXT");
     const connColumns = this.db.prepare("PRAGMA table_info(drive_connection)").all() as { name: string }[];
     if (!connColumns.some((c) => c.name === "changes_token")) this.db.exec("ALTER TABLE drive_connection ADD COLUMN changes_token TEXT");
+    // ...and before the outbox became the event feed every agent can read, not only a webhook.
+    const outboxColumns = this.db.prepare("PRAGMA table_info(notify_outbox)").all() as { name: string }[];
+    if (!outboxColumns.some((c) => c.name === "push")) this.db.exec("ALTER TABLE notify_outbox ADD COLUMN push INTEGER NOT NULL DEFAULT 1");
+    if (!outboxColumns.some((c) => c.name === "read_at")) this.db.exec("ALTER TABLE notify_outbox ADD COLUMN read_at INTEGER");
+    if (!outboxColumns.some((c) => c.name === "nudged_at")) this.db.exec("ALTER TABLE notify_outbox ADD COLUMN nudged_at INTEGER");
     // A crash mid-run leaves jobs "running"; their progress checkpoint lets them resume safely.
     this.db.prepare("UPDATE jobs SET state = 'retry' WHERE state = 'running'").run();
   }
@@ -815,19 +830,45 @@ export class Store {
     return (row?.published_at ?? Date.now()) + 86_400_000 + 60_000;
   }
 
-  // ---- webhook outbox (notify.ts delivers it) ----
+  // ---- the event log: agents read it (list_events / wait_for_events), and a webhook, when set, delivers it ----
 
-  /** Queues an event once per key; a repeat of the same key is ignored. */
-  addEvent(key: string, event: string, body: string) {
-    this.db.prepare("INSERT OR IGNORE INTO notify_outbox (key, event, body, next_try_at, created_at) VALUES (?, ?, ?, ?, ?)").run(key, event, body, Date.now(), Date.now());
+  /** Logs an event once per key (a repeat of the same key is ignored); push = the webhook should deliver it. */
+  addEvent(key: string, event: string, body: string, push = true): boolean {
+    const now = Date.now();
+    return this.db.prepare("INSERT OR IGNORE INTO notify_outbox (key, event, body, next_try_at, created_at, push) VALUES (?, ?, ?, ?, ?, ?)").run(key, event, body, now, now, push ? 1 : 0).changes > 0;
   }
 
   dueEvents(now: number, maxAttempts = 5): OutboxRow[] {
-    return (this.db.prepare("SELECT * FROM notify_outbox WHERE sent_at IS NULL AND attempts < ? AND next_try_at <= ? ORDER BY id").all(maxAttempts, now) as any[]).map(toOutbox);
+    return (this.db.prepare("SELECT * FROM notify_outbox WHERE push = 1 AND sent_at IS NULL AND attempts < ? AND next_try_at <= ? ORDER BY id").all(maxAttempts, now) as any[]).map(toOutbox);
   }
 
   outbox(): OutboxRow[] {
     return (this.db.prepare("SELECT * FROM notify_outbox ORDER BY id").all() as any[]).map(toOutbox);
+  }
+
+  /** Events after `since` (an event id), oldest first; with since null, the ones no agent has read yet. */
+  feed(since: number | null, limit: number, types: string[] = []): OutboxRow[] {
+    const where = [since === null ? "read_at IS NULL" : "id > ?", ...(types.length ? [`event IN (${types.map(() => "?").join(", ")})`] : [])].join(" AND ");
+    const args = [...(since === null ? [] : [since]), ...types, limit];
+    return (this.db.prepare(`SELECT * FROM notify_outbox WHERE ${where} ORDER BY id LIMIT ?`).all(...args) as any[]).map(toOutbox);
+  }
+
+  latestEventId(): number {
+    return (this.db.prepare("SELECT COALESCE(MAX(id), 0) AS id FROM notify_outbox").get() as { id: number }).id;
+  }
+
+  eventByKey(key: string): OutboxRow | undefined {
+    const row = this.db.prepare("SELECT * FROM notify_outbox WHERE key = ?").get(key);
+    return row ? toOutbox(row) : undefined;
+  }
+
+  markEventsRead(ids: number[], at = Date.now()) {
+    const stmt = this.db.prepare("UPDATE notify_outbox SET read_at = ? WHERE id = ? AND read_at IS NULL");
+    for (const id of ids) stmt.run(at, id);
+  }
+
+  markEventNudged(id: number, at = Date.now()) {
+    this.db.prepare("UPDATE notify_outbox SET nudged_at = ? WHERE id = ?").run(at, id);
   }
 
   markEvent(id: number, f: { sentAt?: number; attempts: number; nextTryAt: number; error: string | null }) {

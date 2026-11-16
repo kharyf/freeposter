@@ -77,7 +77,7 @@ export function calendar(store: Store, from: number, to: number): CalendarEntry[
     return set ? setToken(set.name) : id === undefined ? null : "(deleted set)";
   };
   const fromDrive = (f: DriveFileRecord | undefined) => ({
-    style: f?.choice?.styleId ? (styleById(f.choice.styleId)?.name ?? f.choice.styleId) : null,
+    style: f?.choice?.styleId ? (styleById(store, f.choice.styleId)?.name ?? f.choice.styleId) : null,
     set: f?.choice ? setName(f.choice.setId) : null,
     raw: f?.choice?.raw ?? false,
   });

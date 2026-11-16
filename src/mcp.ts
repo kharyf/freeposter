@@ -1,36 +1,80 @@
-// FreePoster's MCP server: lets the user's own AI agents (Claude, Cursor, Codex…) check accounts and post videos.
-// Served by the app itself at {BASE_URL}/mcp over MCP's Streamable HTTP transport, stateless, answering with
-// plain JSON (no streams or sessions: every tool finishes quickly, and posting goes on in the job runner).
-import { createReadStream, statSync, unlinkSync } from "node:fs";
+// FreePoster's MCP server: the one interface every agent uses (Claude Code, Codex, Cursor, Hermes, any other), to
+// check accounts, edit, produce, ask for reviews and follow what happens. Served by the app itself at {BASE_URL}/mcp
+// over MCP's Streamable HTTP transport, stateless, answering with plain JSON (no streams or sessions: tools finish
+// quickly, posting goes on in the job runner, and wait_for_events holds one call open for at most a minute).
+// Nothing here is specific to one agent: news reaches agents through the event log (list_events / wait_for_events),
+// which works for agents that only run while the user talks to them, and through a webhook for ones always running.
+import { createReadStream, readFileSync, statSync, unlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { isAbsolute } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { accountSets, defaultSetId, setToken, sharedFrom } from "./accounts.ts";
-import { config, isConfigured } from "./config.ts";
+import { codeDir, config, isConfigured } from "./config.ts";
 import type { Store } from "./db.ts";
 import type { Publisher } from "./platforms/base.ts";
 import { creatorInfo } from "./platforms/tiktok.ts";
 import { parseEditSettings } from "./edit/settings.ts";
+import { allStyles, createStyle, defaultStyleId, saveThumbnail, setDefaultStyle, STYLE_STEPS, styleToken, thumbnailProblem, uploadedThumbnail, type EditingStyle } from "./edit/styles.ts";
+import { EVENT_TYPES, eventView, nextEvent } from "./notify.ts";
 import type { ReviewService, ReviewRequest } from "./review/service.ts";
+import { REVIEW_STATES, type ReviewState } from "./review/store.ts";
 import { captionTopicFor, checkDraft, DuplicateError, editView, parseSchedule, postView, saveUpload, type Draft } from "./posts.ts";
 import { PRODUCTION_INSTRUCTIONS, productionTools } from "./produce/mcp-tools.ts";
 import type { ProductionWorker } from "./produce/worker.ts";
 import type { Runner } from "./runner.ts";
 import { PLATFORMS, type Platform, type TikTokOptions } from "./types.ts";
 
+/** What an agent should do with each event: in the instructions, and in the check_freeposter prompt. */
+export const EVENT_GUIDE = `- production.ready or edit.ready: show the user the preview if they haven't seen it, then call request_review with the accounts and caption you agreed on, unless the summary says FreePoster sends it for review itself (videos from the user's Drive folder). Don't send the video yourself.
+- review.redo: if handled_by is "freeposter", tell the user in one line what FreePoster is changing. Otherwise call get_review, make the change with revise_edit or revise_production, and tell them in one line what you changed.
+- review.rejected: acknowledge it and ask whether they want something different.
+- review.failed, production.failed, edit.failed: tell them what failed and offer to fix it.
+- review.expired: ask whether it should still go out; if so, request_review again.
+- post.done: give them the links.
+- review.waiting, review.approved: nothing to do but tell them where things stand if they ask.
+You can't approve anything. If the user says "yes" to you, remind them to tap Approve on the review.`;
+
+/** The app's version, for serverInfo. */
+const VERSION = (() => {
+  try { return String(JSON.parse(readFileSync(join(codeDir, "package.json"), "utf8")).version || "0.0.0"); } catch { return "0.0.0"; }
+})();
+
 /** Newest first; an initialize asking for any of these gets it back, anything else gets the newest. */
 export const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"];
 
 const INSTRUCTIONS = `FreePoster publishes one short vertical video to the user's TikTok, Instagram Reels, Facebook Page Reels, X and YouTube Shorts accounts through each platform's official API. It runs on the user's computer, so video_path is a path on this computer.
 
-Start with list_accounts to get account ids. You can't post anything yourself: request_review (or publish_video, which does the same) sends the video, with its caption and accounts, to the user for review. FreePoster makes the exact file that will be uploaded, writes a blank caption, and sends it to them on Telegram with Approve, Reject and Redo buttons (and shows it in the FreePoster window). Only their tap on Approve (or the window's button) posts it; nothing you say or call can, including the user saying "yes" to you in chat: if they do, tell them to tap Approve on the review. Follow a review with get_review, or wait for the webhook's review.* events. Once approved, the review's post_id is a normal post: follow it with get_post until every job is "published" (with the post's url) or "failed" (with the platform's reason).
+Start with list_accounts to get account ids. You can't post anything yourself: request_review (or publish_video, which does the same) sends the video, with its caption and accounts, to the user for review. FreePoster makes the exact file that will be uploaded, writes a blank caption, and sends it to them on Telegram with Approve, Reject and Redo buttons (and shows it in the FreePoster window). Only their tap on Approve (or the window's button) posts it; nothing you say or call can, including the user saying "yes" to you in chat: if they do, tell them to tap Approve on the review. Once approved, the review's post_id is a normal post: follow it with get_post until every job is "published" (with the post's url) or "failed" (with the platform's reason).
 
 Posting is public and hard to undo: only ask to post what the user asked for, to the accounts they chose. For TikTok, call get_tiktok_creator_info first and let the user pick the privacy level from privacy_level_options; TikTok requires that choice to be the user's, never a default. Use dry_run to check a post without asking for a review. With no caption, the user's AI provider writes the title and caption from the video before the review is sent, so the user sees the text they approve.
 
+Videos the user drops in their Drive folder are edited in the editing style their filename names (or the default one). list_editing_styles shows the styles; when the user wants a new one, agree its name and steps with them and call add_editing_style.
+
 create_edit makes an edited cut (pauses and filler words cut, captions, speaker framing, even sound) in the background; follow it with get_edit, then request_review with its edit_id. When the user asks for a redo, get_review says why, at what time in the video, the source time and the words said there; make the change with revise_edit (edits) or revise_production (productions), and the new version comes back to them for review.
 
+FreePoster tells you what happens through its event log, so you never have to guess or poll each thing: production.ready / production.failed, edit.ready / edit.failed, review.waiting / approved / rejected / redo / failed / expired, and post.done, each with a one-sentence summary you can pass on. wait_for_events waits (up to about a minute per call) and returns them as they happen; list_events returns what you haven't read yet, so call it whenever the user comes back to you. list_reviews with needs_agent shows redos waiting for you. How to handle each event:
+${EVENT_GUIDE}
+
 ${PRODUCTION_INSTRUCTIONS}`;
+
+/** Prompts: ready-made requests the user can pick in agents that offer them (often as slash commands). */
+const PROMPTS = [
+  {
+    name: "check_freeposter",
+    title: "Check FreePoster",
+    description: "Catch up on what FreePoster did since you last looked (ready videos, review decisions, redos to make, posts that went out) and act on it.",
+    arguments: [] as { name: string; description: string; required: boolean }[],
+    text: (_args: Record<string, string>) => `Call list_events from FreePoster and handle every event it returns, oldest first:\n${EVENT_GUIDE}\nThen tell me in a few lines what happened and what you did. If there were no events, call list_reviews with needs_agent true in case a redo is still waiting, and say so if nothing is.`,
+  },
+  {
+    name: "handle_redo",
+    title: "Make a redo",
+    description: "Make the change the user asked for on a FreePoster review, so the new version comes back to them for review.",
+    arguments: [{ name: "review_id", description: "The review the user sent back for a redo (list_reviews with needs_agent shows them).", required: true }],
+    text: (args: Record<string, string>) => `Call get_review with review_id ${Number(args.review_id) || "(ask me which)"} from FreePoster. It says what I want changed (reason, note, the time in the video, and for an edit the source time and the words said there; for a production the shot). Make that change with revise_edit or revise_production. For a Drive video the new edit comes back to me for review by itself; otherwise call request_review once the new version is ready. Then tell me in one line what you changed.`,
+  },
+];
 
 /** Epoch ms → ISO 8601; agents read and write times this way. */
 const iso = (ms: number | null | undefined) => (ms === null || ms === undefined ? null : new Date(ms).toISOString());
@@ -136,6 +180,30 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
     return account;
   };
 
+  /** The event feed (list_events, wait_for_events): what's returned counts as read by an agent. */
+  const readEvents = (args: Args) => {
+    const since = args.since === undefined || args.since === null ? null : int(args, "since");
+    if (since !== null && since < 0) throw new ToolError("since must be 0 or more");
+    const limit = args.limit === undefined ? 50 : Math.min(Math.max(int(args, "limit"), 1), 200);
+    const raw = args.types;
+    if (raw !== undefined && (!Array.isArray(raw) || raw.some((t) => !EVENT_TYPES.includes(t as never)))) throw new ToolError(`types must be a list of ${EVENT_TYPES.join(", ")}`);
+    const rows = store.feed(since, limit, (raw as string[] | undefined) ?? []);
+    store.markEventsRead(rows.map((r) => r.id));
+    return { events: rows.map(eventView), next_since: rows.at(-1)?.id ?? since ?? store.latestEventId() };
+  };
+
+  const styleView = (st: EditingStyle) => ({
+    id: st.id,
+    name: st.name,
+    filename_token: styleToken(st),
+    description: st.description,
+    built_in: st.builtIn,
+    default: st.id === defaultStyleId(store),
+    steps: Object.fromEntries(STYLE_STEPS.map((step) => [step.key, st.settings[step.key]])),
+    thumbnail_url: `${config.baseUrl}/api/styles/${encodeURIComponent(st.id)}/thumbnail`,
+    custom_thumbnail: uploadedThumbnail(st.id) !== null,
+  });
+
   const tools: Tool[] = [
     {
       name: "list_accounts",
@@ -218,7 +286,7 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
     {
       name: "request_review",
       title: "Ask the user to review a video",
-      description: "Sends a ready production (production_id), a ready edit (edit_id) or a video file (video_path) to the user for review, with the accounts, caption, title and schedule it would post with. FreePoster makes the exact file that will be uploaded, writes the caption if it's blank, and sends it to the user on Telegram (and the FreePoster window) with Approve, Reject and Redo. Only the user's Approve posts it. Returns the review at once (state preparing, then pending); follow it with get_review or the webhook. A new request for the same edit or production replaces an open one. For a production, fields left out come from its spec's post section.",
+      description: "Sends a ready production (production_id), a ready edit (edit_id) or a video file (video_path) to the user for review, with the accounts, caption, title and schedule it would post with. FreePoster makes the exact file that will be uploaded, writes the caption if it's blank, and sends it to the user on Telegram (and the FreePoster window) with Approve, Reject and Redo. Only the user's Approve posts it. Returns the review at once (state preparing, then pending); follow it with get_review or wait_for_events. A new request for the same edit or production replaces an open one. For a production, fields left out come from its spec's post section.",
       inputSchema: {
         type: "object",
         properties: {
@@ -245,7 +313,76 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
         if (args.review_id === undefined) return { reviews: reviews.reviews.recent(20).map((r) => reviews.view(r)) };
         const r = reviews.reviews.get(int(args, "review_id"));
         if (!r) throw new ToolError("no such review; get_review with no id lists the recent ones");
+        // An agent looking at a redo has picked it up: the user needn't be told nobody has.
+        const redo = r.state === "redo" ? reviews.redoEvent(r) : undefined;
+        if (redo) store.markEventsRead([redo.id]);
         return reviews.view(r);
+      },
+    },
+    {
+      name: "list_reviews",
+      title: "List reviews",
+      description: "Reviews, newest first, optionally only those in one state (preparing, pending, approved, rejected, redo, superseded, expired, failed). needs_agent: only redos the user asked for that are yours to make (FreePoster didn't make them itself and no newer version exists yet); handle each with get_review, then revise_edit or revise_production.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          state: { type: "string", enum: [...REVIEW_STATES] },
+          needs_agent: { type: "boolean", default: false },
+          limit: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+        },
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+      async run(args) {
+        const limit = args.limit === undefined ? 20 : Math.min(Math.max(int(args, "limit"), 1), 100);
+        const state = str(args, "state");
+        if (state && !REVIEW_STATES.includes(state as never)) throw new ToolError(`state must be one of ${REVIEW_STATES.join(", ")}`);
+        let list = bool(args, "needs_agent") ? reviews.agentTodo() : state ? reviews.reviews.inState(state as ReviewState).sort((a, b) => b.id - a.id) : reviews.reviews.recent(limit);
+        if (state) list = list.filter((r) => r.state === state);
+        return { reviews: list.slice(0, limit).map((r) => reviews.view(r)) };
+      },
+    },
+    {
+      name: "list_events",
+      title: "List FreePoster's events",
+      description: "What happened in FreePoster, oldest first: productions and edits ready or failed, reviews waiting, approved, rejected, sent back for a redo, failed or expired, and posts done. Each has an id, event_type, at, a one-sentence summary to pass on, and the ids to follow up (review_id, edit_id, production_id, post_id). With no since, the events no agent has read yet (they count as read once returned); with since (an event id), every event after it. next_since is the id to pass next time. Call it whenever the user comes back to you, so nothing that happened meanwhile is missed.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          since: { type: "integer", minimum: 0, description: "Return events after this event id; omit for the unread ones." },
+          types: { type: "array", items: { type: "string", enum: EVENT_TYPES }, description: "Only these event types." },
+          limit: { type: "integer", minimum: 1, maximum: 200, default: 50 },
+        },
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      async run(args) {
+        return readEvents(args);
+      },
+    },
+    {
+      name: "wait_for_events",
+      title: "Wait for FreePoster's events",
+      description: "Like list_events, but when there are none yet it waits up to timeout_sec (default 25, at most 50) for the next one, and returns as soon as one happens. Use it to follow a production, an edit or a review without calling get_* over and over: call it again with next_since until you have what you were waiting for. An empty list means nothing happened in that time.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          since: { type: "integer", minimum: 0, description: "Return events after this event id; omit for the unread ones." },
+          types: { type: "array", items: { type: "string", enum: EVENT_TYPES }, description: "Only these event types." },
+          timeout_sec: { type: "integer", minimum: 0, maximum: 50, default: 25 },
+          limit: { type: "integer", minimum: 1, maximum: 200, default: 50 },
+        },
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      async run(args) {
+        const timeout = args.timeout_sec === undefined ? 25 : Math.min(Math.max(int(args, "timeout_sec"), 0), 50);
+        const until = Date.now() + timeout * 1000;
+        for (;;) {
+          const found = readEvents(args);
+          if (found.events.length || Date.now() >= until) return found;
+          await nextEvent(Math.min(until - Date.now(), 5_000));
+        }
       },
     },
     {
@@ -326,6 +463,57 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
         const edit = store.createEdit(saved.path, saved.sha256, settings);
         if (edit.sourcePath !== saved.path) try { unlinkSync(saved.path); } catch {}
         return { ...(await editView(store, publishers, edit)), next: "Call get_edit to follow it. When it's ready, request_review with its edit_id: the user approves it there." };
+      },
+    },
+    {
+      name: "list_editing_styles",
+      title: "List editing styles",
+      description: "Lists the editing styles: named edits a video from the user's Drive folder gets when its filename names one (Name_11.1.26_5.30.pm_Basic.mp4, by its filename_token) or, when it names none, the default style. Each has its steps (which parts of the edit it makes), whether it's built in or the user's, and a thumbnail_url showing an example frame.",
+      inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+      async run() {
+        return { styles: allStyles(store).map(styleView), steps: STYLE_STEPS };
+      },
+    },
+    {
+      name: "add_editing_style",
+      title: "Add an editing style",
+      description: "Adds an editing style the user asked for, shown on the Editing Styles tab of the FreePoster window. A Drive video whose filename has the style's filename_token (its name without spaces) is edited with its steps. Agree the name and steps with the user first. The name can't contain an underscore, read as a date, a time or RAW, or match another style or an account set (list_editing_styles and list_accounts show them). Steps left out are on; at least one must be on.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Up to 40 characters, e.g. \"Fast Cuts\" (written FastCuts in a filename)." },
+          description: { type: "string", description: "What the style does, in a sentence or two (up to 500 characters), shown with it." },
+          steps: {
+            type: "object",
+            description: "Which parts of the edit it makes. Each defaults to true.",
+            properties: Object.fromEntries(STYLE_STEPS.map((step) => [step.key, { type: "boolean", default: true, description: step.help }])),
+            additionalProperties: false,
+          },
+          thumbnail_path: { type: "string", description: "Absolute path of a PNG, JPEG or WebP image on this computer (up to 5 MB) showing an example of the style, ideally 9:16. Leave it out and FreePoster draws one from the steps." },
+          make_default: { type: "boolean", default: false, description: "Make it the style Drive videos get when their name gives none. Only when the user asks." },
+        },
+        required: ["name"],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      async run(args) {
+        const name = str(args, "name");
+        const description = str(args, "description");
+        const makeDefault = bool(args, "make_default");
+        let image: Buffer | undefined;
+        const thumbnailPath = str(args, "thumbnail_path");
+        if (thumbnailPath) {
+          if (!isAbsolute(thumbnailPath)) throw new ToolError("thumbnail_path must be an absolute path");
+          try { image = readFileSync(thumbnailPath); } catch { throw new ToolError(`no file at ${thumbnailPath}`); }
+          const problem = thumbnailProblem(image);
+          if (problem) throw new ToolError(problem);
+        }
+        const made = createStyle(store, { name, description, steps: args.steps as never });
+        if (typeof made === "string") throw new ToolError(made);
+        if (image) saveThumbnail(made.id, image);
+        if (makeDefault) setDefaultStyle(store, made.id);
+        return { style: styleView(made), next: `Tell the user it's on the Editing Styles tab, and that a Drive video named like Name_11.1.26_5.30.pm_${styleToken(made)}.mp4 is edited this way.` };
       },
     },
     {
@@ -508,7 +696,7 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
         subject, accountIds: ids as number[], caption, title, scheduledAt, tiktok, allowDuplicate: bool(args, "allow_duplicate"), via: "agent",
         expiresInHours: args.expires_in_hours === undefined ? undefined : Number(args.expires_in_hours),
       });
-      return { ...reviews.view(review), next: "The user decides on the review itself (Telegram or the FreePoster window). Follow it with get_review, or wait for the webhook's review.* event. Don't ask them to say yes in chat: that doesn't approve anything." };
+      return { ...reviews.view(review), next: "The user decides on the review itself (Telegram or the FreePoster window). Follow it with get_review, or wait_for_events for its review.* event. Don't ask them to say yes in chat: that doesn't approve anything." };
     } catch (err) {
       if (copied) try { unlinkSync(copied); } catch {}
       throw new ToolError((err as Error).message);
@@ -584,12 +772,22 @@ export function registerMcp(app: FastifyInstance, store: Store, runner: Runner, 
       case "initialize":
         return reply({
           protocolVersion: PROTOCOL_VERSIONS.includes(params.protocolVersion) ? params.protocolVersion : PROTOCOL_VERSIONS[0],
-          capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: "freeposter", title: "FreePoster", version: "0.1.0" },
+          capabilities: { tools: { listChanged: false }, prompts: { listChanged: false } },
+          serverInfo: { name: "freeposter", title: "FreePoster", version: VERSION },
           instructions: INSTRUCTIONS,
         });
       case "ping":
         return reply({});
+      case "prompts/list":
+        return reply({ prompts: PROMPTS.map(({ text, ...p }) => p) });
+      case "prompts/get": {
+        const prompt = PROMPTS.find((p) => p.name === params.name);
+        if (!prompt) return isNotification ? null : rpcError(msg.id, -32602, `unknown prompt ${params.name}`);
+        const args = (params.arguments ?? {}) as Record<string, string>;
+        const missing = prompt.arguments.find((a) => a.required && !args[a.name]);
+        if (missing) return isNotification ? null : rpcError(msg.id, -32602, `prompt ${prompt.name} needs ${missing.name}`);
+        return reply({ description: prompt.description, messages: [{ role: "user", content: { type: "text", text: prompt.text(args) } }] });
+      }
       case "tools/list":
         return reply({ tools: tools.map(({ run, ...t }) => t) });
       case "tools/call": {

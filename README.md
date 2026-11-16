@@ -60,7 +60,7 @@ http://localhost:4400/mcp
 claude mcp add --transport http freeposter http://localhost:4400/mcp
 ```
 
-The app's **AI agents** panel shows the setup line for each agent. Prefer a terminal? Run `freeposter help`. For webhook-driven agents and reviews on Telegram, see [docs/hermes.md](docs/hermes.md).
+The app's **AI agents** panel shows the setup line for each agent. It works the same with any agent: they hear what happened through FreePoster's event feed (`list_events`, `wait_for_events`), with an optional webhook for agents that run all the time. Prefer a terminal? Run `freeposter help`. See [docs/agents.md](docs/agents.md) for the event feed, webhooks and reviews on Telegram, and [docs/hermes.md](docs/hermes.md) for Hermes Agent.
 
 <img src="docs/assets/divider.svg" width="100%" height="6" alt="">
 

@@ -2,19 +2,18 @@
 // Approve / Reject / Redo buttons) to the one chat paired in setup. Taps reach FreePoster one of two ways:
 //
 //  - "own": a bot only FreePoster uses; FreePoster reads its updates itself (long-polling getUpdates).
-//  - "hermes": the bot Hermes Agent already talks through. Telegram lets one program read a bot's updates, and
-//    that's Hermes, so the freeposter-review Hermes plugin passes FreePoster's taps (and replies to its redo
-//    prompts) straight here, signed, without the model seeing them. FreePoster still sends with the bot's token.
+//  - "shared": a bot another program already reads, typically the user's agent. Telegram lets one program read a
+//    bot's updates, so that program passes FreePoster's part of them (taps on "fp:" buttons, replies to redo
+//    prompts, /freeposter) to the relay endpoint, signed, without its model seeing them. FreePoster still sends
+//    with the bot's token. Any agent can do this (docs/agents.md); Hermes has a ready-made plugin (integrations/hermes).
 //
 // Either way a tap counts only when Telegram confirms it (answerCallbackQuery succeeds only for a query Telegram
 // really issued), it comes from the paired user in the paired chat, it carries the nonce of the card's current
 // buttons (only its hash is stored), and the review is still pending, current and unexpired. Decisions go through
 // ReviewService, whose guarded state change makes a repeated update or a second tap harmless.
 import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, openAsBlob, readFileSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { codeDir, config } from "../config.ts";
+import { openAsBlob, statSync } from "node:fs";
+import { config } from "../config.ts";
 import type { Store } from "../db.ts";
 import { backoffMs } from "../runner.ts";
 import { probe, TARGET } from "../media.ts";
@@ -23,32 +22,35 @@ import type { ReviewService } from "./service.ts";
 import { REASONS, type Reason, type Review, type ReviewStep } from "./store.ts";
 
 const API = "https://api.telegram.org";
-export type TelegramMode = "own" | "hermes";
-export const PLUGIN_NAME = "freeposter-review";
-/** Redo prompts start with this; the Hermes plugin passes replies to them to FreePoster instead of the model. */
+/** "shared" was called "hermes" before any agent could relay; a stored "hermes" still means "shared". */
+export type TelegramMode = "own" | "shared";
+/** Redo prompts start with this; a shared bot's relay passes replies to them to FreePoster instead of its model. */
 export const REDO_MARKER = "🔁 FreePoster redo";
 const RELAY_SKEW_SEC = 300;
 
-/** Hermes Agent's home folder (HERMES_HOME, else %LOCALAPPDATA%\hermes). */
-export const hermesHome = () => process.env.HERMES_HOME?.trim() || join(process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local"), "hermes");
-/** Where the plugin's files ship: templates/, unpacked beside the bundle in the installed app. */
-const pluginSource = () => join(codeDir.replace(/app\.asar$/, "app.asar.unpacked"), "templates", "hermes", PLUGIN_NAME);
-
-/** Whether Hermes's config.yaml lists the plugin under plugins.enabled. */
-export function pluginEnabled(yaml: string): boolean {
-  const lines = yaml.split(/\r?\n/);
-  const start = lines.findIndex((l) => /^plugins:\s*$/.test(l));
-  if (start < 0) return false;
-  let inEnabled = false;
-  for (const line of lines.slice(start + 1)) {
-    if (/^\S/.test(line)) break; // the next top-level key
-    if (/^\s+enabled:\s*$/.test(line)) { inEnabled = true; continue; }
-    if (/^\s+\w+:/.test(line)) { inEnabled = false; continue; }
-    if (inEnabled && line.replace(/^\s*-\s*/, "").replace(/["']/g, "").trim() === PLUGIN_NAME && /^\s*-/.test(line)) return true;
-  }
-  return false;
-}
 const PAIR_MS = 15 * 60_000;
+
+const fresh = (timestamp: string | undefined) => {
+  const ts = Number(timestamp);
+  return Number.isInteger(ts) && Math.abs(Date.now() / 1000 - ts) <= RELAY_SKEW_SEC ? ts : null;
+};
+const sameText = (a: string, b: string) => {
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
+};
+
+/** Whether a relayed body carries a good, recent signature in either scheme (see relay()). */
+export function relaySigned(secret: string, body: string, timestamp: string | undefined, signature: string | undefined, standard?: { id?: string; timestamp?: string; signature?: string }): boolean {
+  const ts = fresh(timestamp);
+  if (ts !== null && signature && sameText(createHmac("sha256", secret).update(`${ts}.${body}`).digest("hex"), signature)) return true;
+  const sts = fresh(standard?.timestamp);
+  if (sts === null || !standard?.id || !standard.signature) return false;
+  const key = secret.startsWith("whsec_") ? Buffer.from(secret.slice(6), "base64") : Buffer.from(secret);
+  const want = `v1,${createHmac("sha256", key).update(`${standard.id}.${sts}.${body}`).digest("base64")}`;
+  // The header may list several space-separated signatures (during a secret rotation): any one will do.
+  return standard.signature.split(" ").some((s) => sameText(want, s));
+}
 const CAPTION_LIMIT = 1024;
 
 export class TelegramError extends Error {
@@ -146,6 +148,21 @@ export class TelegramReview {
     this.base = opts.base ?? API;
     this.pollTimeoutSec = opts.pollTimeoutSec ?? 25;
     service.onChange = () => this.poke();
+    service.nudge = (r, text) => this.nudge(r, text);
+  }
+
+  /** A message under a review's card (or on its own when the card never went out); true once Telegram took it. */
+  async nudge(r: Review, text: string): Promise<boolean> {
+    const api = this.api();
+    const paired = this.paired();
+    if (!api || !paired) return false;
+    try {
+      await api.call("sendMessage", { chat_id: paired.chatId, text, ...(r.cardMessageId && r.chatId === paired.chatId ? { reply_to_message_id: r.cardMessageId } : {}) });
+      return true;
+    } catch (err) {
+      console.error(`[review ${r.id}] telegram nudge: ${(err as Error).message}`);
+      return false;
+    }
   }
 
   // ---- setup: the bot's token and the one paired chat ----
@@ -164,7 +181,7 @@ export class TelegramReview {
     return {
       configured: Boolean(this.store.secretPref("telegram.token")),
       mode: this.mode(),
-      plugin: this.mode() === "hermes" ? this.pluginStatus() : null,
+      lastRelay: this.mode() === "shared" ? this.store.pref<number>("telegram.lastRelay") ?? null : null,
       bot: this.store.pref<{ username: string }>("telegram.bot")?.username ?? null,
       paired: this.paired()?.name ?? null,
       pairCode: pair && pair.expiresAt > Date.now() && !this.paired() ? pair.code : null,
@@ -173,12 +190,18 @@ export class TelegramReview {
   }
 
   mode(): TelegramMode {
-    return this.store.pref<TelegramMode>("telegram.mode") ?? "own";
+    const stored = this.store.pref<string>("telegram.mode");
+    return stored === "shared" || stored === "hermes" ? "shared" : "own";
+  }
+
+  /** The secret a shared bot's relay signs updates with (made when the shared bot is connected). */
+  relaySecret(): string | null {
+    return this.store.secretPref("telegram.relaySecret") ?? null;
   }
 
   /**
    * Checks a token from @BotFather and keeps it (encrypted, like the platforms' tokens); a new bot pairs afresh.
-   * "hermes": the bot Hermes already uses (its TELEGRAM_BOT_TOKEN); taps come through the Hermes plugin.
+   * "shared": a bot another program (the user's agent) already reads; taps come through that program's relay.
    */
   async connect(token: string, mode: TelegramMode = "own") {
     token = token.trim();
@@ -192,10 +215,10 @@ export class TelegramReview {
       this.store.deletePref("telegram.offset");
     }
     this.store.setPref("telegram.mode", mode);
-    if (mode === "hermes" && !this.store.secretPref("telegram.relaySecret")) this.store.setSecretPref("telegram.relaySecret", randomBytes(32).toString("hex"));
+    if (mode === "shared" && !this.store.secretPref("telegram.relaySecret")) this.store.setSecretPref("telegram.relaySecret", randomBytes(32).toString("hex"));
     this.store.deletePref("telegram.error");
     if (!this.paired()) this.startPairing();
-    if (mode === "hermes") this.controller?.abort(); // stop reading the bot's updates: Hermes does
+    if (mode === "shared") this.controller?.abort(); // stop reading the bot's updates: the other program does
     return this.status();
   }
 
@@ -216,54 +239,22 @@ export class TelegramReview {
     await api.call("sendMessage", { chat_id: paired.chatId, text: "FreePoster test: reviews will come to this chat. Only the buttons under a video approve anything." });
   }
 
-  // ---- the Hermes plugin (mode "hermes") ----
-
-  pluginDir() {
-    return join(hermesHome(), "plugins", PLUGIN_NAME);
-  }
-
-  /** Whether the plugin is in Hermes's plugins folder, set up for this FreePoster, and enabled in config.yaml. */
-  pluginStatus() {
-    const dir = this.pluginDir();
-    let configured = false;
-    try {
-      const s = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8"));
-      configured = s.url === this.relayUrl() && s.secret === this.store.secretPref("telegram.relaySecret");
-    } catch {}
-    let enabled = false;
-    try { enabled = pluginEnabled(readFileSync(join(hermesHome(), "config.yaml"), "utf8")); } catch {}
-    return { installed: existsSync(join(dir, "__init__.py")), configured, enabled, dir, lastRelay: this.store.pref<number>("telegram.lastRelay") ?? null };
-  }
+  // ---- the relay (mode "shared") ----
 
   relayUrl() {
     return `${config.baseUrl}/api/telegram/relay`;
   }
 
-  /** Copies the plugin into Hermes's plugins folder with this FreePoster's address and secret. */
-  installPlugin() {
-    const secret = this.store.secretPref("telegram.relaySecret");
-    if (this.mode() !== "hermes" || !secret) throw new Error("connect the Hermes bot first");
-    const src = pluginSource();
-    if (!existsSync(join(src, "__init__.py"))) throw new Error(`the plugin's files are missing from ${src}`);
-    const dir = this.pluginDir();
-    mkdirSync(dir, { recursive: true });
-    cpSync(src, dir, { recursive: true, filter: (p) => !p.includes("__pycache__") });
-    writeFileSync(join(dir, "settings.json"), JSON.stringify({ url: this.relayUrl(), secret }, null, 2), { mode: 0o600 });
-    return this.pluginStatus();
-  }
-
   /**
-   * An update the Hermes plugin passed on: the raw body, signed like FreePoster's own webhook
-   * (hex HMAC-SHA256 of "<timestamp>.<body>" with the relay secret). Returns an HTTP status.
+   * An update a shared bot's relay passed on: the raw body, signed with the relay secret either way FreePoster's
+   * own webhook is: X-Webhook-Timestamp + X-Webhook-Signature-V2 (hex HMAC-SHA256 of "<timestamp>.<body>"), or
+   * Standard Webhooks (webhook-id, webhook-timestamp, webhook-signature "v1,<base64 HMAC of "<id>.<timestamp>.<body>">").
+   * Returns an HTTP status.
    */
-  async relay(body: string, timestamp: string | undefined, signature: string | undefined): Promise<number> {
+  async relay(body: string, timestamp: string | undefined, signature: string | undefined, standard?: { id?: string; timestamp?: string; signature?: string }): Promise<number> {
     const secret = this.store.secretPref("telegram.relaySecret");
-    if (this.mode() !== "hermes" || !secret) return 404;
-    const ts = Number(timestamp);
-    if (!Number.isInteger(ts) || Math.abs(Date.now() / 1000 - ts) > RELAY_SKEW_SEC) return 401;
-    const want = Buffer.from(createHmac("sha256", secret).update(`${ts}.${body}`).digest("hex"));
-    const got = Buffer.from(String(signature ?? ""));
-    if (want.length !== got.length || !timingSafeEqual(want, got)) return 401;
+    if (this.mode() !== "shared" || !secret) return 404;
+    if (!relaySigned(secret, body, timestamp, signature, standard)) return 401;
     let update: any;
     try { update = JSON.parse(body); } catch { return 400; }
     this.store.setPref("telegram.lastRelay", Date.now());
@@ -299,7 +290,7 @@ export class TelegramReview {
   private async pollLoop() {
     let failures = 0;
     while (this.running) {
-      // With Hermes's bot, Hermes reads the updates and its plugin passes FreePoster's on (relay()).
+      // With a shared bot, the other program reads the updates and its relay passes FreePoster's on (relay()).
       if (!this.api() || this.mode() !== "own") {
         this.controller = new AbortController();
         await this.sleep(3_000);
@@ -440,7 +431,7 @@ export class TelegramReview {
         await reply("Paired. FreePoster will send videos here for you to approve, reject or redo.");
         this.poke();
       } else if (m.chat?.type === "private") {
-        await reply(`Send the 6-digit code shown in FreePoster's setup${this.mode() === "hermes" ? " as /freeposter <code>" : ""} to pair this chat.`);
+        await reply(`Send the 6-digit code shown in FreePoster's setup${this.mode() === "shared" ? " as /freeposter <code>" : ""} to pair this chat.`);
       }
       return;
     }
@@ -452,8 +443,8 @@ export class TelegramReview {
       await reply(outcome.message, { reply_to_message_id: m.message_id });
       return;
     }
-    // With Hermes's bot only replies to redo prompts and /freeposter reach here; everything else is Hermes's.
-    if (this.mode() === "hermes") return;
+    // With a shared bot only replies to redo prompts and /freeposter reach here; everything else is the agent's.
+    if (this.mode() === "shared") return;
     const waiting = this.service.reviews.inState("pending").length;
     await reply(`Typed messages don't approve or reject anything. Use the buttons under a video${waiting ? ` (${waiting} waiting)` : ""}.`);
   }

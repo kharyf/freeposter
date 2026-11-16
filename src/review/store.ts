@@ -51,6 +51,7 @@ CREATE INDEX IF NOT EXISTS reviews_state ON reviews(state);
  * expired: nobody decided in time; failed: it couldn't be prepared, or could no longer be posted when approved.
  */
 export type ReviewState = "preparing" | "pending" | "approved" | "rejected" | "redo" | "superseded" | "expired" | "failed";
+export const REVIEW_STATES: ReviewState[] = ["preparing", "pending", "approved", "rejected", "redo", "superseded", "expired", "failed"];
 export const OPEN_STATES: ReviewState[] = ["preparing", "pending"];
 
 export type SubjectKind = "edit" | "production" | "file";

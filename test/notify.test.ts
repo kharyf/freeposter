@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { test } from "node:test";
 import { config } from "../src/config.ts";
-import { MAX_ATTEMPTS, Notifier, queueEvent, signBody } from "../src/notify.ts";
+import { MAX_ATTEMPTS, nextEvent, Notifier, queueEvent, signBody, standardSignature } from "../src/notify.ts";
 import { json, newStore } from "./helpers.ts";
 
 async function withWebhook(fn: () => void | Promise<void>) {
@@ -21,10 +21,46 @@ test("signBody is the hex HMAC-SHA256 of '<timestamp>.<body>'", () => {
   assert.equal(signBody(body, "k", 1700000000), createHmac("sha256", "k").update(`1700000000.${body}`).digest("hex"));
 });
 
-test("no webhook URL: nothing is queued", () => {
+test("no webhook URL: the event is logged for agents to read, but never pushed (not even once a webhook is set later)", async () => {
   const store = newStore();
   queueEvent(store, "post.done", "post.done:1", { post_id: 1 }, "done");
   assert.equal(store.dueEvents(Date.now() + 1).length, 0);
+  const [row] = store.feed(null, 10);
+  assert.equal(row.event, "post.done");
+  assert.equal(row.push, false);
+  await withWebhook(async () => {
+    const seen: { url: string; init: RequestInit }[] = [];
+    await new Notifier(store, { fetch: fakeFetch(200, seen) }).tick();
+    assert.equal(seen.length, 0);
+  });
+});
+
+test("the feed: unread events, events after an id, by type; reading marks them read", () => {
+  const store = newStore();
+  queueEvent(store, "edit.ready", "edit.ready:1", { edit_id: 1 }, "ready");
+  queueEvent(store, "post.done", "post.done:2", { post_id: 2 }, "done");
+  const all = store.feed(null, 10);
+  assert.deepEqual(all.map((e) => e.event), ["edit.ready", "post.done"]);
+  assert.deepEqual(store.feed(null, 10, ["post.done"]).map((e) => e.event), ["post.done"]);
+  store.markEventsRead([all[0].id]);
+  assert.deepEqual(store.feed(null, 10).map((e) => e.event), ["post.done"]);
+  assert.deepEqual(store.feed(all[0].id - 1, 10).map((e) => e.id), all.map((e) => e.id), "since ignores read state");
+  assert.equal(store.latestEventId(), all[1].id);
+});
+
+test("nextEvent wakes as soon as an event is logged", async () => {
+  const store = newStore();
+  const started = Date.now();
+  setTimeout(() => queueEvent(store, "post.done", "post.done:5", { post_id: 5 }, "done"), 30);
+  await nextEvent(5_000);
+  assert.ok(Date.now() - started < 2_000);
+});
+
+test("standardSignature follows Standard Webhooks, including whsec_ secrets", () => {
+  const body = '{"a":1}';
+  assert.equal(standardSignature("msg_1", 1700000000, body, "plain"), `v1,${createHmac("sha256", "plain").update(`msg_1.1700000000.${body}`).digest("base64")}`);
+  const key = Buffer.from("0123456789abcdef");
+  assert.equal(standardSignature("msg_1", 1700000000, body, `whsec_${key.toString("base64")}`), `v1,${createHmac("sha256", key).update(`msg_1.1700000000.${body}`).digest("base64")}`);
 });
 
 test("a delivered event is signed, carries event_type and is sent once", async () => {
@@ -44,6 +80,9 @@ test("a delivered event is signed, carries event_type and is sent once", async (
     assert.equal(parsed.summary, "Production 3 is ready.");
     const headers = seen[0].init.headers as Record<string, string>;
     assert.equal(headers["X-Webhook-Signature-V2"], signBody(body, "s3cret", Number(headers["X-Webhook-Timestamp"])));
+    assert.equal(headers["webhook-id"], "production.ready:3:1");
+    assert.equal(headers["webhook-timestamp"], headers["X-Webhook-Timestamp"]);
+    assert.equal(headers["webhook-signature"], standardSignature(headers["webhook-id"], Number(headers["webhook-timestamp"]), body, "s3cret"));
     assert.equal(seen[0].url, "http://localhost:8644/webhooks/freeposter");
   });
 });

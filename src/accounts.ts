@@ -2,7 +2,7 @@
 // filename names), and Meta's automatic sharing between an Instagram account and its linked Facebook Page. Both are
 // FreePoster's decisions: Drive only hands over files.
 import type { Store } from "./db.ts";
-import { STYLES, styleToken } from "./edit/styles.ts";
+import { allStyles, styleToken } from "./edit/styles.ts";
 import type { Account, TikTokOptions } from "./types.ts";
 
 /** "ig_to_fb": Meta shares the Instagram account's posts to its Page; "fb_to_ig": the reverse. */
@@ -110,7 +110,7 @@ export function setNameProblem(store: Store, name: string, exceptId?: number): s
   if (!token) return "give the set a name";
   if (token.includes("_")) return "a set's name can't contain an underscore: underscores separate the parts of a Drive filename";
   const key = token.toLowerCase();
-  const style = STYLES.find((s) => styleToken(s).toLowerCase() === key);
+  const style = allStyles(store).find((s) => styleToken(s).toLowerCase() === key);
   if (style) return `"${token}" is the editing style ${style.name}; a filename couldn't tell them apart`;
   const other = accountSets(store).find((s) => s.id !== exceptId && setToken(s.name).toLowerCase() === key);
   if (other) return `"${token}" is already the set ${other.name}; a filename couldn't tell them apart`;

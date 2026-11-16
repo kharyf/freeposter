@@ -526,7 +526,7 @@ test("Redo for one setting with no note: FreePoster makes the new edit, which co
   assert.equal(posts(), 1);
 });
 
-test("Redo with a note: waits for Hermes's revise_edit, then sends the new edit for review", async () => {
+test("Redo with a note: waits for the agent's revise_edit, then sends the new edit for review", async () => {
   const { store, clock, intake, reviews, file, finishEdit, reviewOf } = setup();
   await intake.handle(file(driveName("Cut", clock.now + 60 * MIN)));
   finishEdit("f1");
@@ -539,7 +539,7 @@ test("Redo with a note: waits for Hermes's revise_edit, then sends the new edit 
   let rec = store.driveFile("f1")!;
   assert.equal(rec.state, "reviewing");
   assert.equal(rec.editId, oldEdit.id, "FreePoster can't read the note: no new edit yet");
-  assert.match(rec.note!, /Waiting for Hermes.*keep the joke/);
+  assert.match(rec.note!, /Waiting for your agent.*keep the joke/);
   // What revise_edit does.
   const next = store.createEdit(oldEdit.sourcePath, oldEdit.sha256, { ...oldEdit.settings, keep: [{ start: 1.5, end: 2.5 }] }, oldEdit.id);
   store.closeEdit(oldEdit.id, "superseded");

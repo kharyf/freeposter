@@ -1,6 +1,6 @@
 # Design: Telegram review gate
 
-Status: implemented on branch `telegram-review` (2026-11-08). Setup steps for users are in [hermes.md](hermes.md#3-reviews-on-telegram).
+Status: implemented on branch `telegram-review` (2026-11-08). Since 2026-11-14 the `hermes` mode is the generic `shared` mode (any agent can relay; Hermes's plugin is one relay), and events are logged for every agent, not only sent to a webhook. Setup steps for users are in [agents.md](agents.md#4-reviews-on-telegram) and [hermes.md](hermes.md).
 
 ### Changes made while building it
 

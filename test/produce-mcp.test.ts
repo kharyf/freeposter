@@ -57,7 +57,7 @@ test("the five production tools are listed, and none approves", async () => {
   const names = (await rpc("tools/list")).result.tools.map((t: any) => t.name);
   for (const n of ["describe_production_tools", "start_production", "get_production", "revise_production", "cancel_production"]) assert.ok(names.includes(n), n);
   assert.ok(!names.includes("approve_production"));
-  assert.equal(names.length, 19);
+  assert.equal(names.length, 24);
   await app.close();
 });
 

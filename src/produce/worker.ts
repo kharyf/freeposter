@@ -1,6 +1,6 @@
 // Runs productions: claims shots from the store per lane (GPU: one at a time, so WanGP and Blender never fight
 // over VRAM; CPU: CPU_LANE_CONCURRENCY), renders each through its adapter, caches the result by input hash,
-// assembles once every shot of the current revision is done, and tells the webhook.
+// assembles once every shot of the current revision is done, and logs an event for the agent.
 import { createHash } from "node:crypto";
 import { copyFileSync, createReadStream, existsSync, mkdirSync, rmSync } from "node:fs";
 import { extname, join } from "node:path";

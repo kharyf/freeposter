@@ -25,7 +25,9 @@ const USAGE = `usage: freeposter <command> [options]
   revise <id> <shots-or-spec.json | ->       a JSON list = replacement shots; an object = a whole spec
   review <id> [--accounts 1,4] [--caption <text>] [--title <text>] [--at <iso>] [--edit] [--dry-run]
                                              sends a production (or with --edit, an edit) for review
-  reviews [<id>]                             one review, or the recent ones
+  reviews [<id>] [--needs-agent]             one review, the recent ones, or redos waiting for an agent
+  events [--since <id>] [--watch]            what happened (unread events, or every one after an id);
+                                             --watch keeps printing new ones as they happen (one JSON per line)
   audit                                      checks every published post against what was approved
   cancel <id> [--post]                       a production (or with --post, a post)
   posts [<id>]                               recent posts, or one
@@ -54,7 +56,7 @@ function parse(argv: string[]) {
     const a = argv[i];
     if (a.startsWith("--")) {
       const [k, inline] = a.slice(2).split("=", 2);
-      const takesValue = ["accounts", "caption", "title", "at"].includes(k);
+      const takesValue = ["accounts", "caption", "title", "at", "since"].includes(k);
       flags[k] = inline ?? (takesValue ? argv[++i] ?? "" : true);
     } else {
       positional.push(a);
@@ -164,8 +166,19 @@ export async function main(argv: string[], io: CliIO): Promise<number> {
         return EXIT.ok;
       }
       case "reviews":
-        print(await call("get_review", a1 ? { review_id: int(a1, "the review id") } : {}));
+        if (flags["needs-agent"] === true) print(await call("list_reviews", { needs_agent: true }));
+        else print(await call("get_review", a1 ? { review_id: int(a1, "the review id") } : {}));
         return EXIT.ok;
+      case "events": {
+        let since: number | undefined = typeof flags.since === "string" ? int(flags.since, "--since") : undefined;
+        if (flags.watch !== true) { print(await call("list_events", clean({ since }))); return EXIT.ok; }
+        // Follows the feed until stopped: one line per event, so another program can read them as they come.
+        for (;;) {
+          const got = await call("wait_for_events", clean({ since, timeout_sec: 50 }));
+          for (const e of got.events) io.out(asJson ? JSON.stringify(e) : `#${e.id} ${e.event_type}: ${e.summary}`);
+          since = got.next_since;
+        }
+      }
       case "audit": {
         const audit = await call("audit_reviews");
         print(audit);
