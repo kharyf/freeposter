@@ -7,6 +7,6 @@
     "quote": { "type": "string", "required": true, "maxLength": 80 }
   },
   "fallback": "kinetic-words",
-  "fallbackParams": { "words": "$phrase" },
+  "fallbackParams": { "words": "$main" },
   "example": { "quote": "Nobody remembers the first draft. They remember the one you shipped." }
 }

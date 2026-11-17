@@ -80,22 +80,30 @@ test("fallback params that do not fit are repaired: text cut on a word, at most 
   const adapters = stubs({ remotion: "unhealthy" });
   const inner = adapters.hyperframes.render;
   adapters.hyperframes.render = async (shot: any, ctx: any) => { seen.push(shot); return inner(shot, ctx); };
-  const phrase = "one two three four five six seven eight nine ten eleven twelve";
-  const r = await renderGraphics([G("pull-quote", { quote: "q" }, phrase)], { dir: tmp(), adapters, signal });
+  const quote = "one two three four five six seven eight nine ten eleven twelve";
+  const r = await renderGraphics([G("pull-quote", { quote }, "the spoken phrase")], { dir: tmp(), adapters, signal });
   assert.equal(r.clips[0].template, "kinetic-words");
   assert.match(seen[0].html, /const P = {"words":"one two three four"};/);
   assert.match(seen[0].html, /one two three four/);
   assert.doesNotMatch(seen[0].html, /five/);
 });
 
-test("a long phrase is cut to 40 characters on a word for the keyword card", async () => {
+test("a graphic with no text of its own falls back to its phrase, cut to 40 characters on a word for the keyword card", async () => {
   const phrase = "alpha beta gamma delta epsilon zeta eta theta iota kappa";
   const dir = tmp();
-  const r = await renderGraphics([G("kinetic-words", { words: "a b" }, phrase)], { dir, adapters: stubs({ hyperframes: "unhealthy" }), signal });
+  const r = await renderGraphics([G("kinetic-words", {}, phrase)], { dir, adapters: stubs({ hyperframes: "unhealthy" }), signal });
   assert.equal(r.clips[0].template, "keyword-card");
   const ass = readFileSync(r.clips[0].path.replace(/\.mp4$/, ".ass"), "utf8");
   assert.match(ass.replaceAll("\\N", " "), /alpha beta gamma delta epsilon zeta eta\n/);
   assert.doesNotMatch(ass, /theta/);
+});
+
+test("a fallback keyword card shows the graphic's own words, not the transcript", async () => {
+  const r = await renderGraphics([G("kinetic-words", { words: "Small steps compound" }, "and so what I mean is")], { dir: tmp(), adapters: stubs({ hyperframes: "unhealthy" }), signal });
+  assert.equal(r.clips[0].template, "keyword-card");
+  const ass = readFileSync(r.clips[0].path.replace(/\.mp4$/, ".ass"), "utf8").replaceAll("\\N", " ");
+  assert.match(ass, /Small steps compound/);
+  assert.doesNotMatch(ass, /what I mean/);
 });
 
 test("renders are cached by template, params, duration, size and adapter version", async () => {

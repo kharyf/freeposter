@@ -23,7 +23,10 @@ export interface FancyTemplate {
   minSec: number;
   maxSec: number;
   fallback: string | null;
-  /** fallback param name → this template's param name, "$phrase" (the graphic's key phrase) or "$icon" (the object's emoji) */
+  /**
+   * fallback param name → this template's param name, "$main" (the graphic's own text), "$phrase" (the graphic's
+   * spoken key phrase, a last resort) or "$icon" (the object's emoji)
+   */
   fallbackParams: Record<string, string>;
   /** params that render well: the dev samples and the AI's prompt use them */
   example: Record<string, string | number | boolean>;
@@ -93,12 +96,54 @@ export function checkParams(t: FancyTemplate, raw: unknown): { params: Record<st
   return { params, problems };
 }
 
-/** The params for t's fallback template, from t's params and the graphic's key phrase. */
+/** Words in a kinetic-words list, as checkParams splits them. */
+const wordsIn = (s: string) => s.trim().split(/\s+/).filter(Boolean);
+
+/**
+ * The graphic's own text, for a fallback that shows words: what t would have put on screen, kept within `limit`
+ * (the fallback param's most words and characters) where t has parts to choose from. Empty when params lack it.
+ */
+function mainText(t: FancyTemplate, params: Record<string, string | number | boolean>, limit: { words: number; chars: number }): string {
+  const str = (k: string) => (typeof params[k] === "string" ? (params[k] as string).trim() : "");
+  const fits = (s: string) => wordsIn(s).length <= limit.words && s.length <= limit.chars;
+  /** As many of the parts, in order, as fit (at least the first: repair shortens it). */
+  const fitting = (parts: string[]) => {
+    let out = parts[0] ?? "";
+    for (const part of parts.slice(1)) if (fits(`${out} ${part}`)) out = `${out} ${part}`; else break;
+    return out;
+  };
+  const items = (k: string) => str(k).split("|").map((s) => s.trim()).filter(Boolean);
+  switch (t.id) {
+    case "stat-counter": {
+      if (typeof params.value !== "number") return "";
+      const n = params.value.toLocaleString("en-US", { maximumFractionDigits: 6 });
+      return fitting([`${str("prefix")}${n}${str("suffix")}`, str("label")].filter(Boolean));
+    }
+    case "compare": return str("left") && str("right") ? `${str("left")} vs ${str("right")}` : "";
+    case "pull-quote": return str("quote");
+    case "build-list": return fitting(items("items"));
+    case "steps": return fitting(items("steps"));
+    case "icon-callout": case "gold-3d-object": return str("label");
+    case "gold-3d-word": return str("word");
+    case "kinetic-words": return str("words");
+    default: return "";
+  }
+}
+
+/**
+ * The params for t's fallback template, from t's params and the graphic's key phrase. "$main" is the graphic's own
+ * text (mainText); the spoken key phrase stands in only when that's missing.
+ */
 export function fallbackParamsFor(t: FancyTemplate, params: Record<string, string | number | boolean>, phrase: string): Record<string, string | number | boolean> {
   const out: Record<string, string | number | boolean> = {};
+  const target = t.fallback ? fancyTemplates()[t.fallback] : undefined;
   for (const [to, from] of Object.entries(t.fallbackParams)) {
     if (from === "$phrase") out[to] = phrase;
-    else if (from === "$icon") out[to] = OBJECT_ICONS[String(params.object)] ?? "✨";
+    else if (from === "$main") {
+      const p = target?.params[to];
+      const limit = { words: p?.parts?.separator === " " ? p.parts.max : Infinity, chars: p?.maxLength ?? Infinity };
+      out[to] = mainText(t, params, limit) || phrase;
+    } else if (from === "$icon") out[to] = OBJECT_ICONS[String(params.object)] ?? "✨";
     else if (params[from] !== undefined) out[to] = params[from];
   }
   return out;

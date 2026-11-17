@@ -88,18 +88,43 @@ test("checkParams fills defaults and returns clean params", () => {
   assert.deepEqual(r.params, { value: 3, prefix: "", suffix: "×", label: "faster" });
 });
 
-test("fallback params map source params, the key phrase and the object's icon", () => {
+test("fallback params map source params, the graphic's own text and the object's icon", () => {
   const t = fancyTemplates();
-  assert.deepEqual(fallbackParamsFor(t["stat-counter"], { value: 3, label: "faster" }, "Three times faster"), { words: "Three times faster" });
   assert.deepEqual(fallbackParamsFor(t["gold-3d-object"], { object: "globe", label: "Worldwide" }, "global reach"), { icon: "🌍", label: "Worldwide" });
   assert.deepEqual(fallbackParamsFor(t.steps, { steps: "Plan|Film|Post" }, "three steps"), { items: "Plan|Film|Post" });
-  assert.deepEqual(fallbackParamsFor(t["kinetic-words"], { words: "Go" }, "go now"), { phrase: "go now" });
+  assert.deepEqual(fallbackParamsFor(t["kinetic-words"], { words: "Go" }, "go now"), { phrase: "Go" });
   assert.deepEqual(Object.keys(OBJECT_ICONS), ["coin", "arrow-up", "arrow-down", "globe", "clock", "bars", "lightbulb"]);
   assert.deepEqual(Object.values(OBJECT_ICONS), ["🪙", "⬆️", "⬇️", "🌍", "⏰", "📊", "💡"]);
   // Every mapped value passes the fallback's own checks.
   for (const object of Object.keys(OBJECT_ICONS)) {
     assert.deepEqual(checkParams(t["icon-callout"], fallbackParamsFor(t["gold-3d-object"], { object, label: "x" }, "p")).problems, [], object);
   }
+});
+
+test("a fallback that shows words shows the graphic's own text, not the transcript", () => {
+  const t = fancyTemplates();
+  const main = (id: string, params: Record<string, string | number | boolean>) => fallbackParamsFor(t[id], params, "the spoken words").words;
+  // stat-counter: the number with its prefix and suffix, plus the label when the whole still fits four words.
+  assert.equal(main("stat-counter", { value: 3, prefix: "", suffix: "×", label: "faster" }), "3× faster");
+  assert.equal(main("stat-counter", { value: 40000, prefix: "$", suffix: "", label: "a month" }), "$40,000 a month");
+  assert.equal(main("stat-counter", { value: 3, prefix: "", suffix: "×", label: "faster than editing by hand" }), "3×");
+  assert.equal(main("compare", { left_title: "Before", left: "4 hours", right_title: "After", right: "10 min" }), "4 hours vs 10 min");
+  assert.equal(main("pull-quote", { quote: "Ship it" }), "Ship it");
+  assert.equal(main("build-list", { items: "Hook|Story|Payoff|Call to action" }), "Hook Story Payoff", "whole items, as many as fit");
+  assert.equal(main("build-list", { items: "One two three four five|Six" }), "One two three four five", "the first item even when it's too long: repair shortens it");
+  assert.equal(main("icon-callout", { icon: "🚀", label: "Launch day" }), "Launch day");
+  assert.equal(main("gold-3d-word", { word: "Gold" }), "Gold");
+  // steps falls back to build-list with its items as they are.
+  assert.deepEqual(fallbackParamsFor(t.steps, { steps: "Film it|Cut the pauses|Post daily" }, "p"), { items: "Film it|Cut the pauses|Post daily" });
+  // gold-3d-object's label carries to icon-callout, and on to kinetic-words.
+  assert.equal(fallbackParamsFor(t["gold-3d-object"], { object: "coin", label: "Paid monthly" }, "p").label, "Paid monthly");
+  assert.deepEqual(fallbackParamsFor(t["kinetic-words"], { words: "Small steps compound" }, "p"), { phrase: "Small steps compound" });
+  // The spoken phrase only when the graphic has no text of its own.
+  assert.equal(main("pull-quote", {}), "the spoken words");
+  assert.equal(main("stat-counter", { label: "x" }), "the spoken words");
+  assert.equal(main("compare", { left: "a" }), "the spoken words");
+  // Every template that falls back to kinetic-words uses $main.
+  for (const tpl of Object.values(t)) if (tpl.fallback === "kinetic-words") assert.deepEqual(tpl.fallbackParams, { words: "$main" }, tpl.id);
 });
 
 test("toShot sizes graphics 1080x960 and passes the palette", () => {

@@ -7,6 +7,6 @@
     "items": { "type": "string", "required": true, "maxLength": 40, "parts": { "separator": "|", "min": 2, "max": 4, "noun": "items" } }
   },
   "fallback": "kinetic-words",
-  "fallbackParams": { "words": "$phrase" },
+  "fallbackParams": { "words": "$main" },
   "example": { "items": "Hook|Story|Payoff|Call to action" }
 }

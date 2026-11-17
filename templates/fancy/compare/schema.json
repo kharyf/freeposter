@@ -10,6 +10,6 @@
     "right": { "type": "string", "required": true, "maxLength": 40 }
   },
   "fallback": "kinetic-words",
-  "fallbackParams": { "words": "$phrase" },
+  "fallbackParams": { "words": "$main" },
   "example": { "left_title": "Before", "left": "4 hours", "right_title": "After", "right": "10 minutes" }
 }
