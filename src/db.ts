@@ -178,6 +178,8 @@ export class Store {
     const editColumns = this.db.prepare("PRAGMA table_info(edits)").all() as { name: string }[];
     if (!editColumns.some((c) => c.name === "parent_edit_id")) this.db.exec("ALTER TABLE edits ADD COLUMN parent_edit_id INTEGER");
     if (!editColumns.some((c) => c.name === "cuts_path")) this.db.exec("ALTER TABLE edits ADD COLUMN cuts_path TEXT");
+    if (!editColumns.some((c) => c.name === "notes")) this.db.exec("ALTER TABLE edits ADD COLUMN notes TEXT");
+    if (!editColumns.some((c) => c.name === "cover")) this.db.exec("ALTER TABLE edits ADD COLUMN cover TEXT");
     const driveColumns = this.db.prepare("PRAGMA table_info(drive_files)").all() as { name: string }[];
     if (!driveColumns.some((c) => c.name === "uploaded_at")) this.db.exec("ALTER TABLE drive_files ADD COLUMN uploaded_at INTEGER");
     if (!driveColumns.some((c) => c.name === "review_id")) this.db.exec("ALTER TABLE drive_files ADD COLUMN review_id INTEGER");
@@ -592,6 +594,8 @@ export class Store {
       approvedAt: r.approved_at,
       parentEditId: r.parent_edit_id ?? null,
       cutsPath: r.cuts_path ?? null,
+      notes: r.notes ? JSON.parse(r.notes) : [],
+      cover: r.cover ? JSON.parse(r.cover) : null,
       createdAt: r.created_at,
     };
   }
@@ -604,11 +608,11 @@ export class Store {
     return row ? this.edit(row.id) : undefined;
   }
 
-  updateEdit(id: number, f: Partial<Pick<Edit, "state" | "progress" | "outputPath" | "durationSec" | "transcriptPath" | "error" | "cutsPath">>) {
-    const cols = { state: "state", progress: "progress", outputPath: "output_path", durationSec: "duration_sec", transcriptPath: "transcript_path", error: "error", cutsPath: "cuts_path" } as const;
+  updateEdit(id: number, f: Partial<Pick<Edit, "state" | "progress" | "outputPath" | "durationSec" | "transcriptPath" | "error" | "cutsPath" | "notes" | "cover">>) {
+    const cols = { state: "state", progress: "progress", outputPath: "output_path", durationSec: "duration_sec", transcriptPath: "transcript_path", error: "error", cutsPath: "cuts_path", notes: "notes", cover: "cover" } as const;
     const keys = (Object.keys(f) as (keyof typeof cols)[]).filter((k) => k in cols);
     if (!keys.length) return;
-    this.db.prepare(`UPDATE edits SET ${keys.map((k) => `${cols[k]} = ?`).join(", ")} WHERE id = ?`).run(...keys.map((k) => f[k] ?? null), id);
+    this.db.prepare(`UPDATE edits SET ${keys.map((k) => `${cols[k]} = ?`).join(", ")} WHERE id = ?`).run(...keys.map((k) => (k === "notes" || k === "cover" ? (f[k] == null ? null : JSON.stringify(f[k])) : f[k] ?? null)), id);
   }
 
   /** Only the user approves edits (the page's Approve button, or a review they approved); agents have no way to. */

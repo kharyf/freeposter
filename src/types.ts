@@ -149,6 +149,10 @@ export interface Edit {
   parentEditId: number | null;
   /** the kept source stretches, as JSON: maps a time in the edit back to the source */
   cutsPath: string | null;
+  /** what the Fancy style did and couldn't do, for the review card */
+  notes: string[];
+  /** the Fancy cover frame (a JPEG) and the time in the edit it shows */
+  cover: { path: string; atSec: number } | null;
   createdAt: number;
 }
 

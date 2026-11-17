@@ -1,13 +1,25 @@
 // Runs queued edits one at a time, beside the job runner: transcribe (cached per source file), then render.
 // Edits are slow (minutes); they never hold up posting, and a quit or crash just starts the edit over.
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dataDir } from "../config.ts";
 import type { Store } from "../db.ts";
 import { probe } from "../media.ts";
 import type { Edit } from "../types.ts";
 import { queueEvent } from "../notify.ts";
+import type { Question } from "../ai/providers.ts";
+import { adapters as productionAdapters, type Adapters } from "../produce/adapters/index.ts";
+import { fixWords, remapWords, type Segment } from "./cuts.ts";
+import { cadenceProblems, planBeats } from "./fancy/beats.ts";
+import { makeCover } from "./fancy/cover.ts";
+import { renderGraphics } from "./fancy/graphics.ts";
+import { cachedPlan, planGraphics, PLAN_VERSION } from "./fancy/plan.ts";
+import { renderFancy } from "./fancy/render.ts";
+import { fancyTemplates } from "./fancy/templates.ts";
+import { planFaceTrack, type FaceKey } from "./reframe.ts";
 import { planSegments, renderEdit } from "./render.ts";
+import { isFancy } from "./settings.ts";
 import { findLyricsWithAi, spokenWords, type FindLyrics } from "./speech.ts";
 import { transcribe as whisper, type Transcript } from "./transcribe.ts";
 
@@ -17,7 +29,17 @@ export interface EditWorkerOptions {
   transcribe?: (path: string) => Promise<Transcript>;
   /** tells song lyrics from talking (default: asks the AI providers) */
   findLyrics?: FindLyrics;
+  /** replaces the AI, the graphics tools and the face tracker (tests) */
+  fancy?: {
+    ask?: <T>(q: Question) => Promise<T>;
+    adapters?: Pick<Adapters, "remotion" | "hyperframes" | "blender">;
+    faceTrack?: typeof planFaceTrack;
+  };
 }
+
+const shortHash = (x: unknown) => createHash("sha256").update(JSON.stringify(x)).digest("hex").slice(0, 8);
+/** Changes when a template is added, removed or its schema changes: cached plans were made against the old catalogue. */
+const catalogueHash = () => shortHash(Object.values(fancyTemplates()).map(({ dir, ...t }) => t));
 
 const log = (edit: Edit, msg: string) => console.log(`[edit ${edit.id}] ${msg}`);
 
@@ -26,6 +48,9 @@ export class EditWorker {
   dir: string;
   transcribe: (path: string) => Promise<Transcript>;
   findLyrics: FindLyrics;
+  fancy: NonNullable<EditWorkerOptions["fancy"]>;
+  /** cancels a running Fancy edit's graphics and render when the worker stops */
+  cancel = new AbortController();
   timer: NodeJS.Timeout | undefined;
   running: Promise<void> | undefined;
 
@@ -34,6 +59,7 @@ export class EditWorker {
     this.dir = opts.dir ?? join(dataDir, "edits");
     this.transcribe = opts.transcribe ?? ((path) => whisper(path));
     this.findLyrics = opts.findLyrics ?? findLyricsWithAi;
+    this.fancy = opts.fancy ?? {};
     store.requeueInterruptedEdits();
   }
 
@@ -47,6 +73,7 @@ export class EditWorker {
 
   stop() {
     clearTimeout(this.timer);
+    this.cancel.abort();
   }
 
   /** Starts the next queued edit unless one is already running. */
@@ -86,6 +113,7 @@ export class EditWorker {
       log(edit, "transcribing");
       const transcript = await this.speechFor(edit);
       this.store.updateEdit(edit.id, { state: "editing", transcriptPath: join(this.dir, `${edit.sha256}.words.json`) });
+      if (isFancy(edit.settings)) return await this.processFancy(edit, transcript);
       const out = join(this.dir, `${edit.key}.mp4`);
       // The kept source stretches: a redo note's "0:14" in the edit maps back to the source through these.
       const cuts = join(this.dir, `${edit.key}.cuts.json`);
@@ -103,18 +131,92 @@ export class EditWorker {
         writeFileSync(cuts, JSON.stringify(segments));
       }
       this.store.updateEdit(edit.id, { state: "ready", progress: 1, outputPath: out, durationSec, error: null, cutsPath: cuts });
-      log(edit, `ready (${durationSec.toFixed(1)}s)`);
-      // A Drive video's edit goes to review by itself (Drive intake asks for it); an agent asking too would only replace that card.
-      const drive = this.store.driveFileForEdit(edit.id);
-      queueEvent(this.store, "edit.ready", `edit.ready:${edit.id}`, { edit_id: edit.id, duration_sec: durationSec, parent_edit_id: edit.parentEditId, drive_file: drive?.name ?? null },
-        drive
-          ? `Edit ${edit.id} of the Drive video "${drive.name}" is ready (${durationSec.toFixed(1)} s). FreePoster sends it to the user for review itself; don't call request_review.`
-          : `Edit ${edit.id} is ready (${durationSec.toFixed(1)} s). Call request_review with it so the user can approve, reject or redo it.`);
+      this.announceReady(edit, durationSec);
     } catch (err) {
-      log(edit, `failed: ${(err as Error).message}`);
-      this.store.updateEdit(edit.id, { state: "failed", error: (err as Error).message });
-      queueEvent(this.store, "edit.failed", `edit.failed:${edit.id}:${Date.now()}`, { edit_id: edit.id, error: (err as Error).message },
-        `Edit ${edit.id} failed: ${(err as Error).message}`);
+      this.fail(edit, err);
     }
+  }
+
+  private announceReady(edit: Edit, durationSec: number) {
+    log(edit, `ready (${durationSec.toFixed(1)}s)`);
+    // A Drive video's edit goes to review by itself (Drive intake asks for it); an agent asking too would only replace that card.
+    const drive = this.store.driveFileForEdit(edit.id);
+    queueEvent(this.store, "edit.ready", `edit.ready:${edit.id}`, { edit_id: edit.id, duration_sec: durationSec, parent_edit_id: edit.parentEditId, drive_file: drive?.name ?? null },
+      drive
+        ? `Edit ${edit.id} of the Drive video "${drive.name}" is ready (${durationSec.toFixed(1)} s). FreePoster sends it to the user for review itself; don't call request_review.`
+        : `Edit ${edit.id} is ready (${durationSec.toFixed(1)} s). Call request_review with it so the user can approve, reject or redo it.`);
+  }
+
+  private fail(edit: Edit, err: unknown) {
+    log(edit, `failed: ${(err as Error).message}`);
+    this.store.updateEdit(edit.id, { state: "failed", error: (err as Error).message });
+    queueEvent(this.store, "edit.failed", `edit.failed:${edit.id}:${Date.now()}`, { edit_id: edit.id, error: (err as Error).message },
+      `Edit ${edit.id} failed: ${(err as Error).message}`);
+  }
+
+  /**
+   * The Fancy look: plan (AI, cached) -> graphics (cached, never failing) -> face track -> beats -> composite -> cover.
+   * Only the compositor failing fails the edit. Progress: 0-0.1 plan, 0.1-0.6 graphics, 0.6-1 composite.
+   */
+  private async processFancy(edit: Edit, transcript: Transcript) {
+    const s = edit.settings;
+    const signal = this.cancel.signal;
+    let last = 0;
+    const progress = (f: number) => {
+      if (f - last >= 0.02) { last = f; this.store.updateEdit(edit.id, { progress: f }); }
+    };
+
+    const sourceSec = (await probe(edit.sourcePath)).durationSec;
+    const segments: Segment[] = planSegments(transcript, s, sourceSec);
+    const editedSec = segments.reduce((t, g) => t + g.end - g.start, 0);
+    const words = remapWords(fixWords(transcript.words, s.captionFixes), segments);
+    const cuts = join(this.dir, `${edit.key}.cuts.json`);
+    writeFileSync(cuts, JSON.stringify(segments));
+
+    log(edit, "planning graphics");
+    const planPath = join(this.dir, `${edit.sha256}-${shortHash([segments, words])}-${catalogueHash()}-v${PLAN_VERSION}.fancy-plan.json`);
+    const plan = await cachedPlan(planPath, () => planGraphics(words, editedSec, { ask: this.fancy.ask }));
+    progress(0.1);
+
+    log(edit, "rendering graphics");
+    const tools = this.fancy.adapters ?? productionAdapters({ speechFor: (src) => this.speechFor(src) });
+    const graphicsDir = join(this.dir, "fancy-graphics");
+    mkdirSync(graphicsDir, { recursive: true });
+    const graphics = await renderGraphics(plan.graphics, { dir: graphicsDir, adapters: tools, signal, onProgress: (f) => progress(0.1 + 0.5 * f) });
+    progress(0.6);
+    const notes = [...plan.notes, ...graphics.notes];
+
+    let faces: FaceKey[] | null = null;
+    if (s.reframe) {
+      const track = this.fancy.faceTrack ?? planFaceTrack;
+      faces = await track(edit.sourcePath, await probe(edit.sourcePath)).catch((err) => {
+        console.error(`face tracking skipped: ${(err as Error).message}`);
+        return null;
+      });
+    }
+
+    const cutTimes: number[] = [];
+    let at = 0;
+    for (const g of segments.slice(0, -1)) cutTimes.push((at += g.end - g.start));
+    const beats = planBeats({ durationSec: editedSec, words, graphics: plan.graphics, emphasis: plan.emphasis, cutTimes, punchIn: s.punchIn });
+    for (const problem of cadenceProblems(beats, cutTimes)) log(edit, `cadence: ${problem}`);
+
+    log(edit, "editing");
+    const out = join(this.dir, `${edit.key}.mp4`);
+    const { durationSec } = await renderFancy(edit.sourcePath, {
+      segments, beats, clips: graphics.clips, faces, captionWords: s.captions ? words : null, settings: s, outPath: out, signal,
+      onProgress: (f) => progress(0.6 + 0.4 * f),
+    });
+
+    let cover: Edit["cover"] = null;
+    try {
+      const path = await makeCover(edit.sourcePath, { at: plan.cover.at, segments, faces, title: plan.cover.title, out: join(this.dir, `${edit.key}.cover.jpg`) });
+      cover = { path, atSec: plan.cover.at };
+    } catch (err) {
+      log(edit, `no cover: ${(err as Error).message}`);
+      notes.push("the cover couldn't be made");
+    }
+    this.store.updateEdit(edit.id, { state: "ready", progress: 1, outputPath: out, durationSec, error: null, cutsPath: cuts, notes, cover });
+    this.announceReady(edit, durationSec);
   }
 }
