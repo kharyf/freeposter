@@ -329,17 +329,28 @@ const TOOL_GRAPHICS = {
 type GraphicsTool = keyof typeof TOOL_GRAPHICS;
 const TOOL_NAMES: Record<GraphicsTool, string> = { remotion: "Remotion", hyperframes: "HyperFrames", blender: "Blender" };
 
+/** A graphics tool's health check, as its adapter answers it. */
+export interface ToolHealth { ok: boolean; detail: string; missing?: boolean }
+
+/** A health check's detail on one line, short enough for a note. */
+const brief = (detail: string) => {
+  const line = detail.replace(/\s+/g, " ").trim() || "its check failed";
+  return line.length > 120 ? `${line.slice(0, 119)}…` : line;
+};
+
 /**
- * For the Editing Styles tab: which Fancy graphics fall back, given which tools are healthy. A missing tool's
- * graphics follow their templates' fallback chains to the first healthy tool, or else to the built-in keyword card
- * (where a failed render can always end up too). Null when every tool is healthy.
+ * For the Editing Styles tab: which Fancy graphics fall back, given each tool's health check. A tool that isn't
+ * there "isn't installed"; one that is there but fails its check "isn't working" (with why). Its graphics follow
+ * their templates' fallback chains to the first healthy tool, or else to the built-in keyword card (where a failed
+ * render can always end up too). Null when every tool is healthy.
  */
-export function fancyToolNote(healthy: Record<GraphicsTool, boolean>): string | null {
+export function fancyToolNote(health: Record<GraphicsTool, ToolHealth>): string | null {
   const catalogue = fancyTemplates();
-  const ok = (tool: string) => tool === "builtin" || healthy[tool as GraphicsTool];
+  const ok = (tool: string) => tool === "builtin" || health[tool as GraphicsTool].ok;
   const notes: string[] = [];
   for (const tool of Object.keys(TOOL_GRAPHICS) as GraphicsTool[]) {
-    if (healthy[tool]) continue;
+    const h = health[tool];
+    if (h.ok) continue;
     const madeWith = new Set<string>();
     for (const t of Object.values(catalogue)) {
       if (t.tool !== tool) continue;
@@ -348,7 +359,8 @@ export function fancyToolNote(healthy: Record<GraphicsTool, boolean>): string | 
       if (next && next.tool !== "builtin") madeWith.add(TOOL_NAMES[next.tool as GraphicsTool]);
     }
     const via = madeWith.size ? `with ${[...madeWith].join(" or ")} or ` : "";
-    notes.push(`${TOOL_NAMES[tool]} isn't installed: ${TOOL_GRAPHICS[tool]} will be made ${via}as keyword cards`);
+    const state = h.missing ? "isn't installed" : `isn't working (${brief(h.detail)})`;
+    notes.push(`${TOOL_NAMES[tool]} ${state}: ${TOOL_GRAPHICS[tool]} will be made ${via}as keyword cards`);
   }
   return notes.length ? notes.join("; ") : null;
 }

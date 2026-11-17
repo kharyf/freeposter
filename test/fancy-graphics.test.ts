@@ -114,19 +114,21 @@ test("renders are cached by template, params, duration, size and adapter version
   assert.equal(track.calls.remotion, 3);
 });
 
-test("Blender renders one at a time, others up to two in parallel", async () => {
+test("Blender and HyperFrames each render one at a time, Remotion up to two in parallel", async () => {
   const track = newTrack();
   const list = [
     ...[1, 2, 3].map((n) => G("gold-3d-word", { word: `Gold${n}` }, "gold")),
     ...[1, 2, 3, 4].map((n) => G("pull-quote", { quote: `Quote ${n}` }, "quote")),
+    ...[1, 2, 3].map((n) => G("kinetic-words", { words: `Word ${n}` }, "word")),
   ];
   let last = 0;
   const r = await renderGraphics(list, { dir: tmp(), adapters: stubs({}, track), signal, onProgress: (f) => { last = f; } });
-  assert.equal(r.clips.length, 7);
+  assert.equal(r.clips.length, 10);
   assert.equal(track.peak.blender, 1);
+  assert.equal(track.peak.hyperframes, 1, "HyperFrames refuses a second render while one runs");
   assert.equal(track.peak.remotion, 2);
   assert.equal(last, 1);
-  assert.deepEqual(r.clips.map((c) => c.template), [...Array(3).fill("gold-3d-word"), ...Array(4).fill("pull-quote")]);
+  assert.deepEqual(r.clips.map((c) => c.template), [...Array(3).fill("gold-3d-word"), ...Array(4).fill("pull-quote"), ...Array(3).fill("kinetic-words")]);
 });
 
 test("notes group graphics per tool", async () => {

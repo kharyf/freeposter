@@ -86,6 +86,7 @@ test("the pinned hyperframes runs our own executable in node mode (FreePoster.ex
 test("hyperframes is unavailable until installed", async () => {
   const h = await hyperframesAdapter({ command: () => null }).health();
   assert.equal(h.ok, false);
+  assert.equal(h.missing, true);
   await assert.rejects(hyperframesAdapter({ command: () => null }).render(hfShot, ctx()), Retryable);
 });
 
@@ -136,6 +137,8 @@ test("remotion that fails or exits silently is Fatal, and is unavailable until i
   }
   const missing = remotionAdapter({ command: () => null });
   assert.match((await missing.health()).detail, /isn't installed yet/);
+  assert.equal((await missing.health()).missing, true);
+  assert.equal((await missing.health()).missing, true);
   await assert.rejects(missing.render(remotionShot(), ctx()), Retryable);
 });
 
@@ -327,4 +330,13 @@ test("a sized blender shot passes its size to the template, and a vetted script 
     const { args } = JSON.parse(readFileSync(log, "utf8").trim());
     assert.equal(args[args.indexOf("-P") + 1], script);
   } finally { restore(); }
+});
+
+test("Blender with no path, or nothing at its path, is missing; one that fails to run is not", async () => {
+  assert.equal((await blenderAdapter({ command: (args) => ({ bin: "", args }) }).health()).missing, true);
+  const gone = await blenderAdapter({ command: (args) => ({ bin: join(tmp(), "blender.exe"), args }) }).health();
+  assert.deepEqual([gone.ok, gone.missing], [false, true]);
+  const broken = await blenderAdapter({ command: (args) => ({ bin: process.execPath, args: ["-e", "process.exit(3)", ...args] }) }).health();
+  assert.equal(broken.ok, false);
+  assert.equal(broken.missing, undefined);
 });

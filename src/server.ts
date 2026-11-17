@@ -6,7 +6,7 @@ import { createReadStream, existsSync, readFileSync, statSync, unlinkSync, write
 import { join } from "node:path";
 import { accountSets, createAccountSet, defaultSetId, deleteAccountSet, noteSignInSet, placeInSet, takeSignInSet, defaultTikTokPrefs, renameAccountSet, setDefaultSet, setDefaultTikTokPrefs, setSharing, setToken, sharedFrom, sharingPairs, type Sharing } from "./accounts.ts";
 import { calendar, postOutcome } from "./calendar.ts";
-import { allStyles, createStyle, defaultStyleId, deleteStyle, fancyToolNote, hasSample, MAX_THUMBNAIL_BYTES, sampleVideoPath, saveThumbnail, setDefaultStyle, STYLE_STEPS, styleById, styleToken, thumbnail, thumbnailProblem, thumbnailSvg, uploadedThumbnail } from "./edit/styles.ts";
+import { allStyles, createStyle, defaultStyleId, deleteStyle, fancyToolNote, hasSample, type ToolHealth, MAX_THUMBNAIL_BYTES, sampleVideoPath, saveThumbnail, setDefaultStyle, STYLE_STEPS, styleById, styleToken, thumbnail, thumbnailProblem, thumbnailSvg, uploadedThumbnail } from "./edit/styles.ts";
 import * as openrouter from "./ai/openrouter.ts";
 import { AI_JOBS, PROVIDER_IDS, type AiJob, type ProviderId } from "./ai/providers.ts";
 import type { AiService } from "./ai/router.ts";
@@ -58,6 +58,9 @@ export interface ServerOptions {
   /** Present in the desktop app: shows a folder in Explorer. */
   showFolder?: (path: string) => void;
 }
+
+/** How long the Editing Styles tab's note waits on one graphics tool's health check (tests shorten it). */
+export const fancyHealthCheck = { timeoutMs: 20_000 };
 
 const NO_REDIRECT_PAGE = "Set up your own redirect URI first (Setup, step 1), so the platform has somewhere to send you back to.";
 
@@ -136,13 +139,22 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   };
 
   // Which Fancy graphics will fall back because a tool isn't healthy. Checking runs the tools (seconds), so the
-  // answer is kept for a minute; checks already running are shared.
+  // answer is kept for a minute (or until a tool is installed or its path set); checks already running are shared.
+  // A check that hangs counts as not working after fancyHealthCheck.timeoutMs.
   let fancyNote: { at: number; note: Promise<string | null> } | null = null;
+  const forgetFancyNote = () => { fancyNote = null; };
   const fancyToolNoteNow = () => {
     if (fancyNote && Date.now() - fancyNote.at < 60_000) return fancyNote.note;
     const tools = producer?.adapters ?? productionAdapters({ speechFor: () => Promise.reject(new Error("not used for health checks")) });
-    const healthy = async (tool: "remotion" | "hyperframes" | "blender") => (await tools[tool].health().catch(() => ({ ok: false }))).ok;
-    const note = Promise.all([healthy("remotion"), healthy("hyperframes"), healthy("blender")])
+    const check = (tool: "remotion" | "hyperframes" | "blender"): Promise<ToolHealth> => {
+      let timer: NodeJS.Timeout | undefined;
+      const late = new Promise<ToolHealth>((done) => {
+        timer = setTimeout(() => done({ ok: false, detail: `its check took longer than ${fancyHealthCheck.timeoutMs / 1000} s` }), fancyHealthCheck.timeoutMs);
+      });
+      const checked = tools[tool].health().catch((err: Error): ToolHealth => ({ ok: false, detail: err.message }));
+      return Promise.race([checked, late]).finally(() => clearTimeout(timer));
+    };
+    const note = Promise.all([check("remotion"), check("hyperframes"), check("blender")])
       .then(([remotion, hyperframes, blender]) => fancyToolNote({ remotion, hyperframes, blender }));
     fancyNote = { at: Date.now(), note };
     return note;
@@ -435,6 +447,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     const portBefore = config.port;
     const pageBefore = config.redirectPage;
     saveSettings(out);
+    if (out.BLENDER_PATH !== undefined) forgetFancyNote();
     if (pageBefore && config.redirectPage !== pageBefore) store.setPref("redirect.changedFrom", pageBefore);
     return { ...(await settingsView()), restartNeeded: config.port !== portBefore };
   });
@@ -463,6 +476,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   app.post("/api/produce/hyperframes/install", async (_req, reply) => {
     try {
       await installHyperframes();
+      forgetFancyNote();
       return { ok: true };
     } catch (err) {
       return reply.code(500).send({ error: (err as Error).message });
@@ -472,6 +486,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   app.post("/api/produce/remotion/install", async (_req, reply) => {
     try {
       await installRemotion();
+      forgetFancyNote();
       return { ok: true };
     } catch (err) {
       return reply.code(500).send({ error: (err as Error).message });

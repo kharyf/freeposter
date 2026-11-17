@@ -23,7 +23,8 @@ export interface ShotAdapter<S extends ShotSpec = ShotSpec> {
   lane: Lane;
   /** bump to invalidate cached renders when the adapter's output changes */
   version: number;
-  health(): Promise<{ ok: boolean; detail: string }>;
+  /** `missing`: the tool isn't there at all (as opposed to there but not working) */
+  health(): Promise<{ ok: boolean; detail: string; missing?: boolean }>;
   /** the clip and how much of it the production uses (assembly trims to durationSec) */
   render(shot: S, ctx: RenderContext): Promise<{ path: string; durationSec: number }>;
 }

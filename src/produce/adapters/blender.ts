@@ -2,7 +2,7 @@
 // code from params.json (no .blend files, so templates work across Blender versions) and renders PNG frames,
 // which FreePoster encodes. The agent never sends Python; it picks a template and fills its params.
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { codeDir, config, dataDir } from "../../config.ts";
 import { probe } from "../../media.ts";
 import { runTool } from "../proc.ts";
@@ -46,6 +46,8 @@ export function blenderAdapter(opts: { command?: (args: string[]) => { bin: stri
     version: 1,
     async health() {
       const cmd = command(["-b", "--version"]);
+      // No path found, or a set path with nothing there: not installed (rather than installed and failing).
+      if (!cmd.bin || (isAbsolute(cmd.bin) && !existsSync(cmd.bin))) return { ok: false, missing: true, detail: cmd.bin ? `nothing at ${cmd.bin}` : "Blender wasn't found" };
       try {
         const { code, tail } = await runTool(cmd.bin, cmd.args, { signal: AbortSignal.timeout(60_000) });
         const line = tail.split("\n").find((l) => /^Blender \d/.test(l));

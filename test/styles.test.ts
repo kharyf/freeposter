@@ -10,7 +10,7 @@ import { allStyles, createStyle, defaultStyleId, deleteStyle, fancyToolNote, mig
 import { publishers } from "../src/platforms/index.ts";
 import { ReviewService } from "../src/review/service.ts";
 import { Runner } from "../src/runner.ts";
-import { buildServer } from "../src/server.ts";
+import { buildServer, fancyHealthCheck } from "../src/server.ts";
 import { multipart, newStore, tmp } from "./helpers.ts";
 
 /** A real 1x1 PNG. */
@@ -251,25 +251,74 @@ test("an uploaded image still wins over Fancy's card", () => {
   }
 });
 
-test("the Fancy tool note names each missing tool and where its graphics go", () => {
-  const all = { remotion: true, hyperframes: true, blender: true };
+test("the Fancy tool note names each missing or broken tool and where its graphics go", () => {
+  const good = { ok: true, detail: "" };
+  const missing = { ok: false, detail: "not there", missing: true };
+  const all = { remotion: good, hyperframes: good, blender: good };
   assert.equal(fancyToolNote(all), null);
-  assert.equal(fancyToolNote({ ...all, blender: false }), "Blender isn't installed: 3D graphics will be made with HyperFrames or as keyword cards");
-  assert.equal(fancyToolNote({ ...all, remotion: false }), "Remotion isn't installed: counter, list, comparison, quote and step graphics will be made with HyperFrames or as keyword cards");
-  assert.equal(fancyToolNote({ ...all, hyperframes: false }), "HyperFrames isn't installed: moving-word and icon graphics will be made as keyword cards");
-  assert.equal(fancyToolNote({ remotion: true, hyperframes: false, blender: false }),
+  assert.equal(fancyToolNote({ ...all, blender: missing }), "Blender isn't installed: 3D graphics will be made with HyperFrames or as keyword cards");
+  assert.equal(fancyToolNote({ ...all, remotion: missing }), "Remotion isn't installed: counter, list, comparison, quote and step graphics will be made with HyperFrames or as keyword cards");
+  assert.equal(fancyToolNote({ ...all, hyperframes: missing }), "HyperFrames isn't installed: moving-word and icon graphics will be made as keyword cards");
+  assert.equal(fancyToolNote({ remotion: good, hyperframes: missing, blender: missing }),
     "HyperFrames isn't installed: moving-word and icon graphics will be made as keyword cards; Blender isn't installed: 3D graphics will be made as keyword cards");
+  // installed but failing its check: says why, on one line
+  assert.equal(fancyToolNote({ ...all, blender: { ok: false, detail: "Error: EPERM\n  spawning blender.exe " } }),
+    "Blender isn't working (Error: EPERM spawning blender.exe): 3D graphics will be made with HyperFrames or as keyword cards");
+  assert.equal(fancyToolNote({ ...all, remotion: { ok: false, detail: "" } }),
+    "Remotion isn't working (its check failed): counter, list, comparison, quote and step graphics will be made with HyperFrames or as keyword cards");
+  const long = fancyToolNote({ ...all, hyperframes: { ok: false, detail: "x".repeat(300) } })!;
+  assert.match(long, /^HyperFrames isn't working \(x{119}…\): moving-word/);
 });
 
+type Answer = { ok: boolean; detail: string; missing?: boolean } | "hang";
 /** A production worker whose tools answer health() as given, counting the checks. */
-function toolsProducer(ok: { remotion: boolean; hyperframes: boolean; blender: boolean }) {
+function toolsProducer(answers: { remotion: Answer; hyperframes: Answer; blender: Answer }) {
   const checks = { n: 0 };
-  const tool = (good: boolean) => ({ health: async () => { checks.n++; return good ? { ok: true, detail: "" } : { ok: false, detail: "not found" }; } });
-  return { checks, producer: { adapters: { remotion: tool(ok.remotion), hyperframes: tool(ok.hyperframes), blender: tool(ok.blender) } } };
+  const tool = (key: keyof typeof answers) => ({
+    health: () => { checks.n++; const a = answers[key]; return a === "hang" ? new Promise(() => {}) : Promise.resolve(a); },
+  });
+  return { checks, answers, producer: { adapters: { remotion: tool("remotion"), hyperframes: tool("hyperframes"), blender: tool("blender") } } };
 }
+const OK = { ok: true, detail: "" };
+
+test("a tool that's there but fails its check isn't working, with why", async () => {
+  const { producer } = toolsProducer({ remotion: { ok: false, detail: "exited 1: Cannot find module 'react'" }, hyperframes: OK, blender: OK });
+  const { app } = server(producer);
+  const fancy = (await app.inject("/api/styles")).json().styles.find((s: any) => s.id === "fancy");
+  assert.equal(fancy.toolNote, "Remotion isn't working (exited 1: Cannot find module 'react'): counter, list, comparison, quote and step graphics will be made with HyperFrames or as keyword cards");
+});
+
+test("a hung health check counts as not working after the timeout", async () => {
+  const saved = fancyHealthCheck.timeoutMs;
+  fancyHealthCheck.timeoutMs = 50;
+  try {
+    const { producer } = toolsProducer({ remotion: OK, hyperframes: OK, blender: "hang" });
+    const { app } = server(producer);
+    const fancy = (await app.inject("/api/styles")).json().styles.find((s: any) => s.id === "fancy");
+    assert.equal(fancy.toolNote, "Blender isn't working (its check took longer than 0.05 s): 3D graphics will be made with HyperFrames or as keyword cards");
+  } finally {
+    fancyHealthCheck.timeoutMs = saved;
+  }
+});
+
+test("setting Blender's path checks the tools again", async () => {
+  const { checks, answers, producer } = toolsProducer({ remotion: OK, hyperframes: OK, blender: { ok: false, detail: "Blender wasn't found", missing: true } });
+  const { app } = server(producer);
+  const note = async () => (await app.inject("/api/styles")).json().styles.find((s: any) => s.id === "fancy").toolNote;
+  assert.match(await note(), /Blender isn't installed/);
+  answers.blender = OK;
+  const put = (values: Record<string, string>) => app.inject({ method: "PUT", url: "/api/settings", headers: { host: `localhost:${config.port}` }, payload: { values } });
+  try {
+    assert.equal((await put({ BLENDER_PATH: "C:\\Blender\\blender.exe" })).statusCode, 200);
+    assert.equal(await note(), null);
+    assert.equal(checks.n, 6);
+  } finally {
+    await put({ BLENDER_PATH: "" });
+  }
+});
 
 test("the Editing Styles list says which Fancy graphics will fall back", async () => {
-  const { checks, producer } = toolsProducer({ remotion: true, hyperframes: true, blender: false });
+  const { checks, producer } = toolsProducer({ remotion: OK, hyperframes: OK, blender: { ok: false, detail: "Blender wasn't found", missing: true } });
   const { app } = server(producer);
   const res = await app.inject("/api/styles");
   assert.equal(res.statusCode, 200);
@@ -291,7 +340,7 @@ test("the Editing Styles list says which Fancy graphics will fall back", async (
 });
 
 test("when every graphics tool is healthy, Fancy has no tool note", async () => {
-  const { producer } = toolsProducer({ remotion: true, hyperframes: true, blender: true });
+  const { producer } = toolsProducer({ remotion: OK, hyperframes: OK, blender: OK });
   const { app } = server(producer);
   const fancy = (await app.inject("/api/styles")).json().styles.find((s: any) => s.id === "fancy");
   assert.equal(fancy.toolNote, null);

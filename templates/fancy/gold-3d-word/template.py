@@ -23,7 +23,7 @@ view_w, view_h = common.visible_size(cfg)
 gold = common.gold_material("gold", p["gold"], 0.25)
 
 # A fine bevel: Playfair's hairlines are thin, and a deeper one folds them into spikes.
-word, text_w, text_h = common.solid_text(p["word"], p["font"], size=1.0, extrude=0.09, bevel=0.004, material=gold, name="word")
+word, text_w, text_h = common.solid_text(p["word"], p["font"], size=1.0, extrude=0.03, bevel=0.004, material=gold, name="word")
 # As big as fits: 70% of the width (clear of the 48 px margin with room for the turn), at most 42% of the height.
 fit = min(view_w * 0.7 / text_w, view_h * 0.42 / text_h)
 word.scale = (fit, fit, fit)

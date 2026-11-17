@@ -39,7 +39,7 @@ export function remotionAdapter(opts: { command?: () => ToolCommand | null; root
     version: 1,
     async health() {
       const cmd = command();
-      if (!cmd) return { ok: false, detail: `version ${REMOTION_VERSION} isn't installed yet (Setup → Production tools)` };
+      if (!cmd) return { ok: false, missing: true, detail: `version ${REMOTION_VERSION} isn't installed yet (Setup → Production tools)` };
       try {
         const { code, tail } = await runTool(cmd.bin, [...cmd.args, "versions"], { cwd: root(), signal: AbortSignal.timeout(60_000), env: cmd.env });
         if (code !== 0) return { ok: false, detail: tail };

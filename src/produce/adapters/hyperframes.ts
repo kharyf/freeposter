@@ -27,7 +27,7 @@ export function hyperframesAdapter(opts: { command?: () => ToolCommand | null } 
     version: 1,
     async health() {
       const cmd = command();
-      if (!cmd) return { ok: false, detail: `version ${HYPERFRAMES_VERSION} isn't installed yet (Setup → Production tools)` };
+      if (!cmd) return { ok: false, missing: true, detail: `version ${HYPERFRAMES_VERSION} isn't installed yet (Setup → Production tools)` };
       try {
         const { code, tail } = await runTool(cmd.bin, [...cmd.args, "--version"], { signal: AbortSignal.timeout(60_000), env: cmd.env });
         const version = tail.trim().split("\n").at(-1)?.trim();

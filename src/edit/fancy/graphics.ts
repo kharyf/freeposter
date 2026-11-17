@@ -96,10 +96,12 @@ export async function renderGraphics(
     if (!hashes.has(t.id)) hashes.set(t.id, templateHash(t));
     return hashes.get(t.id)!;
   };
-  // Blender is heavy enough to go alone; the other tools share two slots.
+  // Blender is heavy enough to go alone, and HyperFrames refuses a second render while one is running ("Another
+  // render is running for this user account"): each has a lane of one. Remotion and the keyword card share two slots.
   const cpu = new Semaphore(2);
   const blender = new Semaphore(1);
-  const slot = (tool: Tool) => (tool === "blender" ? blender : cpu);
+  const hyperframes = new Semaphore(1);
+  const slot = (tool: Tool) => (tool === "blender" ? blender : tool === "hyperframes" ? hyperframes : cpu);
 
   // Identical graphics (same cache key) share one render: they would otherwise write the same folder at once.
   const inFlight = new Map<string, Promise<{ path: string; durationSec: number }>>();
