@@ -158,9 +158,9 @@ test("graphics under 40% of a video of 8 s or longer are topped up with keyword 
 
 test("the cover: at most 6 words, its time clamped into the video, or just before the first graphic", () => {
   const long = validatePlan({ ...GOOD_PLAN, cover: { title: "  One two three four five six seven  ", at: 45 } }, WORDS_20S, 20).plan.cover;
-  assert.deepEqual(long, { title: "One two three four five six", at: 20 - 1 / 30 }, "no later than the last frame");
+  assert.deepEqual(long, { title: "One two three four five six", at: 19.966 }, "no later than the last frame, in whole milliseconds");
   const bad = validatePlan({ ...GOOD_PLAN, cover: { title: "Hi", at: "soon" } }, WORDS_20S, 20).plan;
-  assert.equal(bad.cover.at, bad.graphics[0].start - 0.5);
+  assert.equal(bad.cover.at, Math.round((bad.graphics[0].start - 0.5) * 1000) / 1000);
 });
 
 test("the question: high effort, the catalogue without keyword-card, the timed words and the duration", async () => {
@@ -297,22 +297,31 @@ function speech(seed: number, durationSec: number): Word[] {
   return out;
 }
 
-test("no AI, 8 to 10 s of speech: still 3 graphics, short ones back to back if need be", async () => {
+test("no AI, 8 to 10 s of speech: 3 graphics where the words allow, short ones back to back, never filler", async () => {
   const noAi = async () => { throw new Error("no AI provider is connected"); };
+  const STOP = new Set(["the", "and", "i", "you", "it", "to", "of", "a", "is", "that", "every", "really"]);
+  const wholeMs = (t: number) => Math.round(t * 1000) / 1000 === t;
+  let runs = 0, three = 0;
   for (const duration of [8, 9, 10]) {
     for (let seed = 1; seed <= 25; seed++) {
       const words = speech(seed * 7919 + duration, duration);
       const plan = await planGraphics(words, duration, { ask: noAi });
-      const where = `${duration} s, seed ${seed}: ${plan.graphics.map((g) => `${g.start}-${g.end}`).join(", ")}`;
-      assert.ok(plan.graphics.length >= 3, where);
+      const where = `${duration} s, seed ${seed}: ${plan.graphics.map((g) => `${g.start}-${g.end} ${g.params.words}`).join(", ")}`;
+      runs++;
+      if (plan.graphics.length >= 3) three++;
       assert.ok(plan.graphics.length <= 12, where);
       const wordStarts = new Set(words.map((w) => w.start));
       plan.graphics.forEach((g, i) => {
         assert.ok(g.start >= 1.5 && g.end <= duration + 1e-9, where);
         assert.ok(wordStarts.has(g.start), `${where}: starts on a word`);
+        assert.ok(wholeMs(g.start) && wholeMs(g.end), `${where}: whole milliseconds`);
         assert.ok(g.end - g.start >= 1.5 - 1e-9 && g.end - g.start <= 6 + 1e-9, where);
         if (i) assert.ok(g.start >= plan.graphics[i - 1].end - 1e-9, `${where}: no overlap`);
+        const shown = String(g.params.words).toLowerCase().split(" ");
+        assert.ok(!STOP.has(shown[0]) && !STOP.has(shown[shown.length - 1]), `${where}: "${g.params.words}" is filler at an end`);
       });
     }
   }
+  // Only speech too sparse to hold three keyword graphics falls short.
+  assert.ok(three >= runs * 0.9, `${three} of ${runs} reached 3`);
 });

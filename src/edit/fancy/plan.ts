@@ -54,6 +54,15 @@ const EPS = 1e-6;
 const minimumGraphics = (durationSec: number) => (durationSec >= 8 ? 3 : Math.floor(durationSec / 3));
 
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
+/** Times come out in whole milliseconds. */
+const ms = (t: number) => Math.round(t * 1000) / 1000;
+/** An end time in whole milliseconds, kept within [lo, hi]. */
+function msEnd(t: number, lo: number, hi: number): number {
+  let r = ms(t);
+  if (r < lo - EPS) r = Math.ceil(lo * 1000 - 1e-6) / 1000;
+  if (r > hi + EPS) r = Math.floor(hi * 1000 + 1e-6) / 1000;
+  return r;
+}
 const isTime = (x: unknown): x is number => typeof x === "number" && Number.isFinite(x);
 
 /** The value in `list` nearest x, within [lo, hi]; null when none is. */
@@ -115,10 +124,10 @@ export function validatePlan(raw: unknown, words: Word[], durationSec: number): 
     const latest = durationSec - lo;
     if (latest < FIRST_START - EPS) return problems.push(`${name}: the video is too short for it`);
     const s0 = clamp(g.start, FIRST_START, latest);
-    const start = nearest(starts, s0, FIRST_START, latest) ?? s0;
+    const start = ms(nearest(starts, s0, FIRST_START, latest) ?? s0);
     const endMax = Math.min(start + hi, durationSec);
     const e0 = clamp(g.end, start + lo, endMax);
-    const end = nearest(ends, e0, start + lo, endMax) ?? e0;
+    const end = msEnd(nearest(ends, e0, start + lo, endMax) ?? e0, start + lo, endMax);
     placed.push({ start, end, template: t.id, params, phrase: phraseIn(words, start, end), at: name, tool: t.tool });
   });
 
@@ -139,7 +148,7 @@ export function validatePlan(raw: unknown, words: Word[], durationSec: number): 
   const asked = Array.isArray(answer.emphasis) ? answer.emphasis : [];
   asked.forEach((t, i) => {
     if (!isTime(t) || t < 0 || t > durationSec) return problems.push(`emphasis[${i}] isn't a time in the video`);
-    emphasis.add(nearest(starts, t, 0, durationSec) ?? t);
+    emphasis.add(ms(nearest(starts, t, 0, durationSec) ?? t));
   });
 
   const cover = (answer.cover ?? {}) as Record<string, unknown>;
@@ -153,8 +162,8 @@ export function validatePlan(raw: unknown, words: Word[], durationSec: number): 
 /** The cover frame's time: the AI's, clamped into the video (no later than its last frame), or just before the first graphic. */
 function coverAt(at: unknown, graphics: PlannedGraphic[], durationSec: number): number {
   const last = Math.max(0, durationSec - 1 / 30);
-  if (isTime(at)) return clamp(at, 0, last);
-  return graphics.length ? clamp(graphics[0].start - 0.5, 0, last) : 0;
+  if (isTime(at)) return Math.min(ms(clamp(at, 0, last)), Math.floor(last * 1000 + 1e-6) / 1000);
+  return graphics.length ? ms(clamp(graphics[0].start - 0.5, 0, last)) : 0;
 }
 
 // ---- the keyword plan (no AI) ----
@@ -200,7 +209,8 @@ const goodNeighbour = (ok: Word[], i: number) => [ok[i - 1], ok[i + 1]].filter((
 
 /** ok[i] and the better of its neighbours. */
 function pairAt(ok: Word[], i: number): Pick {
-  const n = goodNeighbour(ok, i) ?? ok[i + 1] ?? ok[i - 1];
+  // Only a neighbour worth showing: shown words never begin or end with a stopword.
+  const n = goodNeighbour(ok, i);
   const pair = n ? [ok[i], n].sort((a, b) => a.start - b.start) : [ok[i]];
   const shown = pair.map((w) => bare(w.text)).join(" ");
   return { start: pair[0].start, last: pair[pair.length - 1].start, words: shown.charAt(0).toUpperCase() + shown.slice(1), score: score(ok[i].text) };
@@ -267,12 +277,17 @@ function keywordGraphics(words: Word[], durationSec: number, need: number, taken
     const byStart = (a: Pick, b: Pick) => a.start - b.start || b.score - a.score;
     const packed = place([...keyed].sort(byStart));
     if (packed.length > chosen.length) chosen = packed;
-    // Still short for the count, with too few words worth showing: last resort, a window's own words.
+    // Still short for the count: last resort, a window's own words, if any are worth showing. Never filler:
+    // two good graphics beat three with one about nothing.
     if (chosen.length < need && minSec < MIN_SEC) {
       const loose = sentences(words).flatMap((s) => {
         const ok = eligible(s);
         return ok.map((w, i): Pick | null => {
-          const shown = [w, ok[i + 1]].filter(Boolean).map((x) => bare(x.text)).filter(Boolean).join(" ");
+          // Stopwords trimmed from both ends; a window with nothing left shows nothing.
+          const kept = [w, ok[i + 1]].filter(Boolean).map((x) => bare(x.text)).filter(Boolean);
+          while (kept.length && !score(kept[0])) kept.shift();
+          while (kept.length && !score(kept[kept.length - 1])) kept.pop();
+          const shown = kept.join(" ");
           return shown ? { start: w.start, last: w.start, words: shown.charAt(0).toUpperCase() + shown.slice(1), score: 0 } : null;
         });
       }).filter(fits);
@@ -288,8 +303,8 @@ function keywordGraphics(words: Word[], durationSec: number, need: number, taken
     const next = Math.min(...[...taken.map((t) => t.start), ...chosen.map((c) => c.start)].filter((s) => s > p.start + EPS), durationSec);
     const endMax = Math.min(p.start + hi, next);
     const e0 = clamp(p.start + target, p.start + lo, endMax);
-    const end = nearest(ends, e0, p.start + lo, endMax) ?? e0;
-    return { start: p.start, end, template: KEYWORD_TEMPLATE, params: { words: p.words }, phrase: phraseIn(words, p.start, end) };
+    const end = msEnd(nearest(ends, e0, p.start + lo, endMax) ?? e0, p.start + lo, endMax);
+    return { start: ms(p.start), end, template: KEYWORD_TEMPLATE, params: { words: p.words }, phrase: phraseIn(words, p.start, end) };
   });
 }
 
