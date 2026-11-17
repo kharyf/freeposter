@@ -1,7 +1,7 @@
 // Renders the planned Fancy graphics through the production adapters. A graphic never fails: an unhealthy tool or a
 // failed render moves down the template's fallback chain, which ends at the built-in ffmpeg keyword card.
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Adapters } from "../../produce/adapters/index.ts";
 import { checkParams, fallbackParamsFor, fancyTemplateDir, fancyTemplates, GRAPHIC_SIZE, toShot, type FancyTemplate } from "./templates.ts";
@@ -101,29 +101,47 @@ export async function renderGraphics(
   const blender = new Semaphore(1);
   const slot = (tool: Tool) => (tool === "blender" ? blender : cpu);
 
-  const render = async (t: FancyTemplate, params: Params, sec: number, id: string): Promise<{ path: string; durationSec: number }> => {
+  // Identical graphics (same cache key) share one render: they would otherwise write the same folder at once.
+  const inFlight = new Map<string, Promise<{ path: string; durationSec: number }>>();
+  const render = (t: FancyTemplate, params: Params, sec: number, id: string): Promise<{ path: string; durationSec: number }> => {
     const version = t.tool === "builtin" ? BUILTIN_VERSION : opts.adapters[t.tool].version;
     const key = createHash("sha256")
       .update(JSON.stringify([t.id, params, sec, GRAPHIC_SIZE.width, GRAPHIC_SIZE.height, version, hashOf(t)]))
       .digest("hex").slice(0, 16);
-    const dir = join(opts.dir, key);
-    const cached = join(dir, "shot.mp4");
-    if (existsSync(cached)) return { path: cached, durationSec: sec };
+    const running = inFlight.get(key);
+    if (running) return running;
+    const p = renderTo(join(opts.dir, key), t, params, sec, id);
+    inFlight.set(key, p);
+    return p;
+  };
+
+  // A cached clip counts only with its .done marker, written after a render succeeded: a killed process leaves none.
+  const renderTo = async (dir: string, t: FancyTemplate, params: Params, sec: number, id: string): Promise<{ path: string; durationSec: number }> => {
+    const clip = join(dir, "shot.mp4");
+    const marker = join(dir, ".done");
+    if (existsSync(marker) && existsSync(clip) && statSync(clip).size > 0) return { path: clip, durationSec: sec };
     mkdirSync(dir, { recursive: true });
+    rmSync(marker, { force: true });
+    rmSync(clip, { force: true });
     try {
-      if (t.tool === "builtin") return await renderKeywordCard(String(params.phrase), sec, cached);
-      const adapter = opts.adapters[t.tool] as any;
-      const ctx = { dir, signal: opts.signal, onProgress: () => {} };
-      const shot = toShot(t, params, sec, id);
-      try {
-        return await adapter.render(shot, ctx);
-      } catch (err) {
-        // Remotion sometimes exits non-zero right after "Webpack config change detected. Clearing cache"; a second go works.
-        if (t.tool !== "remotion" || opts.signal.aborted) throw err;
-        return await adapter.render(shot, ctx);
+      let out: { path: string; durationSec: number };
+      if (t.tool === "builtin") out = await renderKeywordCard(String(params.phrase), sec, clip);
+      else {
+        const adapter = opts.adapters[t.tool] as any;
+        const ctx = { dir, signal: opts.signal, onProgress: () => {} };
+        const shot = toShot(t, params, sec, id);
+        try {
+          out = await adapter.render(shot, ctx);
+        } catch (err) {
+          // Remotion sometimes exits non-zero right after "Webpack config change detected. Clearing cache"; a second go works.
+          if (t.tool !== "remotion" || opts.signal.aborted) throw err;
+          out = await adapter.render(shot, ctx);
+        }
       }
+      writeFileSync(marker, "");
+      return out;
     } catch (err) {
-      rmSync(cached, { force: true });
+      rmSync(clip, { force: true });
       throw err;
     }
   };

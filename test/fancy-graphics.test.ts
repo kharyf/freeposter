@@ -1,7 +1,7 @@
 import "./isolated-home.ts";
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { renderGraphics } from "../src/edit/fancy/graphics.ts";
 import type { PlannedGraphic } from "../src/edit/fancy/plan.ts";
@@ -135,4 +135,29 @@ test("notes group graphics per tool", async () => {
     { dir: tmp(), adapters: stubs({ blender: "unhealthy" }), signal },
   );
   assert.deepEqual(r.notes, ["Blender isn't available (stub detail): 2 graphics made with HyperFrames instead"]);
+});
+
+test("identical graphics in one call share a single render and one valid file", async () => {
+  const track = newTrack();
+  const g = G("pull-quote", { quote: "Ship it" }, "ship it");
+  const r = await renderGraphics([g, { ...g }], { dir: tmp(), adapters: stubs({}, track), signal });
+  assert.equal(track.calls.remotion, 1);
+  assert.equal(r.clips[0].path, r.clips[1].path);
+  assert.ok(readFileSync(r.clips[0].path).length > 0);
+});
+
+test("a shot.mp4 without its .done marker (a killed render) is not reused", async () => {
+  const dir = tmp();
+  const track = newTrack();
+  const list = [G("pull-quote", { quote: "Ship it" }, "ship it")];
+  const first = await renderGraphics(list, { dir, adapters: stubs({}, track), signal });
+  const folder = dirname(first.clips[0].path);
+  rmSync(join(folder, ".done"));
+  writeFileSync(first.clips[0].path, "half");
+  await renderGraphics(list, { dir, adapters: stubs({}, track), signal });
+  assert.equal(track.calls.remotion, 2);
+  assert.notEqual(readFileSync(first.clips[0].path, "utf8"), "half");
+  writeFileSync(first.clips[0].path, "");
+  await renderGraphics(list, { dir, adapters: stubs({}, track), signal });
+  assert.equal(track.calls.remotion, 3);
 });
