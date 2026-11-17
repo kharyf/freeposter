@@ -50,9 +50,25 @@ const FANCY_POP = 110; // percent scale on the spoken word
 const SEAM_BOX_ALPHA = 0.85;
 const SEAM_PAD = 14;
 
+/** The safe band across the frame: clear of the left edge and of the right-side buttons. */
+const SAFE_LEFT = Math.ceil(W * SAFE_AREA.left);
+const SAFE_RIGHT = W - Math.ceil(W * SAFE_AREA.right);
+/** The safe band's centre, where Fancy captions are centred: the frame's (540) would push wide lines under the buttons. */
+export const FANCY_CAPTION_X = Math.round((SAFE_LEFT + SAFE_RIGHT) / 2);
+/**
+ * Fancy styles' margins: libass wraps a positioned line at PlayResX less the style's margins, so these make a line
+ * centred on FANCY_CAPTION_X at most as wide as the band, less the seam box's padding on each side (which also
+ * covers the lower caption's outline and shadow) and a little for the italic's overhang. No line, box included,
+ * reaches past the band.
+ */
+const ITALIC_OVERHANG = 6;
+const FANCY_HALF_WIDTH = Math.min(FANCY_CAPTION_X - SAFE_LEFT, SAFE_RIGHT - FANCY_CAPTION_X) - SEAM_PAD - ITALIC_OVERHANG;
+const FANCY_MARGIN_L = FANCY_CAPTION_X - FANCY_HALF_WIDTH;
+const FANCY_MARGIN_R = W - (FANCY_CAPTION_X + FANCY_HALF_WIDTH);
+
 /** Where a Fancy caption is anchored: centred on the seam of a split, or in the lower third inside SAFE_AREA. */
 const placement = (place: CaptionPlace) =>
-  place === "seam" ? "{\\an5\\pos(540,960)}" : `{\\an2\\pos(540,${H - Math.ceil(H * SAFE_AREA.bottom) - 40})}`;
+  place === "seam" ? `{\\an5\\pos(${FANCY_CAPTION_X},960)}` : `{\\an2\\pos(${FANCY_CAPTION_X},${H - Math.ceil(H * SAFE_AREA.bottom) - 40})}`;
 
 export function buildAss(
   words: Word[],
@@ -74,9 +90,9 @@ export function buildAss(
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
     ...(opts.look === "fancy"
       ? [
-        `Style: FancyCaption,${FONT_FAMILY},${FANCY_SIZE},${FANCY_CREAM},${FANCY_CREAM},${assHex(PALETTE.ink)},${assHex("#000000", PALETTE.shadowAlpha)},-1,-1,0,0,100,100,0,0,1,3,2,2,${marginL},${marginR},${marginV},1`,
+        `Style: FancyCaption,${FONT_FAMILY},${FANCY_SIZE},${FANCY_CREAM},${FANCY_CREAM},${assHex(PALETTE.ink)},${assHex("#000000", PALETTE.shadowAlpha)},-1,-1,0,0,100,100,0,0,1,3,2,2,${FANCY_MARGIN_L},${FANCY_MARGIN_R},${marginV},1`,
         // BorderStyle 3 draws the outline colour as a box, the outline width as its padding.
-        `Style: FancySeam,${FONT_FAMILY},${FANCY_SIZE},${FANCY_CREAM},${FANCY_CREAM},${assHex(PALETTE.ink, SEAM_BOX_ALPHA)},${assHex(PALETTE.ink, SEAM_BOX_ALPHA)},-1,-1,0,0,100,100,0,0,3,${SEAM_PAD},0,5,${marginL},${marginR},0,1`,
+        `Style: FancySeam,${FONT_FAMILY},${FANCY_SIZE},${FANCY_CREAM},${FANCY_CREAM},${assHex(PALETTE.ink, SEAM_BOX_ALPHA)},${assHex(PALETTE.ink, SEAM_BOX_ALPHA)},-1,-1,0,0,100,100,0,0,3,${SEAM_PAD},0,5,${FANCY_MARGIN_L},${FANCY_MARGIN_R},0,1`,
       ]
       : [`Style: Caption,Arial,78,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,6,0,2,${marginL},${marginR},${marginV},1`]),
     "",

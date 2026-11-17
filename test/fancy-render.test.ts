@@ -1,9 +1,10 @@
 import "./isolated-home.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
+import { buildAss, SAFE_AREA } from "../src/edit/captions.ts";
 import { planBeats, type Beat } from "../src/edit/fancy/beats.ts";
 import { coverAss, coverLayout, makeCover } from "../src/edit/fancy/cover.ts";
 import { renderKeywordCard } from "../src/edit/fancy/keyword-card.ts";
@@ -286,4 +287,26 @@ test("a long low title shrinks rather than climb above 35% of the height", () =>
   assert.ok(low.top >= 0.35 * 1920, `top ${low.top}`);
   assert.ok(low.size < 120);
   assert.equal(coverLayout("The one habit that changes everything", "bottom").size, 120);
+});
+
+test("burned in, a Fancy caption's widest line (box included) stays inside the safe band, clear of the buttons", () => {
+  const dir = tmp();
+  // Many short words, so lines fill to the wrap width.
+  const texts = Array.from({ length: 30 }, () => "mm");
+  const ws = texts.map((text, i) => ({ text, start: i * 0.1, end: i * 0.1 + 0.05 }));
+  for (const place of ["seam", "lower"] as const) {
+    // One event per word; keep the first (all the words on screen, the first popped at 110%).
+    const ass = buildAss(ws, { look: "fancy", maxWords: 30, placeAt: () => place }).split("\n")
+      .filter((l) => !l.startsWith("Dialogue:") || l.includes(",0:00:00.00,")).join("\n");
+    const file = join(dir, `${place}.ass`);
+    writeFileSync(file, ass);
+    const raw = execFileSync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "color=c=black:size=1080x1920:rate=1", "-vf",
+      `ass=filename=${filterPath(file)}:fontsdir=${filterPath(fancyFontDir())}`, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"], { maxBuffer: 1 << 24 });
+    let minX = Infinity, maxX = -1;
+    for (let i = 0; i < raw.length; i++) if (raw[i] > 8) { const x = i % 1080; minX = Math.min(minX, x); maxX = Math.max(maxX, x); }
+    console.log(place, minX, maxX);
+    assert.ok(maxX > 0, `${place}: the caption was drawn`);
+    assert.ok(minX >= Math.ceil(1080 * SAFE_AREA.left), `${place}: left edge ${minX}`);
+    assert.ok(maxX < 1080 - Math.ceil(1080 * SAFE_AREA.right), `${place}: right edge ${maxX}`);
+  }
 });
