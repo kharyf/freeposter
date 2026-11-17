@@ -151,6 +151,12 @@ const toOutbox = (r: any): OutboxRow => ({
   push: r.push !== 0, readAt: r.read_at ?? null, nudgedAt: r.nudged_at ?? null,
 });
 
+/** JSON from a column, or `fallback` when it's empty or damaged (one bad row must not break every read). */
+function parseOr<T>(text: string | null, fallback: T): T {
+  if (!text) return fallback;
+  try { return JSON.parse(text) ?? fallback; } catch { return fallback; }
+}
+
 export class Store {
   db: DatabaseSync;
   key: Buffer;
@@ -594,8 +600,8 @@ export class Store {
       approvedAt: r.approved_at,
       parentEditId: r.parent_edit_id ?? null,
       cutsPath: r.cuts_path ?? null,
-      notes: r.notes ? JSON.parse(r.notes) : [],
-      cover: r.cover ? JSON.parse(r.cover) : null,
+      notes: parseOr(r.notes, []),
+      cover: parseOr(r.cover, null),
       createdAt: r.created_at,
     };
   }

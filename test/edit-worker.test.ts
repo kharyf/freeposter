@@ -205,7 +205,7 @@ test("a Fancy edit plans, renders graphics, composites, saves notes and a cover"
   assert.equal(done.cover!.atSec, GOOD_PLAN.cover.at);
   assert.ok(existsSync(done.cutsPath!));
   assert.equal(calls.ask, 1);
-  assert.ok(calls.render >= 3);
+  assert.equal(calls.render, 3, "one render per graphic; the Blender one falls back to another tool");
 
   // Turning captions off is a new edit that reuses the plan and the graphic clips.
   const before = { ask: calls.ask, render: calls.render };
@@ -214,6 +214,9 @@ test("a Fancy edit plans, renders graphics, composites, saves notes and a cover"
   await worker.tick();
   const again = store.edit(redo.id)!;
   assert.equal(again.state, "ready", again.error ?? "");
+  assert.equal(again.settings.captions, false);
+  assert.notEqual(again.outputPath, done.outputPath);
+  assert.ok(existsSync(again.outputPath!));
   assert.equal(calls.ask, before.ask, "the plan was reused");
   assert.equal(calls.render, before.render, "the graphic clips were reused");
 });
@@ -227,4 +230,38 @@ test("Basic edits still go through renderEdit", async () => {
   assert.equal(done.state, "ready", done.error ?? "");
   assert.deepEqual(done.notes, []);
   assert.equal(done.cover, null);
+});
+
+test("stopping the worker mid-edit leaves a Fancy edit to restart, not failed", async () => {
+  const long = makeVideo(tmp(), "long.mp4", ["-f", "lavfi", "-i", "testsrc2=size=720x1280:rate=30", "-t", "20", "-c:v", "libx264", "-pix_fmt", "yuv420p"]);
+  const { fancy } = fancyTools(true);
+  let started!: () => void;
+  const inRender = new Promise<void>((r) => (started = r));
+  for (const a of Object.values(fancy.adapters) as any[]) {
+    a.render = (_shot: any, ctx: any) => new Promise((_, reject) => {
+      started();
+      ctx.signal.addEventListener("abort", () => reject(new Error("aborted")));
+    });
+  }
+  const store = newStore();
+  const worker = new EditWorker(store, { dir: tmp(), findLyrics: async () => [], transcribe: async () => ({ words: WORDS_20S, language: null }), fancy });
+  const edit = store.createEdit(long, sha256(long), { ...DEFAULT_EDIT, tighten: false, look: "fancy" as const });
+  const running = worker.tick()!;
+  await inRender;
+  worker.stop();
+  await running;
+  assert.notEqual(store.edit(edit.id)!.state, "failed");
+  assert.equal(store.edit(edit.id)!.error, null);
+  assert.equal(store.outbox().some((e) => e.event === "edit.failed"), false);
+  new EditWorker(store, { dir: tmp(), findLyrics: async () => [] });
+  assert.equal(store.edit(edit.id)!.state, "queued");
+});
+
+test("a damaged notes or cover column reads back as empty", () => {
+  const store = newStore();
+  const edit = store.createEdit(video, sha256(video), { ...DEFAULT_EDIT, look: "fancy" as const });
+  (store as any).db.prepare("UPDATE edits SET notes = '{oops', cover = 'nope' WHERE id = ?").run(edit.id);
+  const read = store.edit(edit.id)!;
+  assert.deepEqual(read.notes, []);
+  assert.equal(read.cover, null);
 });

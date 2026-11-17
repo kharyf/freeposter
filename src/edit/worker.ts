@@ -148,6 +148,8 @@ export class EditWorker {
   }
 
   private fail(edit: Edit, err: unknown) {
+    // A quit stopped the edit: leave it as it is, so the next start requeues it.
+    if (this.cancel.signal.aborted) return log(edit, "stopped");
     log(edit, `failed: ${(err as Error).message}`);
     this.store.updateEdit(edit.id, { state: "failed", error: (err as Error).message });
     queueEvent(this.store, "edit.failed", `edit.failed:${edit.id}:${Date.now()}`, { edit_id: edit.id, error: (err as Error).message },
@@ -166,7 +168,8 @@ export class EditWorker {
       if (f - last >= 0.02) { last = f; this.store.updateEdit(edit.id, { progress: f }); }
     };
 
-    const sourceSec = (await probe(edit.sourcePath)).durationSec;
+    const src = await probe(edit.sourcePath);
+    const sourceSec = src.durationSec;
     const segments: Segment[] = planSegments(transcript, s, sourceSec);
     const editedSec = segments.reduce((t, g) => t + g.end - g.start, 0);
     const words = remapWords(fixWords(transcript.words, s.captionFixes), segments);
@@ -189,7 +192,7 @@ export class EditWorker {
     let faces: FaceKey[] | null = null;
     if (s.reframe) {
       const track = this.fancy.faceTrack ?? planFaceTrack;
-      faces = await track(edit.sourcePath, await probe(edit.sourcePath)).catch((err) => {
+      faces = await track(edit.sourcePath, src).catch((err) => {
         console.error(`face tracking skipped: ${(err as Error).message}`);
         return null;
       });
