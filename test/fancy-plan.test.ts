@@ -277,3 +277,42 @@ test("a keyword plan made because the AI couldn't answer isn't cached, so connec
   await cachedPlan(path, () => planGraphics(WORDS_20S, 20, { ask: async () => { throw new Error("no AI provider is connected"); } }));
   assert.ok(!existsSync(path));
 });
+
+// Natural-sounding speech from a seed: words of 0.15 to 0.6 s, gaps of 0 to 0.5 s, some sentence ends.
+function speech(seed: number, durationSec: number): Word[] {
+  let a = seed >>> 0;
+  const rand = () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const vocab = ["the", "and", "I", "you", "it", "to", "of", "a", "is", "that", "money", "people", "started", "every", "morning",
+    "simple", "habit", "changed", "business", "growth", "really", "faster", "week", "posting", "camera", "honest", "audience", "results"];
+  const out: Word[] = [];
+  let t = 0.1 + rand() * 0.3;
+  for (;;) {
+    const len = 0.15 + rand() * 0.45;
+    if (t + len > durationSec) break;
+    let text = vocab[Math.floor(rand() * vocab.length)];
+    if (rand() < 0.12) text += ".";
+    out.push({ text, start: +t.toFixed(3), end: +(t + len).toFixed(3) });
+    t += len + rand() * 0.5;
+  }
+  return out;
+}
+
+test("no AI, 8 to 10 s of speech: still 3 graphics, short ones back to back if need be", async () => {
+  const noAi = async () => { throw new Error("no AI provider is connected"); };
+  for (const duration of [8, 9, 10]) {
+    for (let seed = 1; seed <= 25; seed++) {
+      const words = speech(seed * 7919 + duration, duration);
+      const plan = await planGraphics(words, duration, { ask: noAi });
+      const where = `${duration} s, seed ${seed}: ${plan.graphics.map((g) => `${g.start}-${g.end}`).join(", ")}`;
+      assert.ok(plan.graphics.length >= 3, where);
+      assert.ok(plan.graphics.length <= 12, where);
+      const wordStarts = new Set(words.map((w) => w.start));
+      plan.graphics.forEach((g, i) => {
+        assert.ok(g.start >= 1.5 && g.end <= duration + 1e-9, where);
+        assert.ok(wordStarts.has(g.start), `${where}: starts on a word`);
+        assert.ok(g.end - g.start >= 1.5 - 1e-9 && g.end - g.start <= 6 + 1e-9, where);
+        if (i) assert.ok(g.start >= plan.graphics[i - 1].end - 1e-9, `${where}: no overlap`);
+      });
+    }
+  }
+});

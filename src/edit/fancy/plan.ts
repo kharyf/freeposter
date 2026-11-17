@@ -35,6 +35,8 @@ export const PLAN_VERSION = 1;
 /** The face opens the video: no graphic before this. */
 const FIRST_START = 1.5;
 const MIN_SEC = 2;
+/** The count top-up's keyword graphics may be this short, so short videos still get their 3 graphics. */
+const COUNT_MIN_SEC = 1.5;
 const MAX_SEC = 6;
 const MAX_GRAPHICS = 12;
 /** Graphics cover at least this share of a video of 8 s or longer. */
@@ -189,7 +191,8 @@ function sentences(words: Word[]): Word[][] {
   return out;
 }
 
-interface Pick { start: number; words: string; score: number }
+/** `last`: when the last of its words starts */
+interface Pick { start: number; last: number; words: string; score: number }
 
 /** The words of a sentence a graphic may start on. */
 const eligible = (sentence: Word[]) => sentence.filter((w) => w.start >= FIRST_START - EPS);
@@ -200,7 +203,7 @@ function pairAt(ok: Word[], i: number): Pick {
   const n = goodNeighbour(ok, i) ?? ok[i + 1] ?? ok[i - 1];
   const pair = n ? [ok[i], n].sort((a, b) => a.start - b.start) : [ok[i]];
   const shown = pair.map((w) => bare(w.text)).join(" ");
-  return { start: pair[0].start, words: shown.charAt(0).toUpperCase() + shown.slice(1), score: score(ok[i].text) };
+  return { start: pair[0].start, last: pair[pair.length - 1].start, words: shown.charAt(0).toUpperCase() + shown.slice(1), score: score(ok[i].text) };
 }
 
 /** A sentence's keyword pair: its longest word that isn't a stopword, and the better of its neighbours. */
@@ -216,11 +219,14 @@ function pairIn(sentence: Word[]): Pick | null {
   return top < 0 ? null : pairAt(ok, top);
 }
 
-/** Keyword graphics in the time `taken` leaves free. */
-function keywordGraphics(words: Word[], durationSec: number, need: number, taken: { start: number; end: number }[]): PlannedGraphic[] {
+/**
+ * Keyword graphics in the time `taken` leaves free, each at least `minSec` long (they may sit back to back with
+ * each other or with `taken`).
+ */
+function keywordGraphics(words: Word[], durationSec: number, need: number, taken: { start: number; end: number }[], minSec = MIN_SEC): PlannedGraphic[] {
   if (need <= 0) return [];
   const kinetic = fancyTemplates()[KEYWORD_TEMPLATE];
-  const lo = Math.max(MIN_SEC, kinetic.minSec);
+  const lo = minSec;
   const hi = Math.min(MAX_SEC, kinetic.maxSec);
   const fits = (p: Pick | null): p is Pick => p !== null && checkParams(kinetic, { words: p.words }).problems.length === 0;
   const picks = sentences(words).map(pairIn).filter(fits);
@@ -237,14 +243,42 @@ function keywordGraphics(words: Word[], durationSec: number, need: number, taken
   const firsts = [...Array(need).keys()].map((s) => picks.filter((p) => slot(p) === s).sort(byScore)[0]).filter(Boolean);
   const order = [...firsts, ...picks.filter((p) => !firsts.includes(p)).sort(byScore), ...spare.sort(byScore)];
 
-  const busy = [...taken];
-  const chosen: Pick[] = [];
-  for (const p of order) {
-    if (chosen.length >= need) break;
-    const free = p.start + lo <= durationSec + EPS && busy.every((b) => p.start + lo <= b.start + EPS || p.start >= b.end - EPS);
-    if (!free) continue;
-    chosen.push(p);
-    busy.push({ start: p.start, end: p.start + lo });
+  const place = (candidates: Pick[]) => {
+    const busy = [...taken];
+    const out: Pick[] = [];
+    for (const p of candidates) {
+      if (out.length >= need) break;
+      const free = p.start + lo <= durationSec + EPS && busy.every((b) => p.start + lo <= b.start + EPS || p.start >= b.end - EPS);
+      if (!free) continue;
+      out.push(p);
+      busy.push({ start: p.start, end: p.start + lo });
+    }
+    return out;
+  };
+  let chosen = place(order);
+  // Short of `need` (sparse or short speech): packing them earliest first fits the most. A graphic may then
+  // start on any word from 1.5 s before its keywords to the last of them, so they're still said while it's
+  // on screen (it lasts at least 1.5 s).
+  if (chosen.length < need) {
+    const shifted = (p: Pick) => words
+      .filter((w) => w.start >= Math.max(FIRST_START, p.start - COUNT_MIN_SEC) - EPS && w.start <= p.last + EPS && w.start !== p.start)
+      .map((w) => ({ ...p, start: w.start }));
+    const keyed = [...order, ...order.flatMap(shifted)];
+    const byStart = (a: Pick, b: Pick) => a.start - b.start || b.score - a.score;
+    const packed = place([...keyed].sort(byStart));
+    if (packed.length > chosen.length) chosen = packed;
+    // Still short for the count, with too few words worth showing: last resort, a window's own words.
+    if (chosen.length < need && minSec < MIN_SEC) {
+      const loose = sentences(words).flatMap((s) => {
+        const ok = eligible(s);
+        return ok.map((w, i): Pick | null => {
+          const shown = [w, ok[i + 1]].filter(Boolean).map((x) => bare(x.text)).filter(Boolean).join(" ");
+          return shown ? { start: w.start, last: w.start, words: shown.charAt(0).toUpperCase() + shown.slice(1), score: 0 } : null;
+        });
+      }).filter(fits);
+      const desperate = place([...keyed, ...loose].sort(byStart));
+      if (desperate.length > chosen.length) chosen = desperate;
+    }
   }
 
   // Each lasts its share of half the video, up to the next graphic.
@@ -259,9 +293,25 @@ function keywordGraphics(words: Word[], durationSec: number, need: number, taken
   });
 }
 
-/** `need` kinetic-words graphics on the longest words of sentences spread across the video. */
+/**
+ * `need` kinetic-words graphics on the longest words of sentences spread across the video. When 2 s ones can't
+ * make up the number, the rest may be as short as 1.5 s.
+ */
 export function keywordPlan(words: Word[], durationSec: number, need: number): PlannedGraphic[] {
-  return keywordGraphics(words, durationSec, need, []);
+  return topUpCount(words, durationSec, need, []);
+}
+
+/** The count top-up: keyword graphics up to `need`, as short as 1.5 s if 2 s ones don't fit (best effort). */
+function topUpCount(words: Word[], durationSec: number, need: number, graphics: PlannedGraphic[]): PlannedGraphic[] {
+  const room = Math.min(need, MAX_GRAPHICS) - graphics.length;
+  if (room <= 0) return graphics;
+  let extra = keywordGraphics(words, durationSec, room, graphics);
+  if (extra.length < room) {
+    // Planned again as a set, so 2 s ones don't take the time shorter ones could share.
+    const short = keywordGraphics(words, durationSec, room, graphics, COUNT_MIN_SEC);
+    if (short.length > extra.length) extra = short;
+  }
+  return [...graphics, ...extra].sort((a, b) => a.start - b.start);
 }
 
 // ---- asking the AI ----
@@ -436,9 +486,10 @@ export async function planGraphics(words: Word[], durationSec: number, opts: { a
   const notes: string[] = [];
   let graphics = best.graphics;
   if (graphics.length < need) {
-    const extra = keywordGraphics(words, durationSec, need - graphics.length, graphics);
-    if (extra.length) notes.push(`the AI planned ${graphics.length} of ${need} graphics: ${extra.length} keyword graphic${extra.length === 1 ? "" : "s"} added`);
-    graphics = [...graphics, ...extra].sort((a, b) => a.start - b.start);
+    const topped = topUpCount(words, durationSec, need, graphics);
+    const added = topped.length - graphics.length;
+    if (added) notes.push(`the AI planned ${graphics.length} of ${need} graphics: ${added} keyword graphic${added === 1 ? "" : "s"} added`);
+    graphics = topped;
   }
   const filled = fillCoverage(words, durationSec, graphics);
   return { ...best, graphics: filled.graphics, source: "ai", notes: [...notes, ...filled.notes] };
