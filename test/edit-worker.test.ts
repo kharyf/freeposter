@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
-import { existsSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { before, test } from "node:test";
 import type { Publisher, PublishContext } from "../src/platforms/base.ts";
+import { config } from "../src/config.ts";
 import { Runner } from "../src/runner.ts";
 import { EditWorker } from "../src/edit/worker.ts";
 import { DEFAULT_EDIT } from "../src/edit/settings.ts";
@@ -201,6 +203,7 @@ test("a Fancy edit plans, renders graphics, composites, saves notes and a cover"
   assert.ok(existsSync(done.outputPath!));
   assert.ok(Math.abs(done.durationSec! - 20) < 0.5, `edited ${done.durationSec}`);
   assert.ok(done.notes.some((n) => /Blender/.test(n)), done.notes.join("; "));
+  assert.ok(!done.notes.some((n) => /split screen/.test(n)), "three graphics, three splits");
   assert.ok(done.cover && existsSync(done.cover.path) && done.cover.path.endsWith(".cover.jpg"));
   assert.equal(done.cover!.atSec, GOOD_PLAN.cover.at);
   assert.ok(existsSync(done.cutsPath!));
@@ -219,6 +222,55 @@ test("a Fancy edit plans, renders graphics, composites, saves notes and a cover"
   assert.ok(existsSync(again.outputPath!));
   assert.equal(calls.ask, before.ask, "the plan was reused");
   assert.equal(calls.render, before.render, "the graphic clips were reused");
+});
+
+test("a graphic nothing can make plays its split full frame, with a note", async () => {
+  const long = makeVideo(tmp(), "long.mp4", ["-f", "lavfi", "-i", "testsrc2=size=720x1280:rate=30", "-t", "20", "-c:v", "libx264", "-pix_fmt", "yuv420p"]);
+  const { fancy } = fancyTools(true);
+  for (const a of Object.values(fancy.adapters) as any[]) a.render = async () => { throw new Error("broken"); };
+  // The keyword card can't run either (no ffmpeg) until the graphics are done: the face track comes next.
+  const ffmpeg = config.ffmpeg;
+  (config as any).ffmpeg = join(tmp(), "no-ffmpeg-here.exe");
+  fancy.faceTrack = async () => { (config as any).ffmpeg = ffmpeg; return null; };
+  try {
+    const store = newStore();
+    const worker = new EditWorker(store, { dir: tmp(), findLyrics: async () => [], transcribe: async () => ({ words: WORDS_20S, language: null }), fancy });
+    const edit = store.createEdit(long, sha256(long), { ...DEFAULT_EDIT, tighten: false, look: "fancy" as const });
+    await worker.tick();
+    const done = store.edit(edit.id)!;
+    assert.equal(done.state, "ready", done.error ?? "");
+    for (const n of [1, 2, 3]) assert.ok(done.notes.includes(`graphic ${n} couldn't be made: its split plays full frame`), done.notes.join("; "));
+    assert.ok(!done.notes.some((n) => /split screen/.test(n)), "the speech had room for three");
+  } finally {
+    (config as any).ffmpeg = ffmpeg;
+  }
+});
+
+test("a Fancy edit of 8 s or more with fewer than 3 split screens says so", async () => {
+  const video = makeVideo(tmp(), "quiet.mp4", ["-f", "lavfi", "-i", "testsrc2=size=720x1280:rate=30", "-t", "10", "-c:v", "libx264", "-pix_fmt", "yuv420p"]);
+  const { fancy } = fancyTools(true);
+  const few = "Most people never start at all.".split(" ").map((text, i) => ({ text, start: 0.3 + i * 0.4, end: 0.6 + i * 0.4 }));
+  fancy.ask = async () => ({ graphics: [], emphasis: [], cover: { title: "Start", at: 0.3 } });
+  const store = newStore();
+  const worker = new EditWorker(store, { dir: tmp(), findLyrics: async () => [], transcribe: async () => ({ words: few, language: null }), fancy });
+  const edit = store.createEdit(video, sha256(video), { ...DEFAULT_EDIT, tighten: false, look: "fancy" as const });
+  await worker.tick();
+  const done = store.edit(edit.id)!;
+  assert.equal(done.state, "ready", done.error ?? "");
+  assert.ok(done.notes.some((n) => /^only [012] split screens?: too little speech for more graphics$/.test(n)), done.notes.join("; "));
+});
+
+test("the worker prunes cached Fancy graphics unused for 14 days, between edits", () => {
+  const dir = tmp();
+  const graphics = join(dir, "fancy-graphics");
+  const old = join(graphics, "old"), fresh = join(graphics, "fresh");
+  for (const d of [old, fresh]) { mkdirSync(d, { recursive: true }); writeFileSync(join(d, "shot.mp4"), "x"); writeFileSync(join(d, ".done"), ""); }
+  const longAgo = new Date(Date.now() - 15 * 86_400_000);
+  utimesSync(join(old, ".done"), longAgo, longAgo);
+  const worker = new EditWorker(newStore(), { dir, findLyrics: async () => [] });
+  worker.tick();
+  assert.ok(!existsSync(old));
+  assert.ok(existsSync(fresh));
 });
 
 test("Basic edits still go through renderEdit", async () => {

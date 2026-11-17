@@ -1,7 +1,8 @@
-// Renders the planned Fancy graphics through the production adapters. A graphic never fails: an unhealthy tool or a
-// failed render moves down the template's fallback chain, which ends at the built-in ffmpeg keyword card.
+// Renders the planned Fancy graphics through the production adapters. An unhealthy tool or a failed render moves
+// down the template's fallback chain, which ends at the built-in ffmpeg keyword card; a graphic even that can't make
+// is left out (its split plays full frame) with a note, so a graphic never fails the edit.
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Adapters } from "../../produce/adapters/index.ts";
 import { checkParams, fallbackParamsFor, fancyTemplateDir, fancyTemplates, GRAPHIC_SIZE, toShot, type FancyTemplate } from "./templates.ts";
@@ -17,6 +18,35 @@ type Tools = Pick<Adapters, "remotion" | "hyperframes" | "blender">;
 const TOOL_NAME: Record<Tool, string> = { remotion: "Remotion", hyperframes: "HyperFrames", blender: "Blender", builtin: "a keyword card" };
 /** The built-in card has no adapter: its cache is keyed on this instead of an adapter version. */
 const BUILTIN_VERSION = 1;
+/** A cached graphic not used for this long is deleted (pruneGraphicsCache). */
+export const GRAPHICS_CACHE_DAYS = 14;
+const CLIP = "shot.mp4";
+const DONE = ".done";
+
+/**
+ * Deletes cached graphics (folders in `dir`) not rendered or used for GRAPHICS_CACHE_DAYS: a use touches the
+ * folder's .done marker; a folder without one (a render that never finished) counts from its own last change.
+ * Not while graphics are rendering into `dir`. Returns how many it deleted.
+ */
+export function pruneGraphicsCache(dir: string, now = Date.now()): number {
+  if (!existsSync(dir)) return 0;
+  const before = now - GRAPHICS_CACHE_DAYS * 86_400_000;
+  let pruned = 0;
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    if (!e.isDirectory()) continue;
+    const folder = join(dir, e.name);
+    try {
+      const marker = join(folder, DONE);
+      const used = statSync(existsSync(marker) ? marker : folder).mtimeMs;
+      if (used >= before) continue;
+      rmSync(folder, { recursive: true, force: true });
+      pruned++;
+    } catch (err) {
+      console.error(`couldn't prune the cached graphic ${folder}: ${(err as Error).message}`);
+    }
+  }
+  return pruned;
+}
 
 class Semaphore {
   private waiting: (() => void)[] = [];
@@ -84,7 +114,7 @@ const oneLine = (m: string) => m.replace(/\s+/g, " ").trim().slice(0, 200);
 export async function renderGraphics(
   graphics: PlannedGraphic[],
   opts: { dir: string; adapters: Tools; signal: AbortSignal; onProgress?: (f: number) => void },
-): Promise<{ clips: RenderedGraphic[]; notes: string[] }> {
+): Promise<{ clips: (RenderedGraphic | null)[]; notes: string[] }> {
   const catalogue = fancyTemplates();
   const health = new Map<string, Promise<{ ok: boolean; detail: string }>>();
   const healthOf = (tool: "remotion" | "hyperframes" | "blender") => {
@@ -118,16 +148,23 @@ export async function renderGraphics(
   };
 
   // A cached clip counts only with its .done marker, written after a render succeeded: a killed process leaves none.
+  // Using one touches the marker, so pruneGraphicsCache keeps it.
   const renderTo = async (dir: string, t: FancyTemplate, params: Params, sec: number, id: string): Promise<{ path: string; durationSec: number }> => {
-    const clip = join(dir, "shot.mp4");
-    const marker = join(dir, ".done");
-    if (existsSync(marker) && existsSync(clip) && statSync(clip).size > 0) return { path: clip, durationSec: sec };
+    // It may have waited for its slot while the edit was cancelled.
+    opts.signal.throwIfAborted();
+    const clip = join(dir, CLIP);
+    const marker = join(dir, DONE);
+    if (existsSync(marker) && existsSync(clip) && statSync(clip).size > 0) {
+      const now = new Date();
+      try { utimesSync(marker, now, now); } catch {}
+      return { path: clip, durationSec: sec };
+    }
     mkdirSync(dir, { recursive: true });
     rmSync(marker, { force: true });
     rmSync(clip, { force: true });
     try {
       let out: { path: string; durationSec: number };
-      if (t.tool === "builtin") out = await renderKeywordCard(String(params.phrase), sec, clip);
+      if (t.tool === "builtin") out = await renderKeywordCard(String(params.phrase), sec, clip, opts.signal);
       else {
         const adapter = opts.adapters[t.tool] as any;
         const ctx = { dir, signal: opts.signal, onProgress: () => {} };
@@ -140,6 +177,11 @@ export async function renderGraphics(
           out = await adapter.render(shot, ctx);
         }
       }
+      // Only the clip is needed from here on: Blender leaves its frames (100-200 MB a graphic), the others their
+      // project files. The keyword card's own few hundred bytes of subtitles stay beside its clip.
+      if (t.tool !== "builtin") {
+        for (const name of readdirSync(dir)) if (name !== CLIP && join(dir, name) !== out.path) rmSync(join(dir, name), { recursive: true, force: true });
+      }
       writeFileSync(marker, "");
       return out;
     } catch (err) {
@@ -149,7 +191,8 @@ export async function renderGraphics(
   };
 
   let done = 0;
-  const clips: RenderedGraphic[] = new Array(graphics.length);
+  const missing: number[] = [];
+  const clips: (RenderedGraphic | null)[] = new Array(graphics.length).fill(null);
   const outcomes: { failed: Failure[]; final: Tool }[] = new Array(graphics.length);
 
   await Promise.all(graphics.map(async (g, i) => {
@@ -186,7 +229,12 @@ export async function renderGraphics(
       }
       t = t.fallback ? catalogue[t.fallback] : undefined;
     }
-    if (!clips[i]) throw new Error(`graphic ${i} (${g.template}) couldn't be rendered, not even as a keyword card`);
+    if (!clips[i]) {
+      // Not even the keyword card: the split plays full frame instead (renderFancy) and the review card says so.
+      console.error(`graphic ${i + 1} (${g.template}) couldn't be made: ${failed.map((f) => `${TOOL_NAME[f.tool]} ${f.reason}`).join("; ")}`);
+      outcomes[i] = { failed: [], final: "builtin" };
+      missing.push(i + 1);
+    }
     opts.onProgress?.(++done / graphics.length);
   }));
 
@@ -201,5 +249,6 @@ export async function renderGraphics(
   }
   const notes = [...groups.values()].map((g) =>
     `${TOOL_NAME[g.tool]} ${g.reason}: ${g.n} graphic${g.n === 1 ? "" : "s"} made with ${TOOL_NAME[g.final]} instead`);
+  for (const n of missing.sort((a, b) => a - b)) notes.push(`graphic ${n} couldn't be made: its split plays full frame`);
   return { clips, notes };
 }

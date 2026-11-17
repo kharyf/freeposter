@@ -13,7 +13,7 @@ import { adapters as productionAdapters, type Adapters } from "../produce/adapte
 import { fixWords, remapWords, type Segment } from "./cuts.ts";
 import { cadenceProblems, planBeats } from "./fancy/beats.ts";
 import { makeCover } from "./fancy/cover.ts";
-import { renderGraphics } from "./fancy/graphics.ts";
+import { pruneGraphicsCache, renderGraphics } from "./fancy/graphics.ts";
 import { cachedPlan, planGraphics, PLAN_VERSION } from "./fancy/plan.ts";
 import { renderFancy } from "./fancy/render.ts";
 import { fancyTemplates } from "./fancy/templates.ts";
@@ -43,6 +43,10 @@ const catalogueHash = () => shortHash(Object.values(fancyTemplates()).map(({ dir
 
 const log = (edit: Edit, msg: string) => console.log(`[edit ${edit.id}] ${msg}`);
 
+/** A Fancy edit at least this long should have at least MIN_SPLITS split screens; fewer gets a note on the review card. */
+const SPLITS_FROM_SEC = 8;
+const MIN_SPLITS = 3;
+
 export class EditWorker {
   store: Store;
   dir: string;
@@ -53,6 +57,8 @@ export class EditWorker {
   cancel = new AbortController();
   timer: NodeJS.Timeout | undefined;
   running: Promise<void> | undefined;
+  /** when cached Fancy graphics were last pruned */
+  lastCleanup = 0;
 
   constructor(store: Store, opts: EditWorkerOptions = {}) {
     this.store = store;
@@ -79,6 +85,8 @@ export class EditWorker {
   /** Starts the next queued edit unless one is already running. */
   tick(): Promise<void> | undefined {
     if (this.running) return this.running;
+    // Between edits, so no graphic is rendering into the cache.
+    if (Date.now() - this.lastCleanup > 3_600_000) this.cleanup();
     const edit = this.store.claimNextEdit();
     if (!edit) return undefined;
     this.running = this.process(edit).finally(() => (this.running = undefined));
@@ -106,6 +114,12 @@ export class EditWorker {
     const speech = { ...heard, words };
     if (lyricsChecked) writeFileSync(path, JSON.stringify(speech));
     return speech;
+  }
+
+  /** Deletes cached Fancy graphics not used for a while (pruneGraphicsCache). */
+  cleanup() {
+    this.lastCleanup = Date.now();
+    pruneGraphicsCache(join(this.dir, "fancy-graphics"));
   }
 
   async process(edit: Edit) {
@@ -203,6 +217,12 @@ export class EditWorker {
     for (const g of segments.slice(0, -1)) cutTimes.push((at += g.end - g.start));
     const beats = planBeats({ durationSec: editedSec, words, graphics: plan.graphics, emphasis: plan.emphasis, cutTimes, punchIn: s.punchIn });
     for (const problem of cadenceProblems(beats, cutTimes)) log(edit, `cadence: ${problem}`);
+
+    // The splits the speech made room for (a graphic that couldn't be made has its own note).
+    const splits = new Set(beats.filter((b) => b.layout !== "full" && b.graphic !== null).map((b) => b.graphic)).size;
+    if (words.length && editedSec >= SPLITS_FROM_SEC && splits < MIN_SPLITS) {
+      notes.push(`only ${splits} split screen${splits === 1 ? "" : "s"}: too little speech for more graphics`);
+    }
 
     log(edit, "editing");
     const out = join(this.dir, `${edit.key}.mp4`);

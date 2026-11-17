@@ -249,7 +249,8 @@ export async function renderFancy(
   opts: {
     segments: Segment[];
     beats: Beat[];
-    clips: RenderedGraphic[];
+    /** by graphic index; null where a graphic couldn't be made (its split plays full frame) */
+    clips: (RenderedGraphic | null)[];
     faces: FaceKey[] | null;
     /** on the edited timeline */
     captionWords: Word[] | null;
@@ -264,7 +265,7 @@ export async function renderFancy(
   const src = await probe(source);
   const editedSec = segments.reduce((t, s) => t + s.end - s.start, 0);
   const up = upscaleOf(src);
-  // A split whose clip is missing (it shouldn't be) plays full frame rather than failing the edit.
+  // A split whose clip is missing (a graphic not even the keyword card could make) plays full frame.
   const beats = tileBeats(opts.beats, editedSec)
     .map((b): Beat => (isSplit(b.layout) && (b.graphic === null || !clips[b.graphic]) ? { ...b, layout: "full", graphic: null } : b))
     .filter((b) => frameAt(b.end) > frameAt(b.start));

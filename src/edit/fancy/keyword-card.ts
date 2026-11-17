@@ -80,7 +80,7 @@ export function keywordCardAss(phrase: string, durationSec: number): string {
 }
 
 /** An opaque 1080x960, 30 fps clip of the phrase, durationSec long. */
-export async function renderKeywordCard(phrase: string, durationSec: number, out: string): Promise<{ path: string; durationSec: number }> {
+export async function renderKeywordCard(phrase: string, durationSec: number, out: string, signal?: AbortSignal): Promise<{ path: string; durationSec: number }> {
   mkdirSync(dirname(out), { recursive: true });
   const ass = out.replace(/\.[^.\\/]+$/, "") + ".ass";
   writeFileSync(ass, keywordCardAss(phrase, durationSec));
@@ -90,7 +90,7 @@ export async function renderKeywordCard(phrase: string, durationSec: number, out
       "-hide_banner", "-loglevel", "error", "-y",
       "-f", "lavfi", "-i", `color=c=0x${PALETTE.ink.slice(1)}:s=${W}x${H}:r=30`, "-t", String(durationSec),
       "-vf", vf, "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-r", "30", out,
-    ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
+    ], { windowsHide: true, maxBuffer: 16 * 1024 * 1024, signal });
   } catch (err) {
     throw new Error(`the keyword card didn't render: ${(err as any).stderr?.trim() || (err as Error).message}`);
   }
