@@ -37,6 +37,8 @@ const FIRST_START = 1.5;
 const MIN_SEC = 2;
 const MAX_SEC = 6;
 const MAX_GRAPHICS = 12;
+/** Graphics cover at least this share of a video of 8 s or longer. */
+const MIN_COVERAGE = 0.4;
 const MAX_BLENDER = 2;
 const PHRASE_CHARS = 40;
 const COVER_WORDS = 6;
@@ -94,7 +96,8 @@ export function validatePlan(raw: unknown, words: Word[], durationSec: number): 
   if (answer.graphics !== undefined && !Array.isArray(answer.graphics)) problems.push("graphics isn't a list");
   list.forEach((g: any, i) => {
     const at = `graphics[${i}]`;
-    const t = templates[g?.template];
+    // Own keys only: "constructor" or "__proto__" isn't a template.
+    const t = typeof g?.template === "string" && Object.hasOwn(templates, g.template) ? templates[g.template] : undefined;
     if (!t || t.id === BUILTIN_ONLY) return problems.push(`${at}: unknown template "${g?.template}"`);
     const name = `${at} (${t.id})`;
     let rawParams = g.params;
@@ -145,10 +148,11 @@ export function validatePlan(raw: unknown, words: Word[], durationSec: number): 
   };
 }
 
-/** The cover frame's time: the AI's, clamped into the video, or just before the first graphic. */
+/** The cover frame's time: the AI's, clamped into the video (no later than its last frame), or just before the first graphic. */
 function coverAt(at: unknown, graphics: PlannedGraphic[], durationSec: number): number {
-  if (isTime(at)) return clamp(at, 0, durationSec);
-  return graphics.length ? clamp(graphics[0].start - 0.5, 0, durationSec) : 0;
+  const last = Math.max(0, durationSec - 1 / 30);
+  if (isTime(at)) return clamp(at, 0, last);
+  return graphics.length ? clamp(graphics[0].start - 0.5, 0, last) : 0;
 }
 
 // ---- the keyword plan (no AI) ----
@@ -187,22 +191,29 @@ function sentences(words: Word[]): Word[][] {
 
 interface Pick { start: number; words: string; score: number }
 
+/** The words of a sentence a graphic may start on. */
+const eligible = (sentence: Word[]) => sentence.filter((w) => w.start >= FIRST_START - EPS);
+const goodNeighbour = (ok: Word[], i: number) => [ok[i - 1], ok[i + 1]].filter((n) => n && score(n.text) > 0).sort((a, b) => score(b.text) - score(a.text))[0];
+
+/** ok[i] and the better of its neighbours. */
+function pairAt(ok: Word[], i: number): Pick {
+  const n = goodNeighbour(ok, i) ?? ok[i + 1] ?? ok[i - 1];
+  const pair = n ? [ok[i], n].sort((a, b) => a.start - b.start) : [ok[i]];
+  const shown = pair.map((w) => bare(w.text)).join(" ");
+  return { start: pair[0].start, words: shown.charAt(0).toUpperCase() + shown.slice(1), score: score(ok[i].text) };
+}
+
 /** A sentence's keyword pair: its longest word that isn't a stopword, and the better of its neighbours. */
 function pairIn(sentence: Word[]): Pick | null {
-  const ok = sentence.filter((w) => w.start >= FIRST_START - EPS);
-  const goodNeighbour = (i: number) => [ok[i - 1], ok[i + 1]].filter((n) => n && score(n.text) > 0).sort((a, b) => score(b.text) - score(a.text))[0];
+  const ok = eligible(sentence);
   let top = -1;
   for (let i = 0; i < ok.length; i++) {
     const s = score(ok[i].text);
     if (!s) continue;
     // Among equally long words, one with a word worth showing beside it.
-    if (top < 0 || s > score(ok[top].text) || (s === score(ok[top].text) && !goodNeighbour(top) && goodNeighbour(i))) top = i;
+    if (top < 0 || s > score(ok[top].text) || (s === score(ok[top].text) && !goodNeighbour(ok, top) && goodNeighbour(ok, i))) top = i;
   }
-  if (top < 0) return null;
-  const n = goodNeighbour(top) ?? ok[top + 1] ?? ok[top - 1];
-  const pair = n ? [ok[top], n].sort((a, b) => a.start - b.start) : [ok[top]];
-  const shown = pair.map((w) => bare(w.text)).join(" ");
-  return { start: pair[0].start, words: shown.charAt(0).toUpperCase() + shown.slice(1), score: score(ok[top].text) };
+  return top < 0 ? null : pairAt(ok, top);
 }
 
 /** Keyword graphics in the time `taken` leaves free. */
@@ -211,14 +222,20 @@ function keywordGraphics(words: Word[], durationSec: number, need: number, taken
   const kinetic = fancyTemplates()[KEYWORD_TEMPLATE];
   const lo = Math.max(MIN_SEC, kinetic.minSec);
   const hi = Math.min(MAX_SEC, kinetic.maxSec);
-  const picks = sentences(words).map(pairIn).filter((p): p is Pick => p !== null && checkParams(kinetic, { words: p.words }).problems.length === 0);
+  const fits = (p: Pick | null): p is Pick => p !== null && checkParams(kinetic, { words: p.words }).problems.length === 0;
+  const picks = sentences(words).map(pairIn).filter(fits);
+  // When those don't fit the free time, any other word worth showing, best first.
+  const spare = sentences(words)
+    .flatMap((s) => { const ok = eligible(s); return ok.map((w, i) => (score(w.text) ? pairAt(ok, i) : null)); })
+    .filter(fits)
+    .filter((p) => !picks.some((q) => q.start === p.start && q.words === p.words));
 
   // The best pick in each equal stretch of the video first, then the best of the rest.
   const span = (durationSec - FIRST_START) / need;
   const slot = (p: Pick) => Math.min(need - 1, Math.floor((p.start - FIRST_START) / span));
   const byScore = (a: Pick, b: Pick) => b.score - a.score || a.start - b.start;
   const firsts = [...Array(need).keys()].map((s) => picks.filter((p) => slot(p) === s).sort(byScore)[0]).filter(Boolean);
-  const order = [...firsts, ...picks.filter((p) => !firsts.includes(p)).sort(byScore)];
+  const order = [...firsts, ...picks.filter((p) => !firsts.includes(p)).sort(byScore), ...spare.sort(byScore)];
 
   const busy = [...taken];
   const chosen: Pick[] = [];
@@ -270,7 +287,10 @@ function paramsSchema(t: FancyTemplate): object {
     if (p.min !== undefined) out.minimum = p.min;
     if (p.max !== undefined) out.maximum = p.max;
     if (p.enum) out.enum = p.enum;
-    if (p.parts) out.description = `${p.parts.min} to ${p.parts.max} ${p.parts.noun} separated by ${p.parts.separator === " " ? "spaces" : `"${p.parts.separator}"`}`;
+    if (p.parts) {
+      out.description = `${p.parts.min} to ${p.parts.max} ${p.parts.noun} separated by ${p.parts.separator === " " ? "spaces" : `"${p.parts.separator}"`}` +
+        (p.maxLength !== undefined ? `, at most ${p.maxLength} characters in all, joined` : "");
+    }
     if (p.emoji) out.description = "exactly one emoji";
     if (p.default !== undefined) out.default = p.default;
     return out;
@@ -388,7 +408,14 @@ export async function planGraphics(words: Word[], durationSec: number, opts: { a
       failure = (err as Error).message;
       break;
     }
-    const checked = validatePlan(raw, words, durationSec);
+    let checked: ReturnType<typeof validatePlan>;
+    try {
+      checked = validatePlan(raw, words, durationSec);
+    } catch (err) {
+      // A graphic never fails the edit: an answer that can't even be checked counts as no answer.
+      failure = `its answer couldn't be checked: ${(err as Error).message}`;
+      break;
+    }
     if (!best || checked.plan.graphics.length >= best.graphics.length) best = checked.plan;
     if (checked.plan.graphics.length >= need) break;
     problems = [...checked.problems, `only ${checked.plan.graphics.length} valid graphics, fewer than ${need}`];
@@ -397,12 +424,12 @@ export async function planGraphics(words: Word[], durationSec: number, opts: { a
   if (!best) {
     // Enough of them to cover about half the video at about 4 s each.
     const count = Math.min(MAX_GRAPHICS, Math.max(need, Math.round((durationSec * 0.5) / 4)));
-    const graphics = keywordPlan(words, durationSec, count);
+    const filled = fillCoverage(words, durationSec, keywordPlan(words, durationSec, count));
     const none = /no AI provider is connected|isn't installed/.test(failure);
     if (!none) console.error(`Fancy graphics plan: the AI didn't answer (${failure}); using keyword graphics`);
     return {
-      graphics, emphasis: [], cover: { title: "", at: coverAt(undefined, graphics, durationSec) }, source: "keywords",
-      notes: [none ? "no AI connected: keyword graphics only" : "the AI didn't answer: keyword graphics only"],
+      graphics: filled.graphics, emphasis: [], cover: { title: "", at: coverAt(undefined, filled.graphics, durationSec) }, source: "keywords",
+      notes: [none ? "no AI connected: keyword graphics only" : "the AI didn't answer: keyword graphics only", ...filled.notes],
     };
   }
 
@@ -413,7 +440,29 @@ export async function planGraphics(words: Word[], durationSec: number, opts: { a
     if (extra.length) notes.push(`the AI planned ${graphics.length} of ${need} graphics: ${extra.length} keyword graphic${extra.length === 1 ? "" : "s"} added`);
     graphics = [...graphics, ...extra].sort((a, b) => a.start - b.start);
   }
-  return { ...best, graphics, source: "ai", notes };
+  const filled = fillCoverage(words, durationSec, graphics);
+  return { ...best, graphics: filled.graphics, source: "ai", notes: [...notes, ...filled.notes] };
+}
+
+/** Seconds of the video with a graphic on screen. */
+const coverage = (graphics: PlannedGraphic[]) => graphics.reduce((s, g) => s + g.end - g.start, 0);
+
+/**
+ * On a video of 8 s or longer, keyword graphics in the free time until graphics cover 40% of it, there are 12
+ * of them, or no free stretch fits one. The 60% ceiling is left to the prompt.
+ */
+function fillCoverage(words: Word[], durationSec: number, graphics: PlannedGraphic[]): { graphics: PlannedGraphic[]; notes: string[] } {
+  if (durationSec < 8) return { graphics, notes: [] };
+  let out = graphics;
+  let added = 0;
+  while (coverage(out) < MIN_COVERAGE * durationSec - EPS && out.length < MAX_GRAPHICS) {
+    const extra = keywordGraphics(words, durationSec, 1, out);
+    if (!extra.length) break;
+    out = [...out, ...extra].sort((a, b) => a.start - b.start);
+    added++;
+  }
+  const notes = added ? [`graphics covered under 40% of the video: ${added} keyword graphic${added === 1 ? "" : "s"} added`] : [];
+  return { graphics: out, notes };
 }
 
 // ---- caching ----

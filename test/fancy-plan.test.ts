@@ -113,9 +113,52 @@ test("params that don't fit the template drop that graphic, and params may come 
   assert.equal(problems.length, 2);
 });
 
+test("template names that aren't the catalogue's own are unknown, not a crash", () => {
+  const { plan, problems } = validatePlan({ graphics: [
+    { start: 2, end: 5, template: "constructor", params: {} },
+    { start: 7, end: 10, template: "__proto__", params: {} },
+    { start: 12, end: 15, template: "toString", params: {} },
+  ], emphasis: [], cover: { title: "", at: 1 } }, WORDS_20S, 20);
+  assert.deepEqual(plan.graphics, []);
+  assert.equal(problems.length, 3);
+  assert.ok(problems.every((p) => /unknown template/.test(p)), problems.join("; "));
+});
+
+test("an answer that can't even be checked gives the keyword plan", async () => {
+  const broken = { get graphics(): unknown { throw new Error("boom"); }, emphasis: [], cover: { title: "", at: 0 } };
+  const errors: unknown[] = [];
+  const log = console.error;
+  console.error = (...a: unknown[]) => { errors.push(a); };
+  try {
+    const plan = await planGraphics(WORDS_20S, 20, { ask: async <T>() => broken as T });
+    assert.equal(plan.source, "keywords");
+    assert.ok(plan.graphics.length >= 3);
+  } finally {
+    console.error = log;
+  }
+  assert.equal(errors.length, 1);
+});
+
+test("graphics under 40% of a video of 8 s or longer are topped up with keyword graphics", async () => {
+  // Three valid graphics of about 2 s: about 6 s of a 20 s video.
+  const short = { ...GOOD_PLAN, graphics: [
+    { start: at("They").start, end: at("the").end, template: "pull-quote", params: { quote: "They wait" }, why: "" },
+    { start: at("My").start, end: at("three").end, template: "stat-counter", params: { value: 3, suffix: "×", label: "views" }, why: "" },
+    { start: at("Small").start, end: at("into").end, template: "kinetic-words", params: { words: "Small steps" }, why: "" },
+  ] };
+  const plan = await planGraphics(WORDS_20S, 20, { ask: async <T>() => short as T });
+  const covered = plan.graphics.reduce((s, g) => s + g.end - g.start, 0);
+  assert.ok(covered >= 8, `covered ${covered} s`);
+  assert.deepEqual(plan.graphics.filter((g) => g.template !== "kinetic-words" || g.params.words === "Small steps").length, 3, "the AI's graphics stay");
+  assert.ok(!overlapping(plan.graphics));
+  for (const g of plan.graphics) assert.ok(g.start >= 1.5 && g.end <= 20 && g.end - g.start >= 2 - 1e-9 && g.end - g.start <= 6 + 1e-9);
+  assert.equal(plan.notes.length, 1);
+  assert.match(plan.notes[0], /40%/);
+});
+
 test("the cover: at most 6 words, its time clamped into the video, or just before the first graphic", () => {
   const long = validatePlan({ ...GOOD_PLAN, cover: { title: "  One two three four five six seven  ", at: 45 } }, WORDS_20S, 20).plan.cover;
-  assert.deepEqual(long, { title: "One two three four five six", at: 20 });
+  assert.deepEqual(long, { title: "One two three four five six", at: 20 - 1 / 30 }, "no later than the last frame");
   const bad = validatePlan({ ...GOOD_PLAN, cover: { title: "Hi", at: "soon" } }, WORDS_20S, 20).plan;
   assert.equal(bad.cover.at, bad.graphics[0].start - 0.5);
 });
@@ -138,6 +181,7 @@ test("the question: high effort, the catalogue without keyword-card, the timed w
   assert.deepEqual(schema.required, ["graphics", "emphasis", "cover"]);
   assert.ok(!schema.properties.graphics.items.properties.template.enum.includes("keyword-card"));
   assert.deepEqual(strictSchema(schema), schema, "already strict, so Codex and OpenRouter take it as it is");
+  assert.match(asked.system, /"2 to 4 items separated by \\"\|\\", at most 40 characters in all, joined"/, "list params say their length is for all the items");
 });
 
 test("too few valid graphics asks once more, listing the problems", async () => {
