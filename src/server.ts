@@ -762,12 +762,15 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   // ---- reviews: what agents asked to post, decided here as well as on Telegram ----
 
   app.get("/api/reviews", async () => ({
-    pending: reviews.reviews.inState("preparing", "pending").map((r) => ({
-      ...reviews.view(r),
-      videoUrl: r.state === "pending" ? `/api/reviews/${r.id}/video` : null,
-      notes: reviews.editExtras(r).notes,
-      coverUrl: reviews.editExtras(r).coverPath ? `/api/reviews/${r.id}/cover` : null,
-    })),
+    pending: reviews.reviews.inState("preparing", "pending").map((r) => {
+      const extras = reviews.editExtras(r);
+      return {
+        ...reviews.view(r),
+        videoUrl: r.state === "pending" ? `/api/reviews/${r.id}/video` : null,
+        notes: extras.notes,
+        coverUrl: extras.coverPath ? `/api/reviews/${r.id}/cover` : null,
+      };
+    }),
     recent: reviews.reviews.recent(10).filter((r) => r.state !== "preparing" && r.state !== "pending").map((r) => reviews.view(r)),
   }));
 

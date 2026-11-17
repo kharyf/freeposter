@@ -178,16 +178,36 @@ test("the Telegram card lists the edit's notes, and a basic edit's card has none
   assert.ok(caption.includes("Note: no AI connected: keyword graphics only"), caption);
   assert.equal(telegram.cardText(review).text, caption);
   assert.ok(caption.length <= 1024);
-  const plain = await sendReview("hi");
+  await sendReview("hi");
   assert.ok(!tg.last("sendVideo")!.params.caption.includes("Note:"), "basic card unchanged");
   assert.equal(tg.all("sendPhoto").length, 0);
-  void plain;
 });
 
 test("long notes shrink the caption, never push the card past Telegram's limit", async () => {
   const { tg, sendReview } = await setup();
   await sendReview("c".repeat(270), null, { notes: ["n".repeat(200), "m".repeat(200), "k".repeat(200)], cover: null });
-  assert.ok((tg.last("sendVideo")!.params.caption as string).length <= 1024);
+  const caption = tg.last("sendVideo")!.params.caption as string;
+  assert.ok(caption.length <= 1024, String(caption.length));
+  assert.equal(caption.match(/^Note:/gm)?.length, 3);
+  assert.ok(!caption.includes("n".repeat(161)), "each note is capped");
+});
+
+test("more notes than fit: a +N more line, and the card text stays within the Telegram limit even when room would go negative", async () => {
+  const { telegram, sendReview } = await setup();
+  const notes = Array.from({ length: 6 }, (_, i) => String(i).repeat(400));
+  const { review } = await sendReview("c".repeat(250), null, { notes, cover: null });
+  const { text } = telegram.cardText(review);
+  assert.ok(text.length <= 1024, String(text.length));
+  assert.match(text, /Note: \+3 more/);
+  assert.equal(text.match(/^Note: 0/gm)?.length, 1);
+  // With a long title the notes go first, so the room for the caption never goes negative.
+  const titled = { ...review, draft: { ...review.draft, title: "T".repeat(700) } };
+  const trimmed = telegram.cardText(titled).text;
+  assert.ok(trimmed.length <= 1024 && trimmed.includes("Caption:\n"), String(trimmed.length));
+  assert.ok((trimmed.match(/^Note:/gm)?.length ?? 0) < 4, "notes were trimmed");
+  // A huge title leaves no room even without notes: the hard limit still holds.
+  const big = { ...review, draft: { ...review.draft, title: "T".repeat(2000) } };
+  assert.ok(telegram.cardText(big).text.length <= 1024);
 });
 
 test("Telegram gets the cover as a photo reply to the card; a failed photo doesn't fail the card", async () => {

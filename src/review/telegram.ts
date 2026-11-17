@@ -52,6 +52,8 @@ export function relaySigned(secret: string, body: string, timestamp: string | un
   return standard.signature.split(" ").some((s) => sameText(want, s));
 }
 const CAPTION_LIMIT = 1024;
+const MAX_NOTES = 3;
+const NOTE_CHARS = 160;
 
 export class TelegramError extends Error {
   status: number;
@@ -453,19 +455,26 @@ export class TelegramReview {
 
   cardText(r: Review): { text: string; truncated: boolean } {
     const v = this.service.view(r);
-    const head = [
+    const lines = [
       `🎬 ${v.label}${r.durationSec !== null ? ` · ${r.durationSec.toFixed(1)} s` : ""}`,
       `To: ${v.accounts.map((a) => `${a.platform ?? "?"} ${a.name}`).join(", ")}`,
       `Posts: ${r.draft.scheduledAt ? when(r.draft.scheduledAt) : "as soon as you approve"}`,
       ...(r.draft.title && r.draft.title !== r.draft.caption ? [`Title: ${r.draft.title}`] : []),
-      ...this.service.editExtras(r).notes.map((n) => `Note: ${n}`),
-    ].join("\n");
+    ];
+    // At most 3 notes of 160 characters each; fewer if the card would still overflow, so the caption keeps its room.
+    const all = this.service.editExtras(r).notes;
+    const noteLines = all.slice(0, MAX_NOTES).map((n) => `Note: ${n.length > NOTE_CHARS ? `${n.slice(0, NOTE_CHARS - 1)}…` : n}`);
+    if (all.length > MAX_NOTES) noteLines.push(`Note: +${all.length - MAX_NOTES} more`);
     const tail = `File ${r.masterSha256?.slice(0, 16) ?? "?"}… · review ${r.id} · expires ${when(r.expiresAt)}${this.outcome(r)}`;
+    const headOf = () => [...lines, ...noteLines].join("\n");
+    while (noteLines.length && CAPTION_LIMIT - headOf().length - tail.length - 40 < 0) noteLines.pop();
+    const head = headOf();
     const room = CAPTION_LIMIT - head.length - tail.length - 40;
     const caption = r.draft.caption;
     const truncated = caption.length > room;
     const shown = truncated ? `${caption.slice(0, Math.max(room, 0))}… (full caption below)` : caption;
-    return { text: `${head}\nCaption:\n${shown}\n\n${tail}`, truncated };
+    // Last backstop, e.g. for a huge title: Telegram refuses a caption over its limit.
+    return { text: `${head}\nCaption:\n${shown}\n\n${tail}`.slice(0, CAPTION_LIMIT), truncated };
   }
 
   private outcome(r: Review): string {
