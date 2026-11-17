@@ -1,14 +1,14 @@
 import "./isolated-home.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { planBeats, type Beat } from "../src/edit/fancy/beats.ts";
-import { makeCover } from "../src/edit/fancy/cover.ts";
+import { coverAss, makeCover } from "../src/edit/fancy/cover.ts";
 import { renderKeywordCard } from "../src/edit/fancy/keyword-card.ts";
 import { fancyFontDir } from "../src/edit/fancy/palette.ts";
-import { beatCrops, beatGraph, beatSource, fancyFilterGraph, renderFancy } from "../src/edit/fancy/render.ts";
+import { beatCrops, beatGraph, beatSource, fancyFilterGraph, renderFancy, tileBeats } from "../src/edit/fancy/render.ts";
 import { probe } from "../src/media.ts";
 import { DEFAULT_EDIT, type EditSettings } from "../src/edit/settings.ts";
 import { imageKind } from "../src/edit/styles.ts";
@@ -177,4 +177,85 @@ test("the cover is a 1080x1920 JPEG", async () => {
   const yellowish = (buf: Buffer) => { let n = 0; for (let i = 0; i < buf.length; i += 3) if (buf[i] > 200 && buf[i + 1] > 170 && buf[i + 2] < 110) n++; return n; };
   assert.ok(yellowish(top(p)) > 2000, "title drawn");
   assert.ok(yellowish(top(plain)) < yellowish(top(p)) / 4, "no title when blank");
+});
+
+test("the beats must tile the edit: tiny slips are joined, the last beat ends at the edit's end, gaps and overlaps throw", () => {
+  const ok = tileBeats([beat(0.01, 1, "full", null), beat(1.005, 2, "full", null), beat(2, 2.9, "full", null)], 3);
+  assert.deepEqual(ok.map((b) => [b.start, b.end]), [[0, 1], [1, 2], [2, 3]]);
+  assert.throws(() => tileBeats([beat(0, 1, "full", null), beat(1.2, 3, "full", null)], 3), /gap between 1\.000 s and 1\.200 s/);
+  assert.throws(() => tileBeats([beat(0, 1.5, "full", null), beat(1.2, 3, "full", null)], 3), /overlap between 1\.200 s and 1\.500 s/);
+  assert.throws(() => tileBeats([beat(0.5, 3, "full", null)], 3), /start at 0\.500 s/);
+  assert.throws(() => tileBeats([beat(0, 3, "full", null), beat(3, 4, "full", null)], 3), /past the end/);
+  assert.equal(tileBeats([], 2).length, 1);
+});
+
+test("the join is frame-exact: every frame of the edit, and the split starts on its frame", async () => {
+  const dir = tmp();
+  const src = makeVideo(dir, "blue.mp4", ["-f", "lavfi", "-i", "color=c=blue:size=1080x1920:rate=30", "-t", "4", "-c:v", "libx264", "-pix_fmt", "yuv420p"]);
+  const red = makeVideo(dir, "red.mp4", ["-f", "lavfi", "-i", "color=c=red:size=1080x960:rate=30", "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p"]);
+  const out = await renderFancy(src, {
+    segments: [{ start: 0, end: 4 }], beats: [beat(0, 2, "full", null), beat(2, 4, "speakerBottom", 0)],
+    clips: [{ path: red, durationSec: 2, template: "keyword-card" }], faces: null, captionWords: null, settings: FANCY, outPath: join(dir, "exact.mp4"),
+  });
+  const frames = Number(execFileSync("ffprobe", ["-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", out.path], { encoding: "utf8" }).trim());
+  assert.equal(frames, Math.round(4 * 30));
+  const top = (n: number) => {
+    const px = execFileSync("ffmpeg", ["-v", "error", "-i", out.path, "-vf", `select='eq(n,${n})',crop=2:2:540:480`, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]);
+    return [px[0], px[1], px[2]];
+  };
+  assert.ok(isBlue(top(59)), "frame 59 is still full frame");
+  assert.ok(isRed(top(60)), "frame 60 (2.0 s) is the first split frame");
+});
+
+test("cancelling stops the render and leaves no files behind", async () => {
+  const dir = tmp();
+  const src = landscape60(dir, 6);
+  const ctl = new AbortController();
+  const outPath = join(dir, "cancel.mp4");
+  const run = renderFancy(src, {
+    segments: [{ start: 0, end: 6 }], beats: [0, 1, 2, 3, 4, 5].map((s) => beat(s, s + 1, "full", null)), clips: [], faces: null,
+    captionWords: null, settings: FANCY, outPath, signal: ctl.signal, onProgress: (f) => { if (f > 0) ctl.abort(); },
+  });
+  await assert.rejects(run, /cancelled/);
+  assert.deepEqual(readdirSync(dir).filter((f) => f.startsWith("cancel.mp4")), []);
+  // An already-cancelled render never starts.
+  await assert.rejects(renderFancy(src, { segments: [{ start: 0, end: 6 }], beats: [], clips: [], faces: null, captionWords: null, settings: FANCY, outPath, signal: AbortSignal.abort() }), /cancelled/);
+});
+
+/** Yellow (title) pixels in a band of rows of a 1080x1920 image. */
+function yellowIn(path: string, y: number, h: number): number {
+  const buf = execFileSync("ffmpeg", ["-v", "error", "-i", path, "-vf", `crop=1080:${h}:0:${y}`, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], { maxBuffer: 1 << 25 });
+  let n = 0;
+  for (let i = 0; i < buf.length; i += 3) if (buf[i] > 200 && buf[i + 1] > 170 && buf[i + 2] < 110) n++;
+  return n;
+}
+
+test("the cover title goes low when the face is high in the frame, and in the top third otherwise", async () => {
+  const dir = tmp();
+  const src = makeVideo(dir, "gray.mp4", ["-f", "lavfi", "-i", "color=c=gray:size=1920x1080:rate=30", "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p"]);
+  const cover = (cy: number, name: string) => makeCover(src, {
+    at: 1, segments: [{ start: 0, end: 2 }], faces: [{ t: 0, cx: 960, cy, size: 160 }, { t: 2, cx: 960, cy, size: 160 }], title: "Stop guessing what works", out: join(dir, name),
+  });
+  // Face top at about 11% of the frame: the title moves down, above the bottom safe area.
+  const high = await cover(200, "high.jpg");
+  assert.ok(yellowIn(high, 1000, 536) > 2000, "title in the lower area");
+  assert.ok(yellowIn(high, 0, 700) < 200, "nothing at the top");
+  assert.ok(yellowIn(high, 1536, 384) < 200, "clear of the bottom safe area");
+  // The ink flips with it: the bottom is darker than the top.
+  const luma = (p: string, y: number) => execFileSync("ffmpeg", ["-v", "error", "-i", p, "-vf", `crop=1080:40:0:${y}`, "-f", "rawvideo", "-pix_fmt", "gray", "-"]).reduce((a, b) => a + b, 0);
+  assert.ok(luma(high, 1870) < luma(high, 20) / 2, "darkened at the bottom");
+  // Face top at about 76%: the title stays in the top third.
+  const low = await cover(900, "low.jpg");
+  assert.ok(yellowIn(low, 200, 500) > 2000, "title in the top third");
+  assert.ok(yellowIn(low, 1000, 920) < 200, "nothing low");
+  assert.ok(luma(low, 20) < luma(low, 1870) / 2, "darkened at the top");
+});
+
+test("a cover word longer than a line gets a smaller size so it fits", () => {
+  const size = (ass: string) => Number(/^Style: Cover,[^,]+,(\d+),/m.exec(ass)![1]);
+  assert.equal(size(coverAss("Short words only here")), 120);
+  const long = "Antidisestablishmentarianism";
+  const s = size(coverAss(`${long} explained`));
+  assert.ok(s < 120 && long.length * s * 0.42 <= 1080 - 120, `size ${s}`);
+  assert.match(coverAss("x", "bottom"), /\\an2\\pos\(540,\d+\)/);
 });

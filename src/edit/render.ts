@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import { renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { config } from "../config.ts";
 import { probe } from "../media.ts";
+import { killTree } from "../produce/proc.ts";
 import { buildAss } from "./captions.ts";
 import { applyRanges, fixWords, planCuts, remapWords, type Segment } from "./cuts.ts";
 import { planReframe, sendcmdScript } from "./reframe.ts";
@@ -43,18 +44,31 @@ function filterGraph(segs: Segment[], s: EditSettings, opts: { reframe: { width:
   return parts.join(";");
 }
 
-/** Runs an edit's ffmpeg pass (its args include `-progress pipe:1`), reporting progress as a fraction of editedSec. */
-export function runFfmpeg(args: string[], editedSec: number, onProgress?: (fraction: number) => void): Promise<void> {
+/**
+ * Runs an edit's ffmpeg pass (its args include `-progress pipe:1`), reporting progress as a fraction of editedSec.
+ * Aborting `signal` kills ffmpeg and rejects with "cancelled".
+ */
+export function runFfmpeg(args: string[], editedSec: number, onProgress?: (fraction: number) => void, signal?: AbortSignal): Promise<void> {
   return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) return reject(new Error("cancelled"));
     const ff = spawn(config.ffmpeg, args, { windowsHide: true });
     let stderr = "";
+    // Settles once ffmpeg has exited, so its files are free to delete.
+    let cancelled = false;
+    const onAbort = () => { cancelled = true; killTree(ff.pid); };
+    signal?.addEventListener("abort", onAbort, { once: true });
     ff.stderr.on("data", (d) => (stderr += d));
     ff.stdout.on("data", (d: Buffer) => {
       const us = String(d).match(/out_time_us=(\d+)/g)?.at(-1)?.split("=")[1];
       if (us && editedSec > 0) onProgress?.(Math.min(1, Number(us) / 1e6 / editedSec));
     });
     ff.on("error", reject);
-    ff.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`edit failed: ${stderr.trim() || `ffmpeg exited ${code}`}`))));
+    ff.on("close", (code) => {
+      signal?.removeEventListener("abort", onAbort);
+      if (cancelled) reject(new Error("cancelled"));
+      else if (code === 0) resolve();
+      else reject(new Error(`edit failed: ${stderr.trim() || `ffmpeg exited ${code}`}`));
+    });
   });
 }
 

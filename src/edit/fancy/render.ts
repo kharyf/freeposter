@@ -213,8 +213,33 @@ const BEATS_SHARE = 0.85;
 /** Beat passes run at once: two keep the CPU busy between passes, at about a single Basic edit's peak memory. */
 const BEAT_PASSES = 2;
 const FFMPEG_HEAD = ["-y", "-hide_banner", "-loglevel", "error", "-nostats", "-progress", "pipe:1"];
-/** The beats are an intermediate: near-lossless, and quick to write. */
-const BEAT_ENCODE = ["-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "10", "-pix_fmt", "yuv420p"];
+/** The beats are an intermediate: near-lossless, quick to write, and without B-frames, so the join is frame-exact. */
+const BEAT_ENCODE = ["-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "10", "-bf", "0", "-pix_fmt", "yuv420p"];
+
+/**
+ * The beats, checked to tile [0, editedSec]: ends within half a frame of the next start are joined exactly, and
+ * the last beat ends at editedSec. A real gap, an overlap, or a beat past the end is a planning bug: it throws.
+ */
+export function tileBeats(beats: Beat[], editedSec: number): Beat[] {
+  const tol = 0.5 / FPS;
+  const at = (t: number) => `${t.toFixed(3)} s`;
+  if (!beats.length) return [{ start: 0, end: editedSec, layout: "full", graphic: null, graphicOffset: 0, zoom: 1, pushPerSec: 0, snapAt: null }];
+  const out = beats.map((b) => ({ ...b }));
+  if (Math.abs(out[0].start) > tol) throw new Error(`the Fancy beats start at ${at(out[0].start)}, not at 0`);
+  out[0].start = 0;
+  for (let i = 1; i < out.length; i++) {
+    const gap = out[i].start - out[i - 1].end;
+    if (Math.abs(gap) > tol) {
+      throw new Error(`the Fancy beats ${gap > 0 ? "leave a gap" : "overlap"} between ${at(Math.min(out[i - 1].end, out[i].start))} and ${at(Math.max(out[i - 1].end, out[i].start))}`);
+    }
+    out[i].start = out[i - 1].end;
+  }
+  const last = out.at(-1)!;
+  if (last.start >= editedSec - tol) throw new Error(`a Fancy beat starts at ${at(last.start)}, at or past the end of the ${at(editedSec)} edit`);
+  last.end = editedSec;
+  for (const b of out) if (!(b.end > b.start)) throw new Error(`a Fancy beat at ${at(b.start)} has no length`);
+  return out;
+}
 
 /** A line of a concat demuxer list (it reads ' inside a quoted name as '\''). */
 const listLine = (path: string) => `file '${path.replace(/\\/g, "/").replace(/'/g, "'\\''")}'`;
@@ -231,6 +256,8 @@ export async function renderFancy(
     settings: EditSettings;
     outPath: string;
     onProgress?: (f: number) => void;
+    /** cancels the render: running ffmpeg passes are killed */
+    signal?: AbortSignal;
   },
 ): Promise<{ path: string; durationSec: number }> {
   const { segments, clips, outPath } = opts;
@@ -238,13 +265,17 @@ export async function renderFancy(
   const editedSec = segments.reduce((t, s) => t + s.end - s.start, 0);
   const up = upscaleOf(src);
   // A split whose clip is missing (it shouldn't be) plays full frame rather than failing the edit.
-  const planned: Beat[] = opts.beats.length ? opts.beats : [{ start: 0, end: editedSec, layout: "full", graphic: null, graphicOffset: 0, zoom: 1, pushPerSec: 0, snapAt: null }];
-  const beats = planned
+  const beats = tileBeats(opts.beats, editedSec)
     .map((b): Beat => (isSplit(b.layout) && (b.graphic === null || !clips[b.graphic]) ? { ...b, layout: "full", graphic: null } : b))
     .filter((b) => frameAt(b.end) > frameAt(b.start));
 
   const temp: string[] = [];
   const progress = opts.onProgress;
+  // Stops every pass: when the caller cancels, or when one beat fails (the others' work is wasted then).
+  const stop = new AbortController();
+  const onCancel = () => stop.abort();
+  opts.signal?.addEventListener("abort", onCancel, { once: true });
+  if (opts.signal?.aborted) stop.abort();
   try {
     // Each beat in a pass of its own, two at a time.
     const beatFiles = beats.map((_, i) => `${outPath}.b${i}.mp4`);
@@ -266,22 +297,25 @@ export async function renderFancy(
         ...(clip ? ["-i", clip.path] : []),
         "-filter_complex", beatGraph({ start: b.start, end: b.end, layout: b.layout, crop: crops[0], cmds, graphic }, from, up),
         "-map", "[vout]", ...BEAT_ENCODE, beatFiles[i],
-      ], len, (f) => { doneSec[i] = f * len; report(); });
+      ], len, (f) => { doneSec[i] = f * len; report(); }, stop.signal);
       doneSec[i] = len;
       report();
     };
     let next = 0;
-    let failed = false;
+    let firstError: unknown = null;
     const worker = async () => {
-      while (!failed && next < beats.length) {
+      while (!stop.signal.aborted && next < beats.length) {
         const i = next++;
-        try { await renderBeat(i); } catch (err) { failed = true; throw err; }
+        try { await renderBeat(i); } catch (err) {
+          firstError ??= err;
+          stop.abort();
+        }
       }
     };
-    // Every pass has finished (or never started) before the temp files are cleared.
-    const results = await Promise.allSettled(Array.from({ length: BEAT_PASSES }, worker));
-    const failure = results.find((r) => r.status === "rejected");
-    if (failure) throw (failure as PromiseRejectedResult).reason;
+    // Every pass has exited (or never started) before the temp files are cleared.
+    await Promise.all(Array.from({ length: BEAT_PASSES }, worker));
+    if (firstError) throw firstError;
+    if (stop.signal.aborted) throw new Error("cancelled");
 
     // Then join them, with the captions and the sound.
     let ass: string | null = null;
@@ -309,9 +343,10 @@ export async function renderFancy(
       "-map", "[vout]", "-map", "[aout]",
       "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-c:a", "aac", "-b:a", "192k",
       "-movflags", "+faststart", part,
-    ], editedSec, (f) => progress?.(BEATS_SHARE + f * (1 - BEATS_SHARE)));
+    ], editedSec, (f) => progress?.(BEATS_SHARE + f * (1 - BEATS_SHARE)), stop.signal);
     renameSync(part, outPath);
   } finally {
+    opts.signal?.removeEventListener("abort", onCancel);
     for (const f of temp) try { unlinkSync(f); } catch {}
   }
   progress?.(1);

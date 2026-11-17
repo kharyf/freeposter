@@ -72,6 +72,15 @@ test("Fancy captions use the italic serif style in cream with the spoken word ye
   assert.ok(dialogues(ass).every((l) => l.includes(",FancyCaption,")));
 });
 
+test("seam captions sit in an ink box, so the gold rule never crosses them", () => {
+  const ass = buildAss(WORDS, { look: "fancy", placeAt: (t) => (t < 1 ? "seam" : "lower") });
+  // Same font and colours; BorderStyle 3 (an opaque box) in ink at 85% (alpha 26), with padding.
+  assert.match(ass, /^Style: FancySeam,Playfair Display,84,&H00D6F4FF,&H00D6F4FF,&H260F1114,&H260F1114,-1,-1,0,0,100,100,0,0,3,\d+,0,/m);
+  const lines = dialogues(ass);
+  for (const l of lines) assert.equal(l.includes(",FancySeam,"), l.includes("\\an5\\pos(540,960)"), l);
+  assert.ok(lines.some((l) => l.includes(",FancySeam,")) && lines.some((l) => l.includes(",FancyCaption,")));
+});
+
 test("seam placement centres the caption at y=960, lower sits in the safe area", () => {
   const ass = buildAss(WORDS, { look: "fancy", placeAt: (t) => (t < 1 ? "seam" : "lower") });
   assert.match(ass, /\\an5\\pos\(540,960\)/);

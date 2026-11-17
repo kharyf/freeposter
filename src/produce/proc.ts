@@ -15,7 +15,8 @@ export interface RunOptions {
 
 const TAIL_LINES = 40;
 
-function killTree(pid: number | undefined) {
+/** Kills a child process and everything it started. */
+export function killTree(pid: number | undefined) {
   if (!pid) return;
   if (process.platform === "win32") execFile("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true }, () => {});
   else try { process.kill(-pid, "SIGKILL"); } catch { try { process.kill(pid, "SIGKILL"); } catch {} }

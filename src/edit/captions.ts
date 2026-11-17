@@ -22,7 +22,7 @@ const clock = (t: number) => {
 };
 
 /** ASS reads { } as override tags and \ as escapes; show look-alikes instead. */
-const escape = (text: string) => text.replace(/\\/g, "＼").replace(/\{/g, "｛").replace(/\}/g, "｝");
+export const escape = (text: string) => text.replace(/\\/g, "＼").replace(/\{/g, "｛").replace(/\}/g, "｝");
 
 function groups(words: Word[], maxWords: number, breakAt: number[] = []): Word[][] {
   const out: Word[][] = [];
@@ -46,6 +46,9 @@ const FANCY_CREAM = assHex(PALETTE.cream);
 const FANCY_YELLOW = assHex(PALETTE.yellow);
 const FANCY_SIZE = 84;
 const FANCY_POP = 110; // percent scale on the spoken word
+/** On the seam the caption sits in an ink box (85% opaque, 14 px of padding), so the gold rule never runs through it. */
+const SEAM_BOX_ALPHA = 0.85;
+const SEAM_PAD = 14;
 
 /** Where a Fancy caption is anchored: centred on the seam of a split, or in the lower third inside SAFE_AREA. */
 const placement = (place: CaptionPlace) =>
@@ -69,9 +72,13 @@ export function buildAss(
     "",
     "[V4+ Styles]",
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-    opts.look === "fancy"
-      ? `Style: FancyCaption,${FONT_FAMILY},${FANCY_SIZE},${FANCY_CREAM},${FANCY_CREAM},${assHex(PALETTE.ink)},${assHex("#000000", PALETTE.shadowAlpha)},-1,-1,0,0,100,100,0,0,1,3,2,2,${marginL},${marginR},${marginV},1`
-      : `Style: Caption,Arial,78,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,6,0,2,${marginL},${marginR},${marginV},1`,
+    ...(opts.look === "fancy"
+      ? [
+        `Style: FancyCaption,${FONT_FAMILY},${FANCY_SIZE},${FANCY_CREAM},${FANCY_CREAM},${assHex(PALETTE.ink)},${assHex("#000000", PALETTE.shadowAlpha)},-1,-1,0,0,100,100,0,0,1,3,2,2,${marginL},${marginR},${marginV},1`,
+        // BorderStyle 3 draws the outline colour as a box, the outline width as its padding.
+        `Style: FancySeam,${FONT_FAMILY},${FANCY_SIZE},${FANCY_CREAM},${FANCY_CREAM},${assHex(PALETTE.ink, SEAM_BOX_ALPHA)},${assHex(PALETTE.ink, SEAM_BOX_ALPHA)},-1,-1,0,0,100,100,0,0,3,${SEAM_PAD},0,5,${marginL},${marginR},0,1`,
+      ]
+      : [`Style: Caption,Arial,78,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,6,0,2,${marginL},${marginR},${marginV},1`]),
     "",
     "[Events]",
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -90,8 +97,9 @@ export function buildAss(
         const pop = `{\\c${FANCY_YELLOW}&\\fscx${FANCY_POP}\\fscy${FANCY_POP}}`;
         const rest = `{\\c${FANCY_CREAM}&\\fscx100\\fscy100}`;
         const fancy = group.map((w, k) => (k === wi ? `${pop}${escape(w.text)}${rest}` : escape(w.text))).join(" ");
-        const where = placement(opts.placeAt?.(word.start) ?? "lower");
-        events.push(`Dialogue: 0,${clock(start)},${clock(Math.max(end, start + 0.01))},FancyCaption,,0,0,0,,${where}${fancy}`);
+        const place = opts.placeAt?.(word.start) ?? "lower";
+        const style = place === "seam" ? "FancySeam" : "FancyCaption";
+        events.push(`Dialogue: 0,${clock(start)},${clock(Math.max(end, start + 0.01))},${style},,0,0,0,,${placement(place)}${fancy}`);
         return;
       }
       const text = group
