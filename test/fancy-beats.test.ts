@@ -66,7 +66,9 @@ function assertTiles(beats: Beat[], durationSec: number) {
   assert.equal(beats[0].start, 0);
   assert.equal(beats.at(-1)!.end, durationSec);
   beats.slice(1).forEach((b, i) => assert.equal(b.start, beats[i].end));
-  beats.forEach((b) => assert.ok(b.end - b.start > 0, `beat ${b.start}–${b.end} has no length`));
+  // Every beat lasts at least 0.5 s, unless the whole video is shorter.
+  const min = Math.min(0.5, durationSec);
+  beats.forEach((b) => assert.ok(b.end - b.start >= min - EPS, `beat ${b.start}–${b.end} is under ${min} s`));
 }
 
 const graphic = (start: number, end: number): PlannedGraphic => ({ start, end, template: "kinetic-words", params: { words: "Test" }, phrase: "" });
@@ -95,16 +97,17 @@ for (const sec of [5, 8, 12, 30, 61, 90]) for (const punchIn of [true, false]) t
   assertTiles(beats, sec);
   if (punchIn) assert.deepEqual(cadenceProblems(beats, []), []);
   const splits = sections(beats); // consecutive split beats sharing a graphic = one section
-  // Every graphic is a section, and no section is invented. keywordPlan finds only 2 graphics in these 8 s of
-  // words (a Task 6 limit: see the 8 s test below for 3 graphics there), so the 3-section rule is asserted above 8 s.
+  // Every graphic is a section, and no section is invented.
   assert.equal(splits.length, graphics.length);
-  if (sec > 8) assert.ok(splits.length >= 3, `${splits.length} split sections`);
+  if (sec >= 8 && graphics.length >= 3) assert.ok(splits.length >= 3, `${splits.length} split sections`);
   splits.forEach((s, i) => assert.equal(s.layout, i % 2 === 0 ? "speakerBottom" : "speakerTop"));
-  // Each section spans its graphic exactly, and its graphicOffset runs with the clip.
+  // Each section starts with its graphic and ends with it, or under 0.5 s later when it absorbs a short full
+  // beat; its graphicOffset runs with the clip throughout, past the planned end too.
   splits.forEach((s) => {
     const g = graphics[s.graphic];
     assert.equal(s.beats[0].start, g.start);
-    assert.equal(s.beats.at(-1)!.end, g.end);
+    const end = s.beats.at(-1)!.end;
+    assert.ok(end >= g.end - EPS && end < g.end + 0.5, `section ${g.start}–${g.end} ends at ${end}`);
     s.beats.forEach((b) => assert.ok(Math.abs(b.graphicOffset - (b.start - g.start)) < EPS));
   });
   beats.filter((b) => !isSplit(b)).forEach((b) => { assert.equal(b.graphic, null); assert.equal(b.graphicOffset, 0); });
@@ -124,21 +127,36 @@ test("a 4 s run with no word gaps splits at exactly 2.0 s", () => {
   assert.deepEqual(beats.map((b) => [b.start, b.end]), [[0, 2], [2, 4]]);
 });
 
-test("a beat splits at the word gap nearest 1.6 s in, between 1.2 and 2.0 s", () => {
-  // Gaps at 1.3–1.35 and 1.75–1.8: 1.6 is nearer the second, so the split lands at its start, 1.75.
-  const words: Word[] = [
-    { text: "a", start: 0, end: 1.3 }, { text: "b", start: 1.35, end: 1.75 }, { text: "c", start: 1.8, end: 3.5 },
-  ];
-  const beats = planBeats({ durationSec: 3.5, words, graphics: [], emphasis: [], cutTimes: [], punchIn: true });
-  assert.deepEqual(beats.map((b) => [b.start, b.end]), [[0, 1.75], [1.75, 3.5]]);
-  // A gap that holds 1.6 s itself: the split is at 1.6 exactly.
-  const wide: Word[] = [{ text: "a", start: 0, end: 1.4 }, { text: "b", start: 1.9, end: 3.5 }];
-  const b2 = planBeats({ durationSec: 3.5, words: wide, graphics: [], emphasis: [], cutTimes: [], punchIn: true });
-  assert.deepEqual(b2.map((b) => [b.start, b.end]), [[0, 1.6], [1.6, 3.5]]);
+const spans = (beats: Beat[]) => beats.map((b) => [+b.start.toFixed(6), +b.end.toFixed(6)]);
+const words3 = (gapAt: number, gapEnd: number, end: number): Word[] =>
+  [{ text: "a", start: 0, end: gapAt }, { text: "b", start: gapEnd, end }];
+
+test("a long stretch is cut into near-equal pieces of at most 2.0 s", () => {
+  // 5.4 s with no gaps: 3 pieces of 1.8 s.
+  const beats = planBeats({ durationSec: 5.4, words: touching(0, 5.4, 0.45), graphics: [], emphasis: [], cutTimes: [], punchIn: true });
+  assert.deepEqual(spans(beats), [[0, 1.8], [1.8, 3.6], [3.6, 5.4]]);
+  // Just over 2 s: two halves, never a sliver.
+  const b2 = planBeats({ durationSec: 2.1, words: touching(0, 2.1, 0.35), graphics: [], emphasis: [], cutTimes: [], punchIn: true });
+  assert.deepEqual(spans(b2), [[0, 1.05], [1.05, 2.1]]);
+});
+
+test("a split moves to the nearest word gap within 0.4 s, when the pieces stay 0.5–2.0 s", () => {
+  // 3.5 s: the even split is 1.75; a gap at 1.9–2.0 is 0.15 s away, so the split lands at 1.9.
+  const near = planBeats({ durationSec: 3.5, words: words3(1.9, 2.0, 3.5), graphics: [], emphasis: [], cutTimes: [], punchIn: true });
+  assert.deepEqual(spans(near), [[0, 1.9], [1.9, 3.5]]);
+  // A gap holding the even split keeps it there.
+  const inside = planBeats({ durationSec: 3.5, words: words3(1.4, 1.9, 3.5), graphics: [], emphasis: [], cutTimes: [], punchIn: true });
+  assert.deepEqual(spans(inside), [[0, 1.75], [1.75, 3.5]]);
+  // A gap more than 0.4 s away is ignored.
+  const far = planBeats({ durationSec: 3.5, words: words3(2.2, 2.3, 3.5), graphics: [], emphasis: [], cutTimes: [], punchIn: true });
+  assert.deepEqual(spans(far), [[0, 1.75], [1.75, 3.5]]);
+  // 4 s: a gap at 2.3 is near the even split at 2.0, but would make a 2.3 s piece, so the split stays at 2.0.
+  const long = planBeats({ durationSec: 4, words: words3(2.3, 2.35, 4), graphics: [], emphasis: [], cutTimes: [], punchIn: true });
+  assert.deepEqual(spans(long), [[0, 2], [2, 4]]);
 });
 
 test("full layout zoom levels cycle 1.00, 1.18, 1.08, 1.30; split speaker alternates 1.00, 1.12", () => {
-  // 0–9 full (no gaps: splits every 2 s → 5 full beats), 9–15 a graphic (3 split beats), 15–19 full (2 beats).
+  // 0–9 full (no gaps: 5 beats of 1.8 s), 9–15 a graphic (3 split beats), 15–19 full (2 beats).
   const beats = planBeats({ durationSec: 19, words: touching(0, 19), graphics: [graphic(9, 15)], emphasis: [], cutTimes: [], punchIn: true });
   assertTiles(beats, 19);
   const full = beats.filter((b) => b.layout === "full");
@@ -196,18 +214,56 @@ test("too few graphics: no splits are invented, and cadenceProblems doesn't coun
   assert.deepEqual(cadenceProblems(b, []), []);
 });
 
-test("graphic windows are trusted, clamped into the video, and never make empty beats", () => {
-  // Starts before 1.5 s, overlaps the next one, and the last runs past the end.
-  const graphics = [graphic(0.5, 3), graphic(2.5, 5), graphic(5, 5), graphic(8, 12)];
+test("graphic windows are trusted, clamped into the video, and never make short beats", () => {
+  // Starts 0.3 s in, overlaps the next one, one has no length, one lasts 0.3 s, and the last runs past the end.
+  const graphics = [graphic(0.3, 3), graphic(2.5, 5), graphic(5, 5), graphic(6, 6.3), graphic(8, 12)];
   const beats = planBeats({ durationSec: 10, words: [], graphics, emphasis: [], cutTimes: [], punchIn: true });
   assertTiles(beats, 10);
   const secs = sections(beats);
-  assert.deepEqual(secs.map((s) => s.graphic), [0, 1, 3]);
+  assert.deepEqual(secs.map((s) => s.graphic), [0, 1, 4]);
   assert.deepEqual(secs.map((s) => s.layout), ["speakerBottom", "speakerTop", "speakerBottom"]);
+  // The 0.3 s opening full beat goes into the first section, whose graphic starts with it at 0.
+  assert.equal(secs[0].beats[0].start, 0);
+  assert.equal(secs[0].beats[0].graphicOffset, 0);
   // The overlapping graphic starts where the first ends, half a second into its clip.
   assert.equal(secs[1].beats[0].start, 3);
   assert.ok(Math.abs(secs[1].beats[0].graphicOffset - 0.5) < EPS);
   assert.equal(secs[2].beats.at(-1)!.end, 10);
+});
+
+test("a full beat under 0.5 s between splits runs the split before it on, past its graphic's end", () => {
+  const beats = planBeats({ durationSec: 8, words: [], graphics: [graphic(2, 4), graphic(4.3, 6)], emphasis: [], cutTimes: [], punchIn: true });
+  assertTiles(beats, 8);
+  const secs = sections(beats);
+  assert.deepEqual(secs.map((s) => [s.beats[0].start, s.beats.at(-1)!.end]), [[2, 4.3], [4.3, 6]]);
+  assert.deepEqual(secs.map((s) => s.layout), ["speakerBottom", "speakerTop"]);
+  // 2–4.3 is 2.3 s, so two beats; the second plays the clip on from 1.15 s to 2.3 s, 0.3 s past its 2 s.
+  assert.deepEqual(spans(secs[0].beats), [[2, 3.15], [3.15, 4.3]]);
+  assert.deepEqual(secs[0].beats.map((b) => +b.graphicOffset.toFixed(6)), [0, 1.15]);
+  assert.deepEqual(cadenceProblems(beats, []), []);
+});
+
+test("a full beat under 0.5 s at the end goes into the beat before it", () => {
+  const beats = planBeats({ durationSec: 8, words: [], graphics: [graphic(6, 7.8)], emphasis: [], cutTimes: [], punchIn: false });
+  assert.deepEqual(spans(beats), [[0, 6], [6, 8]]);
+  assert.equal(beats[1].layout, "speakerBottom");
+  // A whole video under 0.5 s is one beat.
+  assert.deepEqual(spans(planBeats({ durationSec: 0.3, words: [], graphics: [], emphasis: [], cutTimes: [], punchIn: true })), [[0, 0.3]]);
+});
+
+test("graphics out of order keep their indices and alternate in time order", () => {
+  const graphics = [graphic(8, 10), graphic(2, 4), graphic(5, 7)];
+  const beats = planBeats({ durationSec: 12, words: [], graphics, emphasis: [], cutTimes: [], punchIn: true });
+  assertTiles(beats, 12);
+  const secs = sections(beats);
+  assert.deepEqual(secs.map((s) => [s.graphic, s.layout]), [[1, "speakerBottom"], [2, "speakerTop"], [0, "speakerBottom"]]);
+});
+
+test("the first beat starts at exactly 0 even when a graphic starts a hair after it", () => {
+  const beats = planBeats({ durationSec: 4, words: [], graphics: [graphic(1e-9, 2)], emphasis: [], cutTimes: [], punchIn: true });
+  assert.equal(beats[0].start, 0);
+  assert.equal(beats[0].layout, "speakerBottom");
+  assertTiles(beats, 4);
 });
 
 test("cadenceProblems reports splits that don't alternate", () => {

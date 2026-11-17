@@ -24,9 +24,10 @@ export interface Beat {
 
 /** The longest stretch without a hard change. */
 const MAX_STRETCH = 2.0;
-/** A beat splits at the word gap nearest this far in, between SPLIT_MIN and MAX_STRETCH. */
-const SPLIT_AIM = 1.6;
-const SPLIT_MIN = 1.2;
+/** The shortest beat (except a whole video shorter than this). */
+const MIN_BEAT = 0.5;
+/** How far a cadence split may move from its even spacing to land in a word gap. */
+const GAP_REACH = 0.4;
 const FULL_ZOOMS = [1.0, 1.18, 1.08, 1.3];
 const SPLIT_ZOOMS = [1.0, 1.12];
 const PUSH_PER_SEC = 0.025;
@@ -35,25 +36,47 @@ const EPS = 1e-6;
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
 const isSplit = (layout: Layout) => layout !== "full";
 
+/** `clipStart` is the time the graphic clip's first frame plays. */
 interface Coarse { start: number; end: number; layout: Layout; graphic: number | null; clipStart: number }
 
-/** Each graphic's window as a split beat (alternating halves, speaker at the bottom first), full beats between. */
+/**
+ * Each graphic's window as a split beat (alternating halves, speaker at the bottom first), full beats between,
+ * from exactly 0 to exactly durationSec. The plan is checked upstream; this only keeps a bad window from making
+ * a short, empty or backwards beat: windows are taken in time order (keeping their indices), clamped after the
+ * one before, and one left under 0.5 s is dropped. A full beat under 0.5 s then goes: between two splits, into
+ * the split before it (its graphic runs past its planned end); at the start, into the beat after it (whose
+ * graphic then starts with it); at the end, into the beat before it.
+ */
 function coarseBeats(durationSec: number, graphics: PlannedGraphic[]): Coarse[] {
-  const out: Coarse[] = [];
+  const order = graphics.map((g, i) => ({ g, i })).sort((a, b) => a.g.start - b.g.start || a.i - b.i);
+  const raw: Coarse[] = [];
   let at = 0;
-  let splits = 0;
-  graphics.forEach((g, i) => {
-    // The plan is checked upstream; this only keeps a bad window from making an empty or backwards beat.
+  for (const { g, i } of order) {
     const start = clamp(g.start, at, durationSec);
     const end = clamp(g.end, start, durationSec);
-    if (end - start <= EPS) return;
-    if (start - at > EPS) out.push({ start: at, end: start, layout: "full", graphic: null, clipStart: 0 });
-    else if (out.length) out.at(-1)!.end = start;
-    out.push({ start, end, layout: splits++ % 2 === 0 ? "speakerBottom" : "speakerTop", graphic: i, clipStart: g.start });
+    if (end - start < MIN_BEAT - EPS) continue;
+    if (start > at) raw.push({ start: at, end: start, layout: "full", graphic: null, clipStart: 0 });
+    raw.push({ start, end, layout: "speakerBottom", graphic: i, clipStart: g.start });
     at = end;
-  });
-  if (durationSec - at > EPS) out.push({ start: at, end: durationSec, layout: "full", graphic: null, clipStart: 0 });
-  else if (out.length) out.at(-1)!.end = durationSec;
+  }
+  if (durationSec > at || !raw.length) raw.push({ start: at, end: durationSec, layout: "full", graphic: null, clipStart: 0 });
+
+  const out: Coarse[] = [];
+  for (let k = 0; k < raw.length; k++) {
+    const c = raw[k];
+    const short = c.layout === "full" && c.end - c.start < MIN_BEAT - EPS && raw.length > 1;
+    if (short && out.length) { out.at(-1)!.end = c.end; continue; }
+    if (short) {
+      // The first beat: the next one starts at 0 instead, and its graphic with it.
+      const next = raw[k + 1];
+      next.start = c.start;
+      if (next.graphic !== null) next.clipStart = c.start;
+      continue;
+    }
+    out.push(c);
+  }
+  let splits = 0;
+  for (const c of out) if (c.graphic !== null) c.layout = splits++ % 2 === 0 ? "speakerBottom" : "speakerTop";
   return out;
 }
 
@@ -70,15 +93,12 @@ function wordGaps(words: Word[]): [number, number][] {
   return gaps;
 }
 
-/** The point in a word gap nearest `last + 1.6`, within [last + 1.2, last + 2.0]; null when no gap reaches it. */
-function gapSplit(gaps: [number, number][], last: number): number | null {
-  const lo = last + SPLIT_MIN;
-  const hi = last + MAX_STRETCH;
-  const aim = last + SPLIT_AIM;
+/** The point in a word gap nearest `aim`, at most 0.4 s from it; null when no gap is that close. */
+function nearestGap(gaps: [number, number][], aim: number): number | null {
   let best: number | null = null;
   for (const [a, b] of gaps) {
-    const from = Math.max(a, lo);
-    const to = Math.min(b, hi);
+    const from = Math.max(a, aim - GAP_REACH);
+    const to = Math.min(b, aim + GAP_REACH);
     if (from > to) continue;
     const p = clamp(aim, from, to);
     if (best === null || Math.abs(p - aim) < Math.abs(best - aim)) best = p;
@@ -86,28 +106,42 @@ function gapSplit(gaps: [number, number][], last: number): number | null {
   return best;
 }
 
-/** Where a coarse beat splits so no stretch inside it runs past 2.0 s without a change. */
+const fits = (len: number) => len >= MIN_BEAT - EPS && len <= MAX_STRETCH + EPS;
+
+/**
+ * Where a coarse beat splits so no stretch inside it runs past 2.0 s without a change. Each stretch between
+ * hard changes (the beat's ends and the cuts inside it) longer than 2.0 s is cut into ceil(len / 2.0) near-equal
+ * pieces; each split moves to the nearest word gap within 0.4 s when the pieces either side of it stay 0.5–2.0 s.
+ */
 function cadenceSplits(beat: Coarse, gaps: [number, number][], cuts: number[]): number[] {
-  const inside = cuts.filter((c) => c > beat.start + EPS && c < beat.end - EPS);
+  const changes = [beat.start, ...cuts.filter((c) => c > beat.start + EPS && c < beat.end - EPS), beat.end];
   const out: number[] = [];
-  let last = beat.start;
-  while (beat.end - last > MAX_STRETCH + EPS) {
-    const reached = inside.filter((c) => c > last + EPS && c <= last + MAX_STRETCH + EPS);
-    if (reached.length) { last = reached.at(-1)!; continue; }
-    const at = gapSplit(gaps, last) ?? last + MAX_STRETCH;
-    out.push(at);
-    last = at;
+  for (let s = 1; s < changes.length; s++) {
+    const a = changes[s - 1];
+    const b = changes[s];
+    const len = b - a;
+    if (len <= MAX_STRETCH + EPS) continue;
+    const n = Math.ceil(len / MAX_STRETCH - EPS);
+    const even = (i: number) => (i === n ? b : a + (len * i) / n);
+    let prev = a;
+    for (let i = 1; i < n; i++) {
+      const gap = nearestGap(gaps, even(i));
+      const at = gap !== null && fits(gap - prev) && fits(even(i + 1) - gap) ? gap : even(i);
+      out.push(at);
+      prev = at;
+    }
   }
   return out;
 }
 
 /**
- * The beats of a Fancy edit. Each graphic's window becomes a split section, the time between them full frame,
- * and with punchIn on any stretch longer than 2.0 s without a beat boundary or footage cut is split at the word
- * gap nearest 1.6 s in (between 1.2 and 2.0 s), else at 2.0 s exactly. Full beats cycle their zoom through
- * 1.00, 1.18, 1.08, 1.30 across the video; split beats alternate 1.00 and 1.12 within each section. With
- * punchIn off: no zoom, push or snap, and no cadence splits (cadenceProblems reports what that leaves).
- * Graphics are never invented: with fewer graphics than the rules want, there are fewer splits.
+ * The beats of a Fancy edit, at least 0.5 s each. Each graphic's window becomes a split section, the time
+ * between them full frame (see coarseBeats for windows and gaps under 0.5 s), and with punchIn on every stretch
+ * longer than 2.0 s without a beat boundary or footage cut is cut into near-equal pieces of at most 2.0 s, each
+ * split nudged into a nearby word gap (see cadenceSplits). Full beats cycle their zoom through 1.00, 1.18, 1.08,
+ * 1.30 across the video; split beats alternate 1.00 and 1.12 within each section. With punchIn off: no zoom,
+ * push or snap, and no cadence splits (cadenceProblems reports what that leaves). Graphics are never invented:
+ * with fewer graphics than the rules want, there are fewer splits.
  */
 export function planBeats(input: { durationSec: number; words: Word[]; graphics: PlannedGraphic[]; emphasis: number[]; cutTimes: number[]; punchIn: boolean }): Beat[] {
   const { durationSec, words, graphics, emphasis, cutTimes, punchIn } = input;
