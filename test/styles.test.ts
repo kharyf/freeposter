@@ -357,6 +357,17 @@ test("a hung health check counts as not working after the timeout", async () => 
   }
 });
 
+test("a tool note that failed to come together isn't kept: the next request checks again", async () => {
+  const { checks, answers, producer } = toolsProducer({ remotion: OK, hyperframes: OK, blender: null as any });
+  const { app } = server(producer);
+  assert.equal((await app.inject("/api/styles")).statusCode, 500);
+  answers.blender = OK;
+  const res = await app.inject("/api/styles");
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.json().styles.find((s: any) => s.id === "fancy").toolNote, null);
+  assert.equal(checks.n, 6);
+});
+
 test("setting Blender's path checks the tools again", async () => {
   const { checks, answers, producer } = toolsProducer({ remotion: OK, hyperframes: OK, blender: { ok: false, detail: "Blender wasn't found", missing: true } });
   const { app } = server(producer);

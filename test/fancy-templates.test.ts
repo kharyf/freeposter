@@ -159,6 +159,14 @@ test("toShot fills the HyperFrames composition at 1080x960 with the shot's lengt
   assert.ok(shot.assets.every((a) => shot.html.includes(a.name)), "the page loads each TTF and GSAP beside it");
 });
 
+test("a param that contains a placeholder name is kept as written", () => {
+  const t = fancyTemplates();
+  const shot = toShot(t["kinetic-words"], { words: "__GSAP__ __PALETTE__ __DURATION__" }, 2, "g5");
+  if (shot.kind !== "hyperframes") throw new Error("not a HyperFrames shot");
+  assert.ok(shot.html.includes(`{"words":"__GSAP__ __PALETTE__ __DURATION__"}`), "the param's text is left alone");
+  assert.match(shot.html, /<script src="gsap\.min\.js"><\/script>/, "the real placeholders are still filled");
+});
+
 test("the HyperFrames templates load the GSAP FreePoster ships, never a CDN", () => {
   const t = fancyTemplates();
   const gsap = join(fancyTemplateDir(), "_shared", "gsap.min.js");

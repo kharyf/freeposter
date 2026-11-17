@@ -156,7 +156,7 @@ test("an agent's spec can't set a shot's frame size (it is internal to the Fancy
     { id: "a", kind: "remotion", duration_sec: 2, tsx: "export default () => null;", size: { width: 1080, height: 960 } },
     { id: "b", kind: "hyperframes", duration_sec: 2, html: html(2), size: { width: 1080, height: 960 } },
     { id: "c", kind: "blender", duration_sec: 2, template: "logo-spin", params: { text: "Hi" }, size: { width: 1080, height: 960 } },
-    { id: "d", kind: "blender", duration_sec: 2, template: "logo-spin", params: { text: "Hi" }, script: "C:\evil.py" },
+    { id: "d", kind: "blender", duration_sec: 2, template: "logo-spin", params: { text: "Hi" }, script: String.raw`C:\evil.py` },
   ] };
   assert.throws(() => parseSpec(raw, ctx), (err: SpecError) => {
     const all = err.problems.join("\n");

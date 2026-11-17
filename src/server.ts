@@ -156,7 +156,10 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     };
     const note = Promise.all([check("remotion"), check("hyperframes"), check("blender")])
       .then(([remotion, hyperframes, blender]) => fancyToolNote({ remotion, hyperframes, blender }));
-    fancyNote = { at: Date.now(), note };
+    const entry = { at: Date.now(), note };
+    fancyNote = entry;
+    // A failed check isn't kept: the next request checks again.
+    note.catch(() => { if (fancyNote === entry) fancyNote = null; });
     return note;
   };
 

@@ -168,13 +168,16 @@ export function toShot(t: FancyTemplate, params: Record<string, string | number 
         props: { ...params, palette, fontUrl: FONTS.boldItalic, italicFontUrl: FONTS.italic },
       };
     case "hyperframes": {
-      const html = readFileSync(join(t.dir, "index.html"), "utf8")
-        .replaceAll("__DURATION__", String(durationSec))
-        .replaceAll("__PARAMS__", scriptJson(params))
-        .replaceAll("__PALETTE__", scriptJson(palette))
-        .replaceAll("__FONT_BOLD_ITALIC__", FONTS.boldItalic)
-        .replaceAll("__FONT_ITALIC__", FONTS.italic)
-        .replaceAll("__GSAP__", GSAP);
+      // One pass, so a param that happens to contain a placeholder ("__GSAP__") stays as the user's text.
+      const values: Record<string, string> = {
+        __DURATION__: String(durationSec),
+        __PARAMS__: scriptJson(params),
+        __PALETTE__: scriptJson(palette),
+        __FONT_BOLD_ITALIC__: FONTS.boldItalic,
+        __FONT_ITALIC__: FONTS.italic,
+        __GSAP__: GSAP,
+      };
+      const html = readFileSync(join(t.dir, "index.html"), "utf8").replace(/__[A-Z_]+?__/g, (m) => values[m] ?? m);
       // GSAP ships with FreePoster (templates/fancy/_shared), so the compositions render offline.
       const gsap = { name: GSAP, path: join(fancyTemplateDir(), "_shared", GSAP) };
       return { id, kind: "hyperframes", duration_sec: durationSec, size, assets: [...assets, gsap], html };
