@@ -3,7 +3,7 @@ import { AiService, setAi } from "./ai/router.ts";
 import { config, dataDir, isConfigured, isLocalUrl } from "./config.ts";
 import { loadKey } from "./crypto.ts";
 import { Store } from "./db.ts";
-import { migrateFancyName } from "./edit/styles.ts";
+import { migrateFancyStyle } from "./edit/styles.ts";
 import { writeCaption } from "./caption.ts";
 import { Captioner } from "./captioner.ts";
 import { downloadFile } from "./drive/client.ts";
@@ -46,7 +46,7 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
   }
 
   const store = new Store(join(dataDir, "freeposter.db"), loadKey(dataDir));
-  migrateFancyName(store);
+  migrateFancyStyle(store);
   // Captions, titles and lyric spotting ask the user's AI providers, in their order for each job.
   const ai = new AiService(store);
   setAi(ai);

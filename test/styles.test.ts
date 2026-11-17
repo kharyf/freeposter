@@ -1,12 +1,12 @@
 import "./isolated-home.ts";
 import assert from "node:assert/strict";
-import { rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createAccountSet, setNameProblem } from "../src/accounts.ts";
 import { config, dataDir } from "../src/config.ts";
 import { DEFAULT_EDIT } from "../src/edit/settings.ts";
-import { allStyles, createStyle, defaultStyleId, deleteStyle, fancyToolNote, migrateFancyName, saveThumbnail, setDefaultStyle, styleById, styleNameProblem, thumbnail, thumbnailSvg, type EditingStyle } from "../src/edit/styles.ts";
+import { allStyles, createStyle, defaultStyleId, deleteStyle, fancyToolNote, migrateFancyStyle, saveThumbnail, uploadedThumbnail, sampleVideoPath, setDefaultStyle, styleById, styleNameProblem, thumbnail, thumbnailSvg, type EditingStyle } from "../src/edit/styles.ts";
 import { publishers } from "../src/platforms/index.ts";
 import { ReviewService } from "../src/review/service.ts";
 import { Runner } from "../src/runner.ts";
@@ -197,9 +197,9 @@ test("user styles can't set look", () => {
 test("a user's own Fancy style is renamed My Fancy once", () => {
   const store = newStore();
   store.setPref("edit.customStyles", [{ id: "fancy-2", name: "Fancy", description: "", settings: DEFAULT_EDIT, createdAt: 1 }]);
-  assert.equal(migrateFancyName(store), "My Fancy");
+  assert.deepEqual(migrateFancyStyle(store), { id: null, name: "My Fancy" });
   assert.equal(styleById(store, "fancy-2")!.name, "My Fancy");
-  assert.equal(migrateFancyName(store), null);
+  assert.deepEqual(migrateFancyStyle(store), { id: null, name: null });
 });
 
 test("the renamed Fancy style avoids a taken My Fancy and skips deleted styles", () => {
@@ -209,8 +209,64 @@ test("the renamed Fancy style avoids a taken My Fancy and skips deleted styles",
     { id: "fancy-2", name: "fancy", description: "", settings: DEFAULT_EDIT, createdAt: 2 },
     { id: "fancy-3", name: "Fancy", description: "", settings: DEFAULT_EDIT, createdAt: 3, deleted: true },
   ]);
-  assert.equal(migrateFancyName(store), "My Fancy 2");
+  assert.equal(migrateFancyStyle(store).name, "My Fancy 2");
   assert.equal(styleById(store, "fancy-3")!.name, "Fancy");
+});
+
+test("a user's own style with the id fancy gets a fresh id, its files, the default and its Drive files", () => {
+  const store = newStore();
+  const settings = { ...DEFAULT_EDIT, captions: false };
+  store.setPref("edit.customStyles", [{ id: "fancy", name: "Fancy", description: "mine", settings, createdAt: 1 }]);
+  store.setPref("edit.defaultStyle", "fancy");
+  const dir = join(dataDir, "styles");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "fancy.thumbnail.png"), PNG);
+  writeFileSync(join(dir, "fancy.mp4"), "sample");
+  const choice = { name: "talk", styleId: "fancy", setId: 1, raw: false, latest: 0 };
+  store.upsertDriveFile("d1", { name: "talk_Fancy.mp4", state: "queued", size: 1, choice });
+  store.upsertDriveFile("d2", { name: "other.mp4", state: "queued", size: 1, choice: { ...choice, styleId: "basic" } });
+  try {
+    assert.deepEqual(migrateFancyStyle(store), { id: "my-fancy", name: "My Fancy" });
+    assert.deepEqual(styleById(store, "my-fancy"), { id: "my-fancy", name: "My Fancy", description: "mine", settings, builtIn: false });
+    assert.equal(styleById(store, "fancy")!.builtIn, true);
+    assert.equal(defaultStyleId(store), "my-fancy");
+    assert.equal(store.driveFile("d1")!.choice!.styleId, "my-fancy");
+    assert.equal(store.driveFile("d2")!.choice!.styleId, "basic");
+    assert.equal(uploadedThumbnail("fancy"), null, "the built-in card is drawn, not the user's image");
+    assert.ok(uploadedThumbnail("my-fancy"));
+    assert.ok(!existsSync(sampleVideoPath("fancy")));
+    assert.equal(readFileSync(sampleVideoPath("my-fancy"), "utf8"), "sample");
+    // Idempotent.
+    assert.deepEqual(migrateFancyStyle(store), { id: null, name: null });
+    assert.equal(defaultStyleId(store), "my-fancy");
+    assert.equal(store.driveFile("d1")!.choice!.styleId, "my-fancy");
+  } finally {
+    for (const f of ["fancy.thumbnail.png", "fancy.mp4", "my-fancy.thumbnail.png", "my-fancy.mp4"]) rmSync(join(dir, f), { force: true });
+  }
+});
+
+test("a deleted style with the id fancy is re-ided too, and a default of the built-in Fancy stays", () => {
+  const store = newStore();
+  store.setPref("edit.customStyles", [
+    { id: "my-fancy", name: "My Fancy", description: "", settings: DEFAULT_EDIT, createdAt: 1 },
+    { id: "fancy", name: "Fancy", description: "", settings: DEFAULT_EDIT, createdAt: 2, deleted: true },
+  ]);
+  store.setPref("edit.defaultStyle", "fancy");
+  store.upsertDriveFile("d1", { name: "a.mp4", state: "processing", size: 1, choice: { name: "a", styleId: "fancy", setId: 1, raw: false, latest: 0 } });
+  assert.deepEqual(migrateFancyStyle(store), { id: "my-fancy-2", name: null });
+  assert.equal(styleById(store, "my-fancy-2")!.name, "Fancy", "deleted, so its name clashes with nothing");
+  assert.equal(store.driveFile("d1")!.choice!.styleId, "my-fancy-2", "the video on its way keeps the user's style");
+  assert.equal(defaultStyleId(store), "fancy", "deleting it had cleared the default, so this one is the built-in");
+  assert.deepEqual(allStyles(store).map((s) => s.id), ["basic", "fancy", "my-fancy"]);
+});
+
+test("a default of the built-in Fancy is left alone when no saved style had its id", () => {
+  const store = newStore();
+  store.setPref("edit.defaultStyle", "fancy");
+  store.upsertDriveFile("d1", { name: "a.mp4", state: "queued", size: 1, choice: { name: "a", styleId: "fancy", setId: 1, raw: false, latest: 0 } });
+  assert.deepEqual(migrateFancyStyle(store), { id: null, name: null });
+  assert.equal(defaultStyleId(store), "fancy");
+  assert.equal(store.driveFile("d1")!.choice!.styleId, "fancy");
 });
 
 test("Fancy's card is its own drawing with an embedded serif font", () => {

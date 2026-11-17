@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { decrypt, encrypt } from "./crypto.ts";
 import { editKey, type EditSettings } from "./edit/settings.ts";
-import type { Account, DriveConnection, DriveFileRecord, Edit, Job, JobState, NewAccount, Platform, Post, TikTokOptions, TokenSet } from "./types.ts";
+import type { Account, DriveChoice, DriveConnection, DriveFileRecord, Edit, Job, JobState, NewAccount, Platform, Post, TikTokOptions, TokenSet } from "./types.ts";
 
 /** What a pending sign-in is for: a posting platform, or the watched Google Drive folder. */
 export type SignIn = Platform | "drive" | "openrouter";
@@ -741,6 +741,19 @@ export class Store {
       .prepare(`SELECT * FROM drive_files WHERE state IN (${states.map(() => "?").join(",")}) ORDER BY created_at`)
       .all(...states)
       .map(toDriveFile);
+  }
+
+  /** Points every Drive file whose name chose the style `from` at `to` instead (a style given a new id). How many moved. */
+  renameDriveStyle(from: string, to: string): number {
+    const rows = this.db.prepare("SELECT drive_id, choice FROM drive_files WHERE choice IS NOT NULL").all() as { drive_id: string; choice: string }[];
+    let moved = 0;
+    for (const r of rows) {
+      const choice = JSON.parse(r.choice) as DriveChoice;
+      if (choice.styleId !== from) continue;
+      this.db.prepare("UPDATE drive_files SET choice = ? WHERE drive_id = ?").run(JSON.stringify({ ...choice, styleId: to }), r.drive_id);
+      moved++;
+    }
+    return moved;
   }
 
   /** Inserts a file seen in the folder, or updates the given fields of one already known. */

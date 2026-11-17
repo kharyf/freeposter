@@ -1,7 +1,7 @@
 // Editing styles: named, ready-made edits a Drive filename can ask for (its {editing-style} part). FreePoster ships
 // with some (built in, here); the user adds their own on the Editing Styles tab, and agents through the MCP
 // add_editing_style tool. Every style has a thumbnail: an image the user gave it, or one drawn from its steps.
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { accountSets, setToken } from "../accounts.ts";
 import { dataDir } from "../config.ts";
@@ -102,20 +102,44 @@ export function setDefaultStyle(store: Store, id: string): boolean {
 export const styleToken = (s: { name: string }) => s.name.replace(/\s+/g, "");
 
 /**
- * Fancy became a built-in, so a style the user already saved under that name would clash with it in a filename.
- * Renames it to "My Fancy" (or "My Fancy 2", ...). Returns the new name, or null when there was nothing to rename.
+ * Fancy became a built-in, so a style the user already saved as "Fancy" clashes with it twice over: its id was
+ * most likely "fancy" (the built-in's id, which would then win every lookup), and its name would clash in a
+ * filename. Run at startup before anything reads styles; running it again changes nothing.
+ *
+ * A saved style with the id "fancy" (deleted ones too: videos on their way keep theirs) gets a fresh id, and with
+ * it its thumbnail and sample files, the default-style choice and every Drive file that chose it. A live style
+ * named Fancy is renamed "My Fancy" (or "My Fancy 2", ...).
+ * Edits already made keep their settings, not a style id, so they need nothing.
  */
-export function migrateFancyName(store: Store): string | null {
+export function migrateFancyStyle(store: Store): { id: string | null; name: string | null } {
   const all = saved(store);
+  let id: string | null = null;
+  const clash = all.find((s) => s.id === "fancy");
+  if (clash) {
+    id = newId(store, "My Fancy");
+    const dir = stylesDir();
+    for (const file of [...(Object.keys(IMAGE_TYPES) as ImageExt[]).map((ext) => `.thumbnail.${ext}`), ".mp4"]) {
+      const from = join(dir, `fancy${file}`), to = join(dir, `${id}${file}`);
+      if (existsSync(from) && !existsSync(to)) renameSync(from, to);
+    }
+    // A deleted style can't have been the default (deleting it cleared that), so "fancy" then means the built-in.
+    if (!clash.deleted && store.pref<string>(DEFAULT_STYLE_PREF) === "fancy") store.setPref(DEFAULT_STYLE_PREF, id);
+    store.renameDriveStyle("fancy", id);
+    clash.id = id;
+    console.log(`gave your style "${clash.name}" the id "${id}": Fancy is now built in`);
+  }
+  let name: string | null = null;
   const style = all.find((s) => !s.deleted && styleToken(s).toLowerCase() === "fancy");
-  if (!style) return null;
-  const taken = new Set([...BUILT_IN_STYLES, ...all.filter((s) => !s.deleted)].map((s) => styleToken(s).toLowerCase()));
-  let name = "My Fancy";
-  for (let n = 2; taken.has(styleToken({ name }).toLowerCase()); n++) name = `My Fancy ${n}`;
-  style.name = name;
-  store.setPref(CUSTOM_PREF, all);
-  console.log(`renamed your style "Fancy" to "${name}": Fancy is now built in`);
-  return name;
+  if (style) {
+    const taken = new Set([...BUILT_IN_STYLES, ...all.filter((s) => !s.deleted)].map((s) => styleToken(s).toLowerCase()));
+    name = "My Fancy";
+    for (let n = 2; taken.has(styleToken({ name }).toLowerCase()); n++) name = `My Fancy ${n}`;
+    style.name = name;
+    console.log(`renamed your style "Fancy" to "${name}": Fancy is now built in`);
+  }
+  // Saved last: were it cut short, the next start finds the "fancy" id again and makes the same moves.
+  if (clash || style) store.setPref(CUSTOM_PREF, all);
+  return { id, name };
 }
 
 /**
