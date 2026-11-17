@@ -7,6 +7,9 @@ import { accountSets, setToken } from "../accounts.ts";
 import { dataDir } from "../config.ts";
 import type { Store } from "../db.ts";
 import { isRaw, looksLikeDate, looksLikeTime } from "../drive/filename.ts";
+import { CARD_FONT_TTF_BASE64 } from "./fancy/card-font.ts";
+import { PALETTE } from "./fancy/palette.ts";
+import { fancyTemplates } from "./fancy/templates.ts";
 import { DEFAULT_EDIT, type EditSettings } from "./settings.ts";
 
 export interface EditingStyle {
@@ -255,7 +258,99 @@ export function saveThumbnail(id: string, bytes: Buffer) {
 export function thumbnail(style: EditingStyle): { type: string; body: Buffer | string } {
   const uploaded = uploadedThumbnail(style.id);
   if (uploaded) return { type: uploaded.type, body: readFileSync(uploaded.path) };
-  return { type: "image/svg+xml", body: thumbnailSvg(style.settings) };
+  return { type: "image/svg+xml", body: style.builtIn && style.id === "fancy" ? fancyThumbnailSvg() : thumbnailSvg(style.settings) };
+}
+
+/** The speaker on a style card: a head and shoulders, filled with the card's #skin and #shirt gradients. */
+function person(cx: number, top: number, scale: number): string {
+  const r = 44 * scale, headY = top + r;
+  const sw = 120 * scale, neck = headY + r * 0.9;
+  return `<path d="M${cx - sw} ${neck + 150 * scale} Q${cx - sw} ${neck + 18 * scale} ${cx - 30 * scale} ${neck + 8 * scale} L${cx + 30 * scale} ${neck + 8 * scale} Q${cx + sw} ${neck + 18 * scale} ${cx + sw} ${neck + 150 * scale} Z" fill="url(#shirt)"/>
+<rect x="${cx - 16 * scale}" y="${headY + r * 0.6}" width="${32 * scale}" height="${r * 0.6}" fill="#d9a27a"/>
+<circle cx="${cx}" cy="${headY}" r="${r}" fill="url(#skin)"/>
+<path d="M${cx - r} ${headY - 4 * scale} Q${cx - r} ${top - 6 * scale} ${cx} ${top - 4 * scale} Q${cx + r} ${top - 6 * scale} ${cx + r} ${headY - 4 * scale} Q${cx + r * 0.55} ${top + 16 * scale} ${cx - r} ${headY - 4 * scale} Z" fill="#2b2220"/>`;
+}
+
+/** Corner marks around a face: a zoom. */
+function zoomMarks(face: { x: number; y: number; r: number }, colour: string): string {
+  const pad = face.r * 1.9, x0 = face.x - pad, x1 = face.x + pad, y0 = face.y - pad * 0.9, y1 = face.y + pad * 1.1, l = face.r * 0.55;
+  return `<g stroke="${colour}" stroke-width="3" stroke-linecap="round" fill="none" opacity=".9">
+<path d="M${x0} ${y0 + l}V${y0}H${x0 + l}"/><path d="M${x1 - l} ${y0}H${x1}V${y0 + l}"/><path d="M${x0} ${y1 - l}V${y1}H${x0 + l}"/><path d="M${x1 - l} ${y1}H${x1}V${y1 - l}"/></g>`;
+}
+
+/**
+ * Fancy's card, a 9:16 frame of a Fancy split: a gold coin and "3×" on ink in the top half, a gold seam, the
+ * speaker in the bottom half with zoom corner marks, and the caption "the one SECRET" on the seam, SECRET lit in
+ * yellow. The caption's font is embedded (an SVG in <img> can't load outside fonts), falling back to Georgia italic.
+ */
+export function fancyThumbnailSvg(): string {
+  const W = 270, H = 480, seam = H / 2;
+  const { ink, ink2, yellow, gold, cream } = PALETTE;
+  const serif = `font-family="Fancy, Georgia, serif" font-style="italic" font-weight="700"`;
+  const top = seam + 58, scale = 1.05;
+  const face = { x: W / 2, y: top + 44 * scale, r: 44 * scale };
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="Example frame">
+<defs>
+  <style>@font-face{font-family:'Fancy';src:url(data:font/ttf;base64,${CARD_FONT_TTF_BASE64}) format('truetype');font-style:italic;font-weight:700}</style>
+  <linearGradient id="ink" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${ink2}"/><stop offset="1" stop-color="${ink}"/></linearGradient>
+  <radialGradient id="glow" cx=".36" cy=".48" r=".55"><stop offset="0" stop-color="${gold}" stop-opacity=".3"/><stop offset="1" stop-color="${gold}" stop-opacity="0"/></radialGradient>
+  <linearGradient id="coinFace" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${yellow}"/><stop offset=".55" stop-color="${gold}"/><stop offset="1" stop-color="#9c7414"/></linearGradient>
+  <linearGradient id="coinEdge" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#7a5a0e"/><stop offset=".5" stop-color="#b98c1b"/><stop offset="1" stop-color="#5e440a"/></linearGradient>
+  <linearGradient id="room" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4a3c2c"/><stop offset="1" stop-color="#1e1813"/></linearGradient>
+  <linearGradient id="skin" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f2c6a0"/><stop offset="1" stop-color="#d9a27a"/></linearGradient>
+  <linearGradient id="shirt" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3b3a46"/><stop offset="1" stop-color="#22212a"/></linearGradient>
+  <clipPath id="bottom"><rect y="${seam}" width="${W}" height="${seam}"/></clipPath>
+</defs>
+<rect width="${W}" height="${seam}" fill="url(#ink)"/>
+<rect width="${W}" height="${seam}" fill="url(#glow)"/>
+<g transform="rotate(-14 96 116)">
+<ellipse cx="103" cy="122" rx="50" ry="50" fill="url(#coinEdge)"/>
+<circle cx="96" cy="116" r="50" fill="url(#coinFace)"/>
+<circle cx="96" cy="116" r="39" fill="none" stroke="#9c7414" stroke-width="2.5" opacity=".7"/>
+<path d="M70 92 Q86 76 108 78" stroke="${cream}" stroke-width="5" stroke-linecap="round" fill="none" opacity=".55"/>
+</g>
+<text x="210" y="138" text-anchor="middle" font-size="62" fill="${yellow}" ${serif}>3×</text>
+<g clip-path="url(#bottom)">
+<rect y="${seam}" width="${W}" height="${seam}" fill="url(#room)"/>
+${person(W / 2, top, scale)}
+${zoomMarks(face, cream)}
+</g>
+<rect y="${seam - 2}" width="${W}" height="4" fill="${gold}"/>
+<text x="${W / 2}" y="${seam + 11}" text-anchor="middle" font-size="31" ${serif} stroke="${ink}" stroke-width="5" stroke-linejoin="round" paint-order="stroke"><tspan fill="${cream}">the one </tspan><tspan fill="${yellow}">SECRET</tspan></text>
+</svg>`;
+}
+
+/** What each graphics tool makes for Fancy, for the note when it's missing. */
+const TOOL_GRAPHICS = {
+  remotion: "counter, list, comparison, quote and step graphics",
+  hyperframes: "moving-word and icon graphics",
+  blender: "3D graphics",
+} as const;
+type GraphicsTool = keyof typeof TOOL_GRAPHICS;
+const TOOL_NAMES: Record<GraphicsTool, string> = { remotion: "Remotion", hyperframes: "HyperFrames", blender: "Blender" };
+
+/**
+ * For the Editing Styles tab: which Fancy graphics fall back, given which tools are healthy. A missing tool's
+ * graphics follow their templates' fallback chains to the first healthy tool, or else to the built-in keyword card
+ * (where a failed render can always end up too). Null when every tool is healthy.
+ */
+export function fancyToolNote(healthy: Record<GraphicsTool, boolean>): string | null {
+  const catalogue = fancyTemplates();
+  const ok = (tool: string) => tool === "builtin" || healthy[tool as GraphicsTool];
+  const notes: string[] = [];
+  for (const tool of Object.keys(TOOL_GRAPHICS) as GraphicsTool[]) {
+    if (healthy[tool]) continue;
+    const madeWith = new Set<string>();
+    for (const t of Object.values(catalogue)) {
+      if (t.tool !== tool) continue;
+      let next = t.fallback ? catalogue[t.fallback] : undefined;
+      while (next && !ok(next.tool)) next = next.fallback ? catalogue[next.fallback] : undefined;
+      if (next && next.tool !== "builtin") madeWith.add(TOOL_NAMES[next.tool as GraphicsTool]);
+    }
+    const via = madeWith.size ? `with ${[...madeWith].join(" or ")} or ` : "";
+    notes.push(`${TOOL_NAMES[tool]} isn't installed: ${TOOL_GRAPHICS[tool]} will be made ${via}as keyword cards`);
+  }
+  return notes.length ? notes.join("; ") : null;
 }
 
 /**
@@ -272,15 +367,7 @@ export function thumbnailSvg(s: Pick<EditSettings, StepKey>): string {
   <linearGradient id="shirt" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#e8674f"/><stop offset="1" stop-color="#b8432f"/></linearGradient>
 </defs>`);
   parts.push(`<rect width="${W}" height="${H}" fill="#0d0e12"/>`);
-  // The speaker: a head and shoulders, in a vertical frame or a letterboxed wide one.
-  const person = (cx: number, top: number, scale: number) => {
-    const r = 44 * scale, headY = top + r;
-    const sw = 120 * scale, neck = headY + r * 0.9;
-    return `<path d="M${cx - sw} ${neck + 150 * scale} Q${cx - sw} ${neck + 18 * scale} ${cx - 30 * scale} ${neck + 8 * scale} L${cx + 30 * scale} ${neck + 8 * scale} Q${cx + sw} ${neck + 18 * scale} ${cx + sw} ${neck + 150 * scale} Z" fill="url(#shirt)"/>
-<rect x="${cx - 16 * scale}" y="${headY + r * 0.6}" width="${32 * scale}" height="${r * 0.6}" fill="#d9a27a"/>
-<circle cx="${cx}" cy="${headY}" r="${r}" fill="url(#skin)"/>
-<path d="M${cx - r} ${headY - 4 * scale} Q${cx - r} ${top - 6 * scale} ${cx} ${top - 4 * scale} Q${cx + r} ${top - 6 * scale} ${cx + r} ${headY - 4 * scale} Q${cx + r * 0.55} ${top + 16 * scale} ${cx - r} ${headY - 4 * scale} Z" fill="#2b2220"/>`;
-  };
+  // The speaker, in a vertical frame or a letterboxed wide one.
   let face: { x: number; y: number; r: number };
   if (s.reframe) {
     parts.push(`<rect width="${W}" height="${H}" fill="url(#bg)"/>`);
@@ -294,12 +381,8 @@ export function thumbnailSvg(s: Pick<EditSettings, StepKey>): string {
     const scale = s.punchIn ? 0.62 : 0.5;
     face = { x: W * 0.62, y: fy + 26 + 44 * scale, r: 44 * scale };
   }
-  if (s.punchIn) {
-    // Corner marks closing in on the face: the zoom on a cut.
-    const pad = face.r * 1.9, x0 = face.x - pad, x1 = face.x + pad, y0 = face.y - pad * 0.9, y1 = face.y + pad * 1.1, l = face.r * 0.55;
-    parts.push(`<g stroke="#ffffff" stroke-width="3" stroke-linecap="round" fill="none" opacity=".9">
-<path d="M${x0} ${y0 + l}V${y0}H${x0 + l}"/><path d="M${x1 - l} ${y0}H${x1}V${y0 + l}"/><path d="M${x0} ${y1 - l}V${y1}H${x0 + l}"/><path d="M${x1 - l} ${y1}H${x1}V${y1 - l}"/></g>`);
-  }
+  // Corner marks closing in on the face: the zoom on a cut.
+  if (s.punchIn) parts.push(zoomMarks(face, "#ffffff"));
   if (s.captions) {
     // A caption with the word being said lit up.
     const y = s.reframe ? 352 : 330;

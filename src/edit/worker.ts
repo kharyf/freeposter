@@ -187,7 +187,7 @@ export class EditWorker {
     mkdirSync(graphicsDir, { recursive: true });
     const graphics = await renderGraphics(plan.graphics, { dir: graphicsDir, adapters: tools, signal, onProgress: (f) => progress(0.1 + 0.5 * f) });
     progress(0.6);
-    const notes = [...plan.notes, ...graphics.notes];
+    const notes = [...(words.length ? [] : ["no speech heard: no graphics or captions"]), ...plan.notes, ...graphics.notes];
 
     let faces: FaceKey[] | null = null;
     if (s.reframe) {

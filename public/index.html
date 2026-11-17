@@ -1782,11 +1782,23 @@ function renderStyles() {
           <div class="steps-on">${steps.map((st) => `<span class="step-chip ${s.steps[st.key] ? "on" : "off"}" title="${esc(st.help)}">${esc(st.label)}</span>`).join("")}</div>
         </div>
       </div>
+      <div data-tool-note="${esc(s.id)}"></div>
       ${s.hasSample
         ? `<video controls preload="metadata" playsinline poster="${esc(s.thumbnailUrl)}" src="/api/styles/${encodeURIComponent(s.id)}/sample.mp4" style="display:block;margin-top:10px"></video>`
         : `<div class="no-sample muted">No sample video yet</div>`}
       ${s.builtIn ? "" : `<div class="card-actions"><button type="button" data-delete-style="${esc(s.id)}">Delete</button></div>`}
     </section>`).join("");
+  showStyleToolNotes();
+}
+
+/** Fancy's note on which graphics will fall back, filled in once the graphics tools have been checked. */
+async function showStyleToolNotes() {
+  let styles;
+  try { ({ styles } = await (await fetch("/api/styles")).json()); } catch { return; }
+  for (const s of styles ?? []) {
+    const el = document.querySelector(`[data-tool-note="${CSS.escape(s.id)}"]`);
+    if (el) el.innerHTML = s.toolNote ? `<div class="note">${esc(s.toolNote)}</div>` : "";
+  }
 }
 
 $("stylesBody").addEventListener("change", async (e) => {

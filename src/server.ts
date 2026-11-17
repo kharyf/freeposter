@@ -6,7 +6,7 @@ import { createReadStream, existsSync, readFileSync, statSync, unlinkSync, write
 import { join } from "node:path";
 import { accountSets, createAccountSet, defaultSetId, deleteAccountSet, noteSignInSet, placeInSet, takeSignInSet, defaultTikTokPrefs, renameAccountSet, setDefaultSet, setDefaultTikTokPrefs, setSharing, setToken, sharedFrom, sharingPairs, type Sharing } from "./accounts.ts";
 import { calendar, postOutcome } from "./calendar.ts";
-import { allStyles, createStyle, defaultStyleId, deleteStyle, hasSample, MAX_THUMBNAIL_BYTES, sampleVideoPath, saveThumbnail, setDefaultStyle, STYLE_STEPS, styleById, styleToken, thumbnail, thumbnailProblem, thumbnailSvg, uploadedThumbnail } from "./edit/styles.ts";
+import { allStyles, createStyle, defaultStyleId, deleteStyle, fancyToolNote, hasSample, MAX_THUMBNAIL_BYTES, sampleVideoPath, saveThumbnail, setDefaultStyle, STYLE_STEPS, styleById, styleToken, thumbnail, thumbnailProblem, thumbnailSvg, uploadedThumbnail } from "./edit/styles.ts";
 import * as openrouter from "./ai/openrouter.ts";
 import { AI_JOBS, PROVIDER_IDS, type AiJob, type ProviderId } from "./ai/providers.ts";
 import type { AiService } from "./ai/router.ts";
@@ -17,6 +17,7 @@ import type { SignIn, Store } from "./db.ts";
 import { registerMcp, trustedRequest } from "./mcp.ts";
 import { postSigned } from "./notify.ts";
 import { blenderTemplates } from "./produce/adapters/blender.ts";
+import { adapters as productionAdapters } from "./produce/adapters/index.ts";
 import { sfxDir, sfxLibrary } from "./produce/sfx.ts";
 import { SHOT_KINDS } from "./produce/spec.ts";
 import { blenderPath, HYPERFRAMES_VERSION, installHyperframes, installRemotion, REMOTION_VERSION, wangpDir, wangpModel } from "./produce/tools.ts";
@@ -117,13 +118,42 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   const html = readFileSync(join(codeDir, "public", "index.html"), "utf8");
   app.get("/", (_req, reply) => reply.type("text/html").send(html));
 
+  /** The editing styles as the window lists them. */
+  const styleViews = () => {
+    const defaultStyle = defaultStyleId(store);
+    return allStyles(store).map((s) => ({
+      id: s.id,
+      name: s.name,
+      token: styleToken(s),
+      description: s.description,
+      builtIn: s.builtIn,
+      steps: Object.fromEntries(STYLE_STEPS.map((step) => [step.key, s.settings[step.key]])),
+      isDefault: s.id === defaultStyle,
+      hasSample: hasSample(s.id),
+      // Changes when a new image is given, so the window doesn't show an old one from its cache.
+      thumbnailUrl: `/api/styles/${encodeURIComponent(s.id)}/thumbnail${uploadedThumbnail(s.id) ? `?v=${statSync(uploadedThumbnail(s.id)!.path).mtimeMs}` : ""}`,
+    }));
+  };
+
+  // Which Fancy graphics will fall back because a tool isn't healthy. Checking runs the tools (seconds), so the
+  // answer is kept for a minute; checks already running are shared.
+  let fancyNote: { at: number; note: Promise<string | null> } | null = null;
+  const fancyToolNoteNow = () => {
+    if (fancyNote && Date.now() - fancyNote.at < 60_000) return fancyNote.note;
+    const tools = producer?.adapters ?? productionAdapters({ speechFor: () => Promise.reject(new Error("not used for health checks")) });
+    const healthy = async (tool: "remotion" | "hyperframes" | "blender") => (await tools[tool].health().catch(() => ({ ok: false }))).ok;
+    const note = Promise.all([healthy("remotion"), healthy("hyperframes"), healthy("blender")])
+      .then(([remotion, hyperframes, blender]) => fancyToolNote({ remotion, hyperframes, blender }));
+    fancyNote = { at: Date.now(), note };
+    return note;
+  };
+
   /** Lets a second launch of the desktop app find this one instead of starting another. */
   app.get("/api/ping", async () => ({ app: "freeposter" }));
 
   app.get("/api/status", async () => {
     const defaultSet = defaultSetId(store);
     const defaults = accountSets(store).find((s) => s.id === defaultSet)?.accountIds ?? [];
-    const defaultStyle = defaultStyleId(store);
     return {
       desktop: Boolean(options.onQuit),
       pendingJobs: store.pendingJobCount(),
@@ -144,18 +174,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
         sharedFrom: sharedFrom(store, a)?.id ?? null,
       })),
       accountSets: accountSets(store).map((s) => ({ ...s, token: setToken(s.name), isDefault: s.id === defaultSet })),
-      editingStyles: allStyles(store).map((s) => ({
-        id: s.id,
-        name: s.name,
-        token: styleToken(s),
-        description: s.description,
-        builtIn: s.builtIn,
-        steps: Object.fromEntries(STYLE_STEPS.map((step) => [step.key, s.settings[step.key]])),
-        isDefault: s.id === defaultStyle,
-        hasSample: hasSample(s.id),
-        // Changes when a new image is given, so the window doesn't show an old one from its cache.
-        thumbnailUrl: `/api/styles/${encodeURIComponent(s.id)}/thumbnail${uploadedThumbnail(s.id) ? `?v=${statSync(uploadedThumbnail(s.id)!.path).mtimeMs}` : ""}`,
-      })),
+      editingStyles: styleViews(),
       styleSteps: STYLE_STEPS,
       sharingPairs: sharingPairs(store).map((p) => ({ pageId: p.pageId, instagramId: p.instagram.id, facebookId: p.facebook.id, sharing: p.sharing })),
       defaultTikTok: { allowComment: true, allowDuet: true, allowStitch: true, ...defaultTikTokPrefs(store) },
@@ -695,6 +714,12 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   };
 
   // ---- editing styles: the built-in ones and the ones the user adds, each with a thumbnail ----
+
+  // The Editing Styles tab's list, with Fancy's note on which graphics will fall back (null when none will).
+  app.get("/api/styles", async () => {
+    const toolNote = await fancyToolNoteNow();
+    return { styles: styleViews().map((s) => (s.id === "fancy" && s.builtIn ? { ...s, toolNote } : s)) };
+  });
 
   app.get<{ Params: { id: string } }>("/api/styles/:id/thumbnail", async (req, reply) => {
     const style = styleById(store, req.params.id);

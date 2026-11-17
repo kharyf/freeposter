@@ -1,12 +1,12 @@
 import "./isolated-home.ts";
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createAccountSet, setNameProblem } from "../src/accounts.ts";
-import { config } from "../src/config.ts";
+import { config, dataDir } from "../src/config.ts";
 import { DEFAULT_EDIT } from "../src/edit/settings.ts";
-import { allStyles, createStyle, defaultStyleId, deleteStyle, migrateFancyName, setDefaultStyle, styleById, styleNameProblem, thumbnailSvg, type EditingStyle } from "../src/edit/styles.ts";
+import { allStyles, createStyle, defaultStyleId, deleteStyle, fancyToolNote, migrateFancyName, saveThumbnail, setDefaultStyle, styleById, styleNameProblem, thumbnail, thumbnailSvg, type EditingStyle } from "../src/edit/styles.ts";
 import { publishers } from "../src/platforms/index.ts";
 import { ReviewService } from "../src/review/service.ts";
 import { Runner } from "../src/runner.ts";
@@ -85,11 +85,11 @@ test("the drawn thumbnail shows each step", () => {
   assert.match(none, /<svg x="0" y=/, "a letterboxed wide frame without reframe");
 });
 
-function server() {
+function server(producer?: unknown) {
   const store = newStore();
   const runner = new Runner(store, publishers, tmp());
   const reviews = new ReviewService(store, { publishers, runner, dir: tmp() });
-  const app = buildServer(store, runner, publishers, {}, undefined, undefined, undefined, { service: reviews });
+  const app = buildServer(store, runner, publishers, {}, undefined, undefined, producer as never, { service: reviews });
   return { store, app };
 }
 
@@ -211,4 +211,88 @@ test("the renamed Fancy style avoids a taken My Fancy and skips deleted styles",
   ]);
   assert.equal(migrateFancyName(store), "My Fancy 2");
   assert.equal(styleById(store, "fancy-3")!.name, "Fancy");
+});
+
+test("Fancy's card is its own drawing with an embedded serif font", () => {
+  const t = thumbnail(styleById(newStore(), "fancy")!);
+  assert.equal(t.type, "image/svg+xml");
+  const svg = String(t.body);
+  assert.match(svg, /^<svg xmlns/);
+  assert.match(svg, /@font-face\{font-family:'Fancy';src:url\(data:font\/ttf;base64,/);
+  assert.match(svg, /font-family="Fancy, Georgia, serif"/, "falls back to Georgia italic");
+  assert.match(svg, /font-style="italic"/);
+  assert.match(svg, /#FFD23F/, "SECRET in yellow");
+  assert.match(svg, /#E8B923/, "the gold seam and coin");
+  assert.match(svg, /#14110F/, "ink behind the graphic");
+  assert.match(svg, />the one </);
+  assert.match(svg, />SECRET</);
+  assert.match(svg, /3×/);
+  assert.match(svg, /url\(#shirt\)/, "the speaker, drawn like Basic's");
+  assert.match(svg, /stroke-linecap="round" fill="none"/, "zoom corner marks");
+  assert.notEqual(svg, thumbnailSvg(styleById(newStore(), "basic")!.settings), "not Basic's card");
+  // the base64 is a real TrueType font
+  const font = Buffer.from(/base64,([A-Za-z0-9+/=]+)\)/.exec(svg)![1], "base64");
+  assert.deepEqual([...font.subarray(0, 4)], [0, 1, 0, 0]);
+});
+
+test("Basic's drawn card is unchanged by the Fancy card", () => {
+  const t = thumbnail(styleById(newStore(), "basic")!);
+  assert.equal(t.body, thumbnailSvg(styleById(newStore(), "basic")!.settings));
+});
+
+test("an uploaded image still wins over Fancy's card", () => {
+  saveThumbnail("fancy", PNG);
+  try {
+    const t = thumbnail(styleById(newStore(), "fancy")!);
+    assert.equal(t.type, "image/png");
+    assert.deepEqual(t.body, PNG);
+  } finally {
+    rmSync(join(dataDir, "styles", "fancy.thumbnail.png"), { force: true });
+  }
+});
+
+test("the Fancy tool note names each missing tool and where its graphics go", () => {
+  const all = { remotion: true, hyperframes: true, blender: true };
+  assert.equal(fancyToolNote(all), null);
+  assert.equal(fancyToolNote({ ...all, blender: false }), "Blender isn't installed: 3D graphics will be made with HyperFrames or as keyword cards");
+  assert.equal(fancyToolNote({ ...all, remotion: false }), "Remotion isn't installed: counter, list, comparison, quote and step graphics will be made with HyperFrames or as keyword cards");
+  assert.equal(fancyToolNote({ ...all, hyperframes: false }), "HyperFrames isn't installed: moving-word and icon graphics will be made as keyword cards");
+  assert.equal(fancyToolNote({ remotion: true, hyperframes: false, blender: false }),
+    "HyperFrames isn't installed: moving-word and icon graphics will be made as keyword cards; Blender isn't installed: 3D graphics will be made as keyword cards");
+});
+
+/** A production worker whose tools answer health() as given, counting the checks. */
+function toolsProducer(ok: { remotion: boolean; hyperframes: boolean; blender: boolean }) {
+  const checks = { n: 0 };
+  const tool = (good: boolean) => ({ health: async () => { checks.n++; return good ? { ok: true, detail: "" } : { ok: false, detail: "not found" }; } });
+  return { checks, producer: { adapters: { remotion: tool(ok.remotion), hyperframes: tool(ok.hyperframes), blender: tool(ok.blender) } } };
+}
+
+test("the Editing Styles list says which Fancy graphics will fall back", async () => {
+  const { checks, producer } = toolsProducer({ remotion: true, hyperframes: true, blender: false });
+  const { app } = server(producer);
+  const res = await app.inject("/api/styles");
+  assert.equal(res.statusCode, 200);
+  const { styles } = res.json();
+  assert.deepEqual(styles.map((s: any) => s.id), ["basic", "fancy"]);
+  const fancy = styles.find((s: any) => s.id === "fancy");
+  assert.equal(fancy.toolNote, "Blender isn't installed: 3D graphics will be made with HyperFrames or as keyword cards");
+  assert.equal(fancy.name, "Fancy");
+  assert.match(fancy.thumbnailUrl, /\/api\/styles\/fancy\/thumbnail/);
+  assert.equal("toolNote" in styles.find((s: any) => s.id === "basic"), false, "only Fancy gets a note");
+  // checked once, then answered from the cache
+  const first = checks.n;
+  assert.equal(first, 3);
+  await app.inject("/api/styles");
+  assert.equal(checks.n, first);
+  // /api/status doesn't wait on the tools
+  await app.inject("/api/status");
+  assert.equal(checks.n, first);
+});
+
+test("when every graphics tool is healthy, Fancy has no tool note", async () => {
+  const { producer } = toolsProducer({ remotion: true, hyperframes: true, blender: true });
+  const { app } = server(producer);
+  const fancy = (await app.inject("/api/styles")).json().styles.find((s: any) => s.id === "fancy");
+  assert.equal(fancy.toolNote, null);
 });
