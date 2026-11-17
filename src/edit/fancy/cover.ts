@@ -25,9 +25,16 @@ const RULE_GAP = 36;
 const RULE_H = 6;
 /** Playfair Bold Italic's average advance, as a fraction of the font size (an estimate, for the rule's width). */
 const ADVANCE = 0.42;
-/** The gradient: clear over 55% of the height, rising to 0.85 ink at the edge the title sits on. */
+const LINE_HEIGHT = 1.18;
+/** A low title never reaches above this fraction of the height. */
+const LOW_TITLE_LIMIT = 0.35;
+/** Without a title, the gradient is clear over 55% of the height. */
 const CLEAR_AT = 0.55;
+/** The ink: 0.85 at the frame edge behind the title, at least 0.6 from 40 px before the title block, fading out over 150 px before that. */
 const INK_EDGE = 0.85;
+const INK_TITLE = 0.6;
+const INK_LEAD = 40;
+const INK_RAMP = 150;
 /** A face whose top is higher than this (as a fraction of the frame) would sit under a top-third title. */
 const FACE_TOP_LIMIT = 0.4;
 
@@ -53,16 +60,54 @@ function wrap(text: string, max: number): string[] {
   return lines;
 }
 
-export function coverAss(title: string, place: CoverPlace = "top"): string {
+export interface CoverLayout {
+  lines: string[];
+  size: number;
+  /** the title block's top and bottom (frame px), without the rule */
+  top: number;
+  bottom: number;
+  rule: { x: number; y: number; w: number };
+}
+
+/** Where the title and its rule go, and at what size. */
+export function coverLayout(title: string, place: CoverPlace): CoverLayout {
   const lines = wrap(title, WRAP);
   const longest = Math.max(...lines.map((l) => l.length));
   // A single word longer than a line gets a smaller size, so it stays inside the margins.
-  const size = longest > WRAP ? Math.floor((SIZE * WRAP) / longest) : SIZE;
-  const line = Math.round(size * 1.18);
-  const ruleW = Math.round(Math.min(W - 160, Math.max(200, longest * size * ADVANCE * 0.6)));
-  const ruleX = Math.round((W - ruleW) / 2);
-  const ruleY = place === "top" ? TOP + lines.length * line + RULE_GAP : LOW_RULE_BOTTOM - RULE_H;
-  const text = place === "top" ? `{\\an8\\pos(${W / 2},${TOP})}` : `{\\an2\\pos(${W / 2},${ruleY - RULE_GAP})}`;
+  let size = longest > WRAP ? Math.floor((SIZE * WRAP) / longest) : SIZE;
+  const ruleY = place === "top" ? 0 : LOW_RULE_BOTTOM - RULE_H;
+  if (place === "bottom") {
+    // A long title low down shrinks rather than climb past 35% of the height (over the face).
+    const room = ruleY - RULE_GAP - LOW_TITLE_LIMIT * H;
+    size = Math.min(size, Math.floor(room / (lines.length * LINE_HEIGHT)));
+  }
+  const block = lines.length * Math.round(size * LINE_HEIGHT);
+  const top = place === "top" ? TOP : ruleY - RULE_GAP - block;
+  const bottom = top + block;
+  const w = Math.round(Math.min(W - 160, Math.max(200, longest * size * ADVANCE * 0.6)));
+  return { lines, size, top, bottom, rule: { x: Math.round((W - w) / 2), y: place === "top" ? bottom + RULE_GAP : ruleY, w } };
+}
+
+/**
+ * The ink gradient's alpha (a geq expression, 0..255). With a title it is anchored to the title block: clear
+ * until 190 px before the block, 0.6 from 40 px before it, rising to 0.85 at the frame edge behind the title.
+ * Without a title, a plain ramp from clear at 55% of the height to 0.85 at the top.
+ */
+export function inkAlpha(layout: CoverLayout | null, place: CoverPlace): string {
+  if (!layout) return `255*${INK_EDGE}*clip((${CLEAR_AT}*H-Y)/(${CLEAR_AT}*H),0,1)`;
+  // d: how far Y is past the near edge of the block toward the frame edge behind it (negative before the block).
+  const edge = place === "top" ? layout.bottom + INK_LEAD : layout.top - INK_LEAD;
+  const d = place === "top" ? `(${edge}-Y)` : `(Y-${edge})`;
+  const far = place === "top" ? edge : H - edge;
+  return `255*if(lt(${d},-${INK_RAMP}),0,if(lt(${d},0),${INK_TITLE}*(${d}+${INK_RAMP})/${INK_RAMP},${INK_TITLE}+${INK_EDGE - INK_TITLE}*min(${d}/${far},1)))`;
+}
+
+export function coverAss(title: string, place: CoverPlace = "top"): string {
+  const { lines, size, top, bottom, rule } = coverLayout(title, place);
+  const ruleX = rule.x;
+  const ruleY = rule.y;
+  const ruleW = rule.w;
+  const text = place === "top" ? `{\\an8\\pos(${W / 2},${top})}` : `{\\an2\\pos(${W / 2},${bottom})}`;
   return [
     "[Script Info]",
     "ScriptType: v4.00+",
@@ -92,9 +137,8 @@ export async function makeCover(source: string, opts: { at: number; segments: Se
   const { x, y, w, h } = cropAround(face, src, 9 / 16, 1);
   const place = coverPlace(face, { y, h });
   const ink = PALETTE.ink.slice(1);
-  // The ink darkens the edge the title sits on.
-  const ramp = place === "top" ? `(${CLEAR_AT}*H-Y)/(${CLEAR_AT}*H)` : `(Y-${1 - CLEAR_AT}*H)/(${CLEAR_AT}*H)`;
-  const alpha = `255*${INK_EDGE}*clip(${ramp},0,1)`;
+  // The ink darkens behind the title, wherever it sits.
+  const alpha = inkAlpha(opts.title.trim() ? coverLayout(opts.title, place) : null, place);
   const ass = opts.title.trim() ? `${opts.out}.ass` : null;
   if (ass) writeFileSync(ass, coverAss(opts.title, place));
   const graph = [

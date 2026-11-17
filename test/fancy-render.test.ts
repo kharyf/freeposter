@@ -5,7 +5,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { planBeats, type Beat } from "../src/edit/fancy/beats.ts";
-import { coverAss, makeCover } from "../src/edit/fancy/cover.ts";
+import { coverAss, coverLayout, makeCover } from "../src/edit/fancy/cover.ts";
 import { renderKeywordCard } from "../src/edit/fancy/keyword-card.ts";
 import { fancyFontDir } from "../src/edit/fancy/palette.ts";
 import { beatCrops, beatGraph, beatSource, fancyFilterGraph, renderFancy, tileBeats } from "../src/edit/fancy/render.ts";
@@ -258,4 +258,32 @@ test("a cover word longer than a line gets a smaller size so it fits", () => {
   const s = size(coverAss(`${long} explained`));
   assert.ok(s < 120 && long.length * s * 0.42 <= 1080 - 120, `size ${s}`);
   assert.match(coverAss("x", "bottom"), /\\an2\\pos\(540,\d+\)/);
+});
+
+test("the ink is anchored to the title: the band just above a low title is darkened by at least half", async () => {
+  const dir = tmp();
+  const src = makeVideo(dir, "white.mp4", ["-f", "lavfi", "-i", "color=c=white:size=1920x1080:rate=30", "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p"]);
+  const title = "The one habit that changes everything";
+  const p = await makeCover(src, {
+    at: 1, segments: [{ start: 0, end: 2 }], faces: [{ t: 0, cx: 960, cy: 200, size: 160 }, { t: 2, cx: 960, cy: 200, size: 160 }], title, out: join(dir, "ink.jpg"),
+  });
+  const { top, lines } = coverLayout(title, "bottom");
+  assert.equal(lines.length, 3);
+  const mean = (y: number, h: number) => {
+    const buf = execFileSync("ffmpeg", ["-v", "error", "-i", p, "-vf", `crop=1080:${h}:0:${y}`, "-f", "rawvideo", "-pix_fmt", "gray", "-"], { maxBuffer: 1 << 25 });
+    return buf.reduce((a, b) => a + b, 0) / buf.length;
+  };
+  const clear = mean(100, 40);
+  const above = mean(top - 40, 30);
+  assert.ok(clear > 200, `the source is bright (${clear})`);
+  assert.ok(above < clear / 2, `just above the first line: ${above.toFixed(0)} vs ${clear.toFixed(0)} unshaded`);
+});
+
+test("a long low title shrinks rather than climb above 35% of the height", () => {
+  const long = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen";
+  const low = coverLayout(long, "bottom");
+  assert.ok(low.lines.length >= 7);
+  assert.ok(low.top >= 0.35 * 1920, `top ${low.top}`);
+  assert.ok(low.size < 120);
+  assert.equal(coverLayout("The one habit that changes everything", "bottom").size, 120);
 });
