@@ -163,6 +163,7 @@
   .filebtn span { display: inline-block; border: 1px solid var(--line); background: var(--bg); padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; }
 .review { border: 1px solid var(--line, #8883); border-radius: 10px; padding: 12px; margin-bottom: 12px; }
 .review video { display: block; width: 100%; max-height: 420px; background: #000; border-radius: 8px; margin: 8px 0; }
+.review .review-cover { display: block; width: 120px; border-radius: 6px; margin: 4px 0; }
 .review .cap { white-space: pre-wrap; margin: 6px 0; }
 .review .fp { font-family: ui-monospace, monospace; font-size: 12px; }
 .review .decide { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
@@ -1164,6 +1165,8 @@ async function loadReviews() {
       <div class="muted">${r.schedule_at ? `Posts ${new Date(r.schedule_at).toLocaleString()}` : "Posts as soon as you approve"} · decide by ${new Date(r.expires_at).toLocaleString()}${r.sent_to_telegram ? " · also on Telegram" : ""}</div>
       ${r.title && r.title !== r.caption ? `<div><span class="muted">Title:</span> ${esc(r.title)}</div>` : ""}
       <div class="cap">${esc(r.caption)}</div>
+      ${(r.notes ?? []).map((n) => `<div class="muted">Note: ${esc(n)}</div>`).join("")}
+      ${r.coverUrl ? `<div class="muted">Cover</div><img class="review-cover" src="${esc(r.coverUrl)}" alt="The cover frame" loading="lazy">` : ""}
       <div class="muted fp">File ${esc((r.master_sha256 ?? "").slice(0, 16))}…</div>
       ${r.waiting_for === "the user's redo note" ? `<div class="muted">Waiting for your redo note on Telegram.</div>` : ""}
       <div class="decide">

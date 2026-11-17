@@ -15,6 +15,7 @@ import { parseTime, ReviewService } from "../src/review/service.ts";
 import { hermesPluginStatus, installHermesPlugin, pluginEnabled } from "../src/integrations/hermes.ts";
 import { keyboard, TelegramReview } from "../src/review/telegram.ts";
 import { Runner } from "../src/runner.ts";
+import { buildServer } from "../src/server.ts";
 import type { Platform } from "../src/types.ts";
 import { account, json, newStore, tmp, verticalSilent } from "./helpers.ts";
 
@@ -29,6 +30,7 @@ function fakeTelegram() {
   const issued = new Set<string>();
   const calls: { method: string; params: any }[] = [];
   const updates: any[] = [];
+  let failPhoto = false;
   const fetchImpl = (async (url: string, init: RequestInit = {}) => {
     const method = String(url).split("/").pop()!;
     const params = init.body instanceof FormData
@@ -38,6 +40,7 @@ function fakeTelegram() {
     const ok = (result: unknown) => json({ ok: true, result });
     switch (method) {
       case "getMe": return ok({ id: 7700000001, is_bot: true, username: "LoxisMeetBot" });
+      case "sendPhoto": if (failPhoto) return json({ ok: false, error_code: 400, description: "Bad Request: wrong file" }, 400); return ok({ message_id: nextMessage++, chat: { id: Number(params.chat_id) } });
       case "sendVideo": case "sendDocument": case "sendMessage": return ok({ message_id: nextMessage++, chat: { id: Number(params.chat_id) } });
       case "editMessageReplyMarkup": case "editMessageCaption": return ok(true);
       case "answerCallbackQuery":
@@ -48,7 +51,7 @@ function fakeTelegram() {
     }
   }) as typeof fetch;
   const all = (method: string) => calls.filter((c) => c.method === method);
-  return { fetchImpl, calls, issued, updates, all, last: (method: string) => all(method).at(-1) };
+  return { fetchImpl, failPhotos: (v: boolean) => { failPhoto = v; }, calls, issued, updates, all, last: (method: string) => all(method).at(-1) };
 }
 
 async function setup(mode: "own" | "shared" = "own") {
@@ -94,9 +97,9 @@ async function setup(mode: "own" | "shared" = "own") {
   assert.equal(telegram.status().paired, "@khary");
 
   /** An edit an agent asked to post, prepared and sent: its card's message id and buttons. */
-  const sendReview = async (caption = "ship it", scheduledAt: number | null = null) => {
+  const sendReview = async (caption = "ship it", scheduledAt: number | null = null, fancy: { notes: string[]; cover: { path: string; atSec: number } | null } = { notes: [], cover: null }) => {
     const edit = store.createEdit(video, randomBytes(32).toString("hex"), { tighten: true, captions: true, reframe: true, audio: true, punchIn: true });
-    store.updateEdit(edit.id, { state: "ready", outputPath: video, durationSec: 2, progress: 1 });
+    store.updateEdit(edit.id, { state: "ready", outputPath: video, durationSec: 2, progress: 1, ...fancy });
     const review = await reviews.request({ subject: { kind: "edit", id: edit.id }, accountIds: [x.id], caption, title: "", scheduledAt, tiktok: null, allowDuplicate: true, via: "agent" });
     await reviews.tick();
     assert.equal(reviews.reviews.get(review.id)!.state, "pending", reviews.reviews.get(review.id)!.error ?? "");
@@ -162,6 +165,71 @@ test("the card carries the post's details, the exact file, and buttons whose non
   assert.ok(Buffer.byteLength(approve) <= 64);
   const nonce = approve.split(":")[3];
   assert.ok(!JSON.stringify(reviews.reviews.get(review.id)).includes(nonce));
+});
+
+const NOTE = "Blender isn't available (not installed): 1 graphic made with HyperFrames instead";
+const coverFile = () => { const p = join(tmp(), "cover.jpg"); writeFileSync(p, Buffer.from([0xff, 0xd8, 0xff, 0xd9])); return p; };
+
+test("the Telegram card lists the edit's notes, and a basic edit's card has none", async () => {
+  const { tg, sendReview, telegram } = await setup();
+  const { review } = await sendReview("hi", null, { notes: [NOTE, "no AI connected: keyword graphics only"], cover: null });
+  const caption = tg.last("sendVideo")!.params.caption as string;
+  assert.ok(caption.includes(`Note: ${NOTE}`), caption);
+  assert.ok(caption.includes("Note: no AI connected: keyword graphics only"), caption);
+  assert.equal(telegram.cardText(review).text, caption);
+  assert.ok(caption.length <= 1024);
+  const plain = await sendReview("hi");
+  assert.ok(!tg.last("sendVideo")!.params.caption.includes("Note:"), "basic card unchanged");
+  assert.equal(tg.all("sendPhoto").length, 0);
+  void plain;
+});
+
+test("long notes shrink the caption, never push the card past Telegram's limit", async () => {
+  const { tg, sendReview } = await setup();
+  await sendReview("c".repeat(270), null, { notes: ["n".repeat(200), "m".repeat(200), "k".repeat(200)], cover: null });
+  assert.ok((tg.last("sendVideo")!.params.caption as string).length <= 1024);
+});
+
+test("Telegram gets the cover as a photo reply to the card; a failed photo doesn't fail the card", async () => {
+  const { tg, sendReview, reviews } = await setup();
+  const { review, cardId } = await sendReview("hi", null, { notes: [], cover: { path: coverFile(), atSec: 1 } });
+  const photo = tg.last("sendPhoto")!;
+  assert.equal(photo.params.photo, "<file>");
+  assert.equal(photo.params.caption, "Cover");
+  assert.equal(Number(photo.params.reply_to_message_id), cardId);
+  assert.ok(reviews.reviews.get(review.id)!.cardMessageId);
+
+  tg.failPhotos(true);
+  const failed = await sendReview("again", null, { notes: [], cover: { path: coverFile(), atSec: 1 } });
+  assert.ok(failed.cardId, "the card was sent");
+  assert.equal(reviews.reviews.get(failed.review.id)!.sendAttempts, 0, "no retry of the card");
+  assert.equal(tg.all("sendVideo").length, 2);
+});
+
+test("the window review shows the notes and the cover, and serves only that cover", async () => {
+  const { store, reviews, sendReview } = await setup();
+  const { review } = await sendReview("hi", null, { notes: [NOTE], cover: { path: coverFile(), atSec: 1 } });
+  const plain = await sendReview("plain");
+  const runner = new Runner(store, real, tmp());
+  const app = buildServer(store, runner, real, {}, undefined, undefined, undefined, { service: reviews });
+  const HOST = { host: `localhost:${config.port}` };
+  const list = (await app.inject({ method: "GET", url: "/api/reviews", headers: HOST })).json();
+  const mine = list.pending.find((r: any) => r.id === review.id);
+  assert.equal(mine.coverUrl, `/api/reviews/${review.id}/cover`);
+  assert.deepEqual(mine.notes, [NOTE]);
+  const basic = list.pending.find((r: any) => r.id === plain.review.id);
+  assert.equal(basic.coverUrl, null);
+  assert.deepEqual(basic.notes, []);
+  const img = await app.inject({ method: "GET", url: mine.coverUrl, headers: HOST });
+  assert.equal(img.statusCode, 200);
+  assert.match(String(img.headers["content-type"]), /^image\/jpeg/);
+  assert.deepEqual([...img.rawPayload], [0xff, 0xd8, 0xff, 0xd9]);
+  assert.equal((await app.inject({ method: "GET", url: `/api/reviews/${plain.review.id}/cover`, headers: HOST })).statusCode, 404);
+  assert.equal((await app.inject({ method: "GET", url: "/api/reviews/9999/cover", headers: HOST })).statusCode, 404);
+  // The cover file goes away: 404, not an error.
+  store.updateEdit(review.subjectId!, { cover: { path: join(tmp(), "gone.jpg"), atSec: 1 } });
+  assert.equal((await app.inject({ method: "GET", url: mine.coverUrl, headers: HOST })).statusCode, 404);
+  await app.close();
 });
 
 test("Approve posts exactly the approved file, once, however often the tap arrives", async () => {

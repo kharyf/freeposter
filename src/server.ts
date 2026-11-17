@@ -762,7 +762,12 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   // ---- reviews: what agents asked to post, decided here as well as on Telegram ----
 
   app.get("/api/reviews", async () => ({
-    pending: reviews.reviews.inState("preparing", "pending").map((r) => ({ ...reviews.view(r), videoUrl: r.state === "pending" ? `/api/reviews/${r.id}/video` : null })),
+    pending: reviews.reviews.inState("preparing", "pending").map((r) => ({
+      ...reviews.view(r),
+      videoUrl: r.state === "pending" ? `/api/reviews/${r.id}/video` : null,
+      notes: reviews.editExtras(r).notes,
+      coverUrl: reviews.editExtras(r).coverPath ? `/api/reviews/${r.id}/cover` : null,
+    })),
     recent: reviews.reviews.recent(10).filter((r) => r.state !== "preparing" && r.state !== "pending").map((r) => reviews.view(r)),
   }));
 
@@ -771,6 +776,14 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     const path = r?.viewPath ?? r?.masterPath;
     if (!path || !existsSync(path)) return reply.code(404).send({ error: "the review's video isn't ready" });
     return sendVideo(req, reply, path);
+  });
+
+  // Serves only the cover saved on an edit-subject review's edit, while its file exists; never a path from the request.
+  app.get<{ Params: { id: string } }>("/api/reviews/:id/cover", async (req, reply) => {
+    const r = reviews.reviews.get(Number(req.params.id));
+    const path = r ? reviews.editExtras(r).coverPath : null;
+    if (!path) return reply.code(404).send({ error: "this review has no cover" });
+    return reply.type("image/jpeg").send(readFileSync(path));
   });
 
   type DecisionBody = { Params: { id: string }; Body: { reason?: unknown; note?: unknown; atSec?: unknown } };

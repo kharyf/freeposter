@@ -546,6 +546,12 @@ export class ReviewService {
 
   // ---- what agents and the window see ----
 
+  /** The notes and the cover a Fancy edit saved; none for any other review. The cover only counts while its file exists. */
+  editExtras(r: Review): { notes: string[]; coverPath: string | null } {
+    const e = r.subjectKind === "edit" && r.subjectId !== null ? this.store.edit(r.subjectId) : undefined;
+    return { notes: e?.notes ?? [], coverPath: e?.cover && existsSync(e.cover.path) ? e.cover.path : null };
+  }
+
   view(r: Review) {
     const iso = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
     return {

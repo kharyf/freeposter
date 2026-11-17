@@ -458,6 +458,7 @@ export class TelegramReview {
       `To: ${v.accounts.map((a) => `${a.platform ?? "?"} ${a.name}`).join(", ")}`,
       `Posts: ${r.draft.scheduledAt ? when(r.draft.scheduledAt) : "as soon as you approve"}`,
       ...(r.draft.title && r.draft.title !== r.draft.caption ? [`Title: ${r.draft.title}`] : []),
+      ...this.service.editExtras(r).notes.map((n) => `Note: ${n}`),
     ].join("\n");
     const tail = `File ${r.masterSha256?.slice(0, 16) ?? "?"}… · review ${r.id} · expires ${when(r.expiresAt)}${this.outcome(r)}`;
     const room = CAPTION_LIMIT - head.length - tail.length - 40;
@@ -525,6 +526,19 @@ export class TelegramReview {
     console.log(`[review ${r.id}] sent to Telegram`);
 
     // The rest is for the reviewer's convenience; a failure here doesn't hold the review up.
+    const coverPath = this.service.editExtras(r).coverPath;
+    if (coverPath) {
+      try {
+        const photo = new FormData();
+        photo.append("chat_id", String(paired.chatId));
+        photo.append("reply_to_message_id", String(card.message_id));
+        photo.append("photo", await openAsBlob(coverPath, { type: "image/jpeg" }), `review-${r.id}-cover.jpg`);
+        photo.append("caption", "Cover");
+        await api.call("sendPhoto", photo);
+      } catch (err) {
+        console.error(`[review ${r.id}] telegram cover: ${(err as Error).message}`);
+      }
+    }
     try {
       const size = statSync(r.masterPath).size;
       if (size <= TELEGRAM_UPLOAD_LIMIT) {
