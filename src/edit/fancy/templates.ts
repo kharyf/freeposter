@@ -119,7 +119,12 @@ function mainText(t: FancyTemplate, params: Record<string, string | number | boo
       const n = params.value.toLocaleString("en-US", { maximumFractionDigits: 6 });
       return fitting([`${str("prefix")}${n}${str("suffix")}`, str("label")].filter(Boolean));
     }
-    case "compare": return str("left") && str("right") ? `${str("left")} vs ${str("right")}` : "";
+    case "compare": {
+      if (!str("left") || !str("right")) return "";
+      // Never cut a value in half: when the pair doesn't fit, the result alone (the right side) does the talking.
+      const pair = `${str("left")} vs ${str("right")}`;
+      return fits(pair) ? pair : str("right");
+    }
     case "pull-quote": return str("quote");
     case "build-list": return fitting(items("items"));
     case "steps": return fitting(items("steps"));

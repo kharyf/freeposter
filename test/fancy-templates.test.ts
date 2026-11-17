@@ -27,7 +27,7 @@ test("each template has the tool, seconds and fallback the design gives it", () 
   const want: Record<string, [string, number, number, string | null]> = {
     "stat-counter": ["remotion", 2, 5, "kinetic-words"],
     "build-list": ["remotion", 3, 6, "kinetic-words"],
-    compare: ["remotion", 3, 6, "kinetic-words"],
+    compare: ["remotion", 3, 6, "keyword-card"],
     "pull-quote": ["remotion", 2, 6, "kinetic-words"],
     steps: ["remotion", 3, 6, "build-list"],
     "kinetic-words": ["hyperframes", 2, 5, "keyword-card"],
@@ -108,7 +108,6 @@ test("a fallback that shows words shows the graphic's own text, not the transcri
   assert.equal(main("stat-counter", { value: 3, prefix: "", suffix: "×", label: "faster" }), "3× faster");
   assert.equal(main("stat-counter", { value: 40000, prefix: "$", suffix: "", label: "a month" }), "$40,000 a month");
   assert.equal(main("stat-counter", { value: 3, prefix: "", suffix: "×", label: "faster than editing by hand" }), "3×");
-  assert.equal(main("compare", { left_title: "Before", left: "4 hours", right_title: "After", right: "10 min" }), "4 hours vs 10 min");
   assert.equal(main("pull-quote", { quote: "Ship it" }), "Ship it");
   assert.equal(main("build-list", { items: "Hook|Story|Payoff|Call to action" }), "Hook Story Payoff", "whole items, as many as fit");
   assert.equal(main("build-list", { items: "One two three four five|Six" }), "One two three four five", "the first item even when it's too long: repair shortens it");
@@ -122,9 +121,23 @@ test("a fallback that shows words shows the graphic's own text, not the transcri
   // The spoken phrase only when the graphic has no text of its own.
   assert.equal(main("pull-quote", {}), "the spoken words");
   assert.equal(main("stat-counter", { label: "x" }), "the spoken words");
-  assert.equal(main("compare", { left: "a" }), "the spoken words");
+  assert.equal(fallbackParamsFor(t.compare, { left: "a" }, "the spoken words").phrase, "the spoken words");
   // Every template that falls back to kinetic-words uses $main.
   for (const tpl of Object.values(t)) if (tpl.fallback === "kinetic-words") assert.deepEqual(tpl.fallbackParams, { words: "$main" }, tpl.id);
+});
+
+test("compare falls back to a keyword card that keeps both values whole", () => {
+  const t = fancyTemplates();
+  const card = t["keyword-card"];
+  const phrase = (params: Record<string, string>) => fallbackParamsFor(t.compare, params, "the spoken words").phrase;
+  // The template's own example: five words, which kinetic-words would have cut to "4 hours vs 10".
+  const pair = phrase({ left_title: "Before", left: "4 hours", right_title: "After", right: "10 minutes" });
+  assert.equal(pair, "4 hours vs 10 minutes");
+  assert.deepEqual(checkParams(card, { phrase: pair }).problems, [], "fits the card as is, so nothing gets shortened");
+  // A pair too long for the card shows the result alone, never half a value.
+  const long = phrase({ left_title: "Before", left: "four hours of editing", right_title: "After", right: "ten minutes with FreePoster" });
+  assert.equal(long, "ten minutes with FreePoster");
+  assert.deepEqual(checkParams(card, { phrase: long }).problems, []);
 });
 
 test("toShot sizes graphics 1080x960 and passes the palette", () => {
