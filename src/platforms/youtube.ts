@@ -1,12 +1,14 @@
+import { readFile } from "node:fs/promises";
 import { config, redirectUri } from "../config.ts";
 import { pkceChallenge } from "../crypto.ts";
 import { FatalError, request, requestJson } from "../http.ts";
 import type { Account } from "../types.ts";
-import { expiresIn, firstLine, pollUntil, readChunk, type Publisher } from "./base.ts";
+import { expiresIn, firstLine, pollUntil, readChunk, type PublishContext, type Publisher } from "./base.ts";
 
 // Docs: https://developers.google.com/youtube/v3/guides/using_resumable_upload_protocol
 const API = "https://www.googleapis.com/youtube/v3";
 const UPLOAD = "https://www.googleapis.com/upload/youtube/v3/videos";
+const THUMBNAILS = "https://www.googleapis.com/upload/youtube/v3/thumbnails/set";
 const TOKEN = "https://oauth2.googleapis.com/token";
 const SCOPES = ["https://www.googleapis.com/auth/youtube.upload", "https://www.googleapis.com/auth/youtube.readonly"];
 const CHUNK = 8 * 1024 * 1024; // must be a multiple of 256 KiB
@@ -161,12 +163,36 @@ export const youtube: Publisher = {
     }, { intervalMs: 10_000 });
 
     const url = `https://www.youtube.com/shorts/${progress.videoId}`;
-    if (video.status.privacyStatus !== "public") {
-      return { url, note: `YouTube set the video to ${video.status.privacyStatus}. Unaudited API projects are locked to private.` };
-    }
-    return { url };
+    const notes: string[] = [];
+    if (video.status.privacyStatus !== "public") notes.push(`YouTube set the video to ${video.status.privacyStatus}. Unaudited API projects are locked to private.`);
+    const thumbnailNote = await setThumbnail(ctx, auth);
+    if (thumbnailNote) notes.push(thumbnailNote);
+    return notes.length ? { url, note: notes.join(" ") } : { url };
   },
 };
+
+/**
+ * Sets the Fancy cover as the video's thumbnail, once (progress.thumbnailTried): channels that aren't verified for custom
+ * thumbnails are refused, and a thumbnail never fails the publish. youtube.upload, the scope FreePoster has, is one thumbnails.set accepts.
+ */
+async function setThumbnail(ctx: PublishContext, auth: Record<string, string>): Promise<string | undefined> {
+  const { post, progress } = ctx;
+  if (!post.cover || progress.thumbnailTried) return undefined;
+  progress.thumbnailTried = true;
+  ctx.save(progress);
+  try {
+    const image = await readFile(post.cover.imagePath);
+    await request(`${THUMBNAILS}?videoId=${encodeURIComponent(progress.videoId)}`, {
+      headers: { ...auth, "content-type": "image/jpeg" },
+      body: new Blob([image], { type: "image/jpeg" }),
+    });
+  } catch (err) {
+    const message = (err as Error).message;
+    ctx.log(`the cover wasn't set as the thumbnail: ${message}`);
+    return /\b403\b/.test(message) ? "custom thumbnail not allowed on this channel" : undefined;
+  }
+  return undefined;
+}
 
 /** "bytes=0-1234" → next offset 1235; missing header means nothing received yet. */
 function rangeEnd(range: string | null): number {

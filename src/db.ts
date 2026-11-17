@@ -177,6 +177,8 @@ export class Store {
     // ...and before reviews: an approved review's post uploads exactly the file that was approved.
     if (!postColumns.some((c) => c.name === "review_id")) this.db.exec("ALTER TABLE posts ADD COLUMN review_id INTEGER");
     if (!postColumns.some((c) => c.name === "approved_sha256")) this.db.exec("ALTER TABLE posts ADD COLUMN approved_sha256 TEXT");
+    // ...and before Fancy covers.
+    if (!postColumns.some((c) => c.name === "cover")) this.db.exec("ALTER TABLE posts ADD COLUMN cover TEXT");
     // Posts made before this was recorded are 'legacy': the audit can't vouch for them.
     if (!postColumns.some((c) => c.name === "origin")) this.db.exec("ALTER TABLE posts ADD COLUMN origin TEXT NOT NULL DEFAULT 'legacy'");
     const jobColumns = this.db.prepare("PRAGMA table_info(jobs)").all() as { name: string }[];
@@ -330,9 +332,9 @@ export class Store {
 
   private insertPost(p: Omit<Post, "id" | "createdAt">, accountIds: number[]): number {
     const { lastInsertRowid } = this.db
-      .prepare("INSERT INTO posts (caption, title, source_path, sha256, tiktok, created_at, scheduled_at, edit_id, require_edit, caption_topic, review_id, approved_sha256, origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .prepare("INSERT INTO posts (caption, title, source_path, sha256, tiktok, created_at, scheduled_at, edit_id, require_edit, caption_topic, review_id, approved_sha256, origin, cover) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .run(p.caption, p.title, p.sourcePath, p.sha256, p.tiktok ? JSON.stringify(p.tiktok) : null, Date.now(), p.scheduledAt ?? null, p.editId ?? null, p.requireEdit ? 1 : 0, p.captionTopic ?? null,
-        p.reviewId ?? null, p.approvedSha256 ?? null, p.origin ?? "window");
+        p.reviewId ?? null, p.approvedSha256 ?? null, p.origin ?? "window", p.cover ? JSON.stringify(p.cover) : null);
     const postId = Number(lastInsertRowid);
     const insertJob = this.db.prepare(
       "INSERT INTO jobs (post_id, account_id, platform, state, next_run_at, updated_at) VALUES (?, ?, ?, 'queued', ?, ?)",
@@ -376,6 +378,7 @@ export class Store {
       reviewId: r.review_id ?? null,
       approvedSha256: r.approved_sha256 ?? null,
       origin: r.origin,
+      cover: parseOr(r.cover, null),
     };
   }
 

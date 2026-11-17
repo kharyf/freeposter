@@ -391,3 +391,115 @@ test("captions are checked against each platform before anything uploads", () =>
   );
   assert.match(instagram.validate({ ...post, caption: Array.from({ length: 31 }, (_, i) => `#t${i}`).join(" ") }, a)!, /30 hashtags/);
 });
+
+// ---------------- Fancy cover ----------------
+
+const coverPath = join(dir, "cover.jpg");
+writeFileSync(coverPath, Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+
+const tiktokRoutes = () => route([
+  ["POST https://open.tiktokapis.com/v2/post/publish/creator_info/query/", () => json({ data: creator, error: { code: "ok" } })],
+  ["POST https://open.tiktokapis.com/v2/post/publish/video/init/", () => json({ data: { publish_id: "p1", upload_url: "https://upload.tiktok.test/u1" }, error: { code: "ok" } })],
+  ["PUT https://upload.tiktok.test/u1", () => new Response(null, { status: 206 })],
+  ["POST https://open.tiktokapis.com/v2/post/publish/status/fetch/", () =>
+    json({ data: { status: "PUBLISH_COMPLETE", publicaly_available_post_id: [7123] }, error: { code: "ok" } })],
+]);
+
+async function tiktokCoverMs(post: Partial<Post>) {
+  const m = mockFetch(tiktokRoutes());
+  try {
+    await tiktokPublisher.publish(ctx("tiktok", {}, { tiktok: tiktokOpts, ...post }).c);
+    return JSON.parse(m.calls[1].body as string).post_info.video_cover_timestamp_ms;
+  } finally {
+    m.restore();
+  }
+}
+
+test("TikTok uses the cover time", async () => {
+  assert.equal(await tiktokCoverMs({ cover: { atMs: 2500, imagePath: coverPath } }), 2500);
+  assert.equal(await tiktokCoverMs({}), 1000, "no cover: 1000 ms as before");
+  assert.equal(await tiktokCoverMs({ cover: { atMs: 99_000, imagePath: coverPath } }), 11_999, "a cover time past the end is clamped into the video (12 s)");
+});
+
+async function instagramThumbOffset(post: Partial<Post>) {
+  const m = mockFetch(route([
+    ["POST https://graph.facebook.com/v24.0/instagram-1/media_publish", () => json({ id: "ig-media-1" })],
+    ["POST https://graph.facebook.com/v24.0/instagram-1/media", () => json({ id: "c1", uri: "https://rupload.facebook.com/ig-api-upload/v24.0/c1" })],
+    ["POST https://rupload.facebook.com/ig-api-upload/v24.0/c1", () => json({ success: true })],
+    ["GET https://graph.facebook.com/v24.0/c1?", () => json({ status_code: "FINISHED" })],
+    ["GET https://graph.facebook.com/v24.0/ig-media-1?fields=permalink", () => json({ permalink: "https://www.instagram.com/reel/ABC/" })],
+  ]));
+  try {
+    await instagram.publish(ctx("instagram", {}, post).c);
+    return new URLSearchParams(m.calls[0].body as string).get("thumb_offset");
+  } finally {
+    m.restore();
+  }
+}
+
+test("Instagram sends thumb_offset", async () => {
+  assert.equal(await instagramThumbOffset({ cover: { atMs: 2500, imagePath: coverPath } }), "2500");
+  assert.equal(await instagramThumbOffset({}), null, "no cover: no thumb_offset");
+  assert.equal(await instagramThumbOffset({ cover: { atMs: 99_000, imagePath: coverPath } }), "11999");
+});
+
+const ytSession = "https://www.googleapis.com/upload/youtube/v3/videos?upload_id=abc";
+const THUMB = "POST https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=vid1";
+const ytRoutes = (thumb: () => Response) => route([
+  ["POST https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable", () => new Response(null, { status: 200, headers: { location: ytSession } })],
+  [`PUT ${ytSession}`, (_u, init) => {
+    const end = Number(((init.headers as any)["content-range"] as string).match(/-(\d+)\//)![1]);
+    return end === SIZE - 1 ? json({ id: "vid1" }) : new Response(null, { status: 308, headers: { range: `bytes=0-${end}` } });
+  }],
+  ["GET https://www.googleapis.com/youtube/v3/videos?part=status,processingDetails&id=vid1", () =>
+    json({ items: [{ status: { uploadStatus: "processed", privacyStatus: "public" } }] })],
+  [THUMB, thumb],
+]);
+
+test("YouTube sets the thumbnail and ignores a refusal", async () => {
+  const cover = { atMs: 2500, imagePath: coverPath };
+
+  const ok = mockFetch(ytRoutes(() => json({ items: [{}] })));
+  try {
+    const { c } = ctx("youtube", {}, { cover });
+    const r = await youtube.publish(c);
+    assert.equal(r.url, "https://www.youtube.com/shorts/vid1");
+    assert.equal(r.note, undefined);
+    const t = ok.calls.filter((k) => k.url.includes("thumbnails/set"));
+    assert.equal(t.length, 1);
+    assert.equal(t[0].headers["content-type"], "image/jpeg");
+    assert.equal(t[0].headers.authorization, "Bearer access-1");
+    assert.equal((t[0].body as Blob).size, 4);
+    assert.equal(c.progress.thumbnailTried, true);
+  } finally {
+    ok.restore();
+  }
+
+  const refused = mockFetch(ytRoutes(() => json({ error: { code: 403, message: "forbidden" } }, 403)));
+  try {
+    const { c } = ctx("youtube", {}, { cover });
+    const r = await youtube.publish(c);
+    assert.equal(r.url, "https://www.youtube.com/shorts/vid1", "the publish still succeeds");
+    assert.equal(r.note, "custom thumbnail not allowed on this channel");
+  } finally {
+    refused.restore();
+  }
+
+  const retry = mockFetch(ytRoutes(() => { throw new Error("must not be repeated"); }));
+  try {
+    const { c } = ctx("youtube", { videoId: "vid1", thumbnailTried: true }, { cover });
+    const r = await youtube.publish(c);
+    assert.equal(r.note, undefined);
+    assert.equal(retry.calls.filter((k) => k.url.includes("thumbnails/set")).length, 0, "a retry never repeats it");
+  } finally {
+    retry.restore();
+  }
+
+  const none = mockFetch(ytRoutes(() => { throw new Error("no cover, no thumbnail call"); }));
+  try {
+    await youtube.publish(ctx("youtube").c);
+    assert.equal(none.calls.filter((k) => k.url.includes("thumbnails/set")).length, 0);
+  } finally {
+    none.restore();
+  }
+});

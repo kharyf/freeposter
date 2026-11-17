@@ -50,6 +50,8 @@ export interface Draft {
   /** publish this approved edit instead of the original */
   editId?: number | null;
   requireEdit?: boolean;
+  /** the edit's Fancy cover (see coverOf) */
+  cover?: Post["cover"];
   /** set (see captionTopicFor) when the caption was left blank: the AI writes it before the post goes out */
   captionTopic?: string | null;
 }
@@ -61,6 +63,11 @@ export interface Draft {
 export function captionTopicFor(caption: string, title: string, filename = ""): string | null {
   if (caption.trim()) return null;
   return title.trim() || basename(filename.replace(/\\/g, "/")).replace(/\.[^.]{1,5}$/, "").trim() || "Video";
+}
+
+/** The cover a post of this edit carries: its frame's time in the edited video and the image. Null for edits without one. */
+export function coverOf(edit: Pick<Edit, "cover"> | null | undefined): Post["cover"] {
+  return edit?.cover ? { atMs: Math.round(edit.cover.atSec * 1000), imagePath: edit.cover.path } : null;
 }
 
 /** Thrown when the same file already went, or is due to go, to some of the chosen accounts. */

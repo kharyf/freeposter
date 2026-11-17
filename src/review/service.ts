@@ -11,7 +11,7 @@ import type { EditSettings } from "../edit/settings.ts";
 import type { Transcript, Word } from "../edit/transcribe.ts";
 import { queueEvent, type EventType } from "../notify.ts";
 import type { Publisher } from "../platforms/base.ts";
-import { captionTopicFor, checkDraft, DuplicateError, type Draft } from "../posts.ts";
+import { captionTopicFor, checkDraft, coverOf, DuplicateError, type Draft } from "../posts.ts";
 import type { ProductionStore } from "../produce/store.ts";
 import type { Account, Platform, TikTokOptions } from "../types.ts";
 import { hashFile, makeMaster, makeViewCopy } from "./media.ts";
@@ -291,10 +291,12 @@ export class ReviewService {
   }
 
   /** The post the review covers, as checkDraft and createPost take it. */
-  postDraft(r: Pick<Review, "draft">, masterPath: string, masterSha256: string): Draft {
+  postDraft(r: Pick<Review, "draft" | "subjectKind" | "subjectId">, masterPath: string, masterSha256: string): Draft {
     return {
       sourcePath: masterPath, sha256: masterSha256, caption: r.draft.caption, title: r.draft.title, accountIds: r.draft.accountIds,
       tiktok: r.draft.tiktok, scheduledAt: r.draft.scheduledAt, editId: null, requireEdit: false, captionTopic: null,
+      // The master re-encodes the edit's own timeline, so the cover's time still points at the same frame.
+      cover: r.subjectKind === "edit" && r.subjectId !== null ? coverOf(this.store.edit(r.subjectId)) : null,
     };
   }
 

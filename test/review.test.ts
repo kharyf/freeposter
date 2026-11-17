@@ -278,6 +278,20 @@ test("Approve posts exactly the approved file, once, however often the tap arriv
   assert.equal(reviews.audit().ok, true);
 });
 
+test("an approved edit's post carries the cover as a time in ms and the image; a basic edit's post has none", async () => {
+  const { sendReview, tap, posts, reviews, store } = await setup();
+  const cover = { path: coverFile(), atSec: 2.5 };
+  const fancy = await sendReview("hi", null, { notes: [], cover });
+  await tap(fancy.approve, { messageId: fancy.cardId });
+  const post = store.post(reviews.reviews.get(fancy.review.id)!.postId!)!;
+  assert.deepEqual(post.cover, { atMs: 2500, imagePath: cover.path });
+
+  const plain = await sendReview("plain");
+  await tap(plain.approve, { messageId: plain.cardId });
+  assert.equal(posts(), 2);
+  assert.equal(store.post(reviews.reviews.get(plain.review.id)!.postId!)!.cover, null);
+});
+
 test("Approve then Reject on the same card: it stays approved", async () => {
   const { sendReview, tap, reviews, posts } = await setup();
   const { review, approve, reject, cardId } = await sendReview();

@@ -1,7 +1,7 @@
 import { openAsBlob } from "node:fs";
 import { config } from "../config.ts";
 import { FatalError, requestJson } from "../http.ts";
-import { pollUntil, utf16Length, type Publisher } from "./base.ts";
+import { coverMs, pollUntil, utf16Length, type Publisher } from "./base.ts";
 import { graph, metaAuthorizeUrl, metaPages } from "./meta.ts";
 
 // Docs: https://developers.facebook.com/docs/instagram-platform/content-publishing/resumable-uploads
@@ -90,9 +90,13 @@ export const instagram: Publisher = {
     }
 
     if (!progress.containerId) {
+      const cover = coverMs(post, ctx.durationSec);
       const c = await requestJson(`${graph()}/${userId}/media`, {
         headers: auth,
-        form: { media_type: "REELS", upload_type: "resumable", caption: post.caption, share_to_feed: "true" },
+        form: {
+          media_type: "REELS", upload_type: "resumable", caption: post.caption, share_to_feed: "true",
+          ...(cover === null ? {} : { thumb_offset: String(cover) }),
+        },
       });
       Object.assign(progress, { containerId: c.id, uploadUri: c.uri });
       ctx.save(progress);

@@ -1,7 +1,7 @@
 import { config, redirectUri } from "../config.ts";
 import { FatalError, RetryableError, request, requestJson } from "../http.ts";
 import type { Account, TokenSet } from "../types.ts";
-import { expiresIn, pollUntil, readChunk, utf16Length, type Publisher } from "./base.ts";
+import { coverMs, expiresIn, pollUntil, readChunk, utf16Length, type Publisher } from "./base.ts";
 
 // Docs: https://developers.tiktok.com/doc/content-posting-api-reference-direct-post
 const API = "https://open.tiktokapis.com/v2";
@@ -152,7 +152,7 @@ export const tiktokPublisher: Publisher = {
           disable_comment: opts.disableComment || info.comment_disabled,
           disable_duet: opts.disableDuet || info.duet_disabled,
           disable_stitch: opts.disableStitch || info.stitch_disabled,
-          video_cover_timestamp_ms: 1000,
+          video_cover_timestamp_ms: coverMs(post, durationSec) ?? 1000,
           brand_content_toggle: opts.brandContent,
           brand_organic_toggle: opts.brandOrganic,
         },

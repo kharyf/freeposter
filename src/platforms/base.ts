@@ -48,6 +48,12 @@ export async function readChunk(path: string, start: number, length: number): Pr
   }
 }
 
+/** The post's cover time in ms, kept inside the video (it must not be past the last frame); null when the post has no cover. */
+export function coverMs(post: Post, durationSec: number): number | null {
+  if (!post.cover) return null;
+  return Math.max(0, Math.min(Math.round(post.cover.atMs), Math.floor(durationSec * 1000) - 1));
+}
+
 export const expiresIn = (seconds: number | undefined) =>
   seconds ? Date.now() + Number(seconds) * 1000 : null;
 

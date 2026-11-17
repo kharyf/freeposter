@@ -58,6 +58,8 @@ export interface Post {
   reviewId?: number | null;
   /** the exact file that was approved: the runner uploads it as it is, and only while it still has this hash */
   approvedSha256?: string | null;
+  /** the Fancy cover of the edit this post publishes: the time of its frame in the video, and the JPEG */
+  cover?: { atMs: number; imagePath: string } | null;
   /** who made it: the window, a Drive video, or an approved review */
   origin?: PostOrigin;
 }

@@ -27,7 +27,7 @@ import { driveAuthorizeUrl, driveRedirectUri, exchangeDriveCode, folderIdFrom } 
 import type { Intake } from "./drive/intake.ts";
 import { parseEditSettings } from "./edit/settings.ts";
 import { whisperHealth } from "./edit/transcribe.ts";
-import { captionTopicFor, checkDraft, DuplicateError, editView, parseSchedule, postView, saveUpload, type Draft } from "./posts.ts";
+import { captionTopicFor, checkDraft, coverOf, DuplicateError, editView, parseSchedule, postView, saveUpload, type Draft } from "./posts.ts";
 import { hermesDetected, hermesPluginStatus, installHermesPlugin } from "./integrations/hermes.ts";
 import { isReason } from "./review/store.ts";
 import { ReviewService } from "./review/service.ts";
@@ -617,6 +617,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
         sourcePath: source.path,
         sha256: source.sha256,
         editId: edit?.id ?? null,
+        cover: coverOf(edit),
         accountIds: JSON.parse(fields.accounts || "[]").map(Number),
         tiktok: fields.tiktok ? JSON.parse(fields.tiktok) : null,
         scheduledAt: parseSchedule(fields.scheduledAt),
