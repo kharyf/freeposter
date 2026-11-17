@@ -83,3 +83,18 @@ test("seam placement centres the caption at y=960, lower sits in the safe area",
 test("Fancy captions default to the lower third", () => {
   assert.match(buildAss(WORDS, { look: "fancy" }), /\\an2\\pos\(540,1496\)/);
 });
+
+test("a caption group never spans a break, so it never moves mid-group", () => {
+  // Six words 0.3 s apart; the placement changes at 0.5 s, between "two" (0.3) and "three" (0.6).
+  const ws = words(["one", "two", "three", "four", "five", "six"]);
+  const placeAt = (t: number): "seam" | "lower" => (t < 0.5 ? "seam" : "lower");
+  const lines = dialogues(buildAss(ws, { look: "fancy", placeAt, breakAt: [0.5] }));
+  assert.deepEqual(lines.map(plain), ["one two", "one two", "three four five", "three four five", "three four five", "six"]);
+  // Every event of a group sits in the same place.
+  assert.ok(lines.slice(0, 2).every((l) => l.includes("\\an5")));
+  assert.ok(lines.slice(2).every((l) => l.includes("\\an2")));
+  // The last word before the break isn't held past it ("two" ends at 0.57; held, it would run to 0.82).
+  assert.equal(lines[1].split(",")[2], "0:00:00.50");
+  // Without the break the first group would mix the two places.
+  assert.equal(plain(dialogues(buildAss(ws, { look: "fancy", placeAt }))[0]), "one two three");
+});

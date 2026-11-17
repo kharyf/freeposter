@@ -24,12 +24,13 @@ const clock = (t: number) => {
 /** ASS reads { } as override tags and \ as escapes; show look-alikes instead. */
 const escape = (text: string) => text.replace(/\\/g, "＼").replace(/\{/g, "｛").replace(/\}/g, "｝");
 
-function groups(words: Word[], maxWords: number): Word[][] {
+function groups(words: Word[], maxWords: number, breakAt: number[] = []): Word[][] {
   const out: Word[][] = [];
   let cur: Word[] = [];
   for (const w of words) {
     const prev = cur.at(-1);
-    if (prev && (cur.length >= maxWords || /[.?!…]$/.test(prev.text) || w.start - prev.end > PAUSE)) {
+    const crosses = (b: number) => prev!.start < b && b <= w.start;
+    if (prev && (cur.length >= maxWords || /[.?!…]$/.test(prev.text) || w.start - prev.end > PAUSE || breakAt.some(crosses))) {
       out.push(cur);
       cur = [];
     }
@@ -52,7 +53,8 @@ const placement = (place: CaptionPlace) =>
 
 export function buildAss(
   words: Word[],
-  opts: { maxWords?: number; look?: "fancy"; placeAt?: (t: number) => CaptionPlace } = {},
+  /** `breakAt`: times a group never spans (a word starting at or after one begins a new group), e.g. where placeAt changes */
+  opts: { maxWords?: number; look?: "fancy"; placeAt?: (t: number) => CaptionPlace; breakAt?: number[] } = {},
 ): string {
   const marginL = Math.ceil(W * SAFE_AREA.left);
   const marginR = Math.ceil(W * SAFE_AREA.right);
@@ -75,13 +77,15 @@ export function buildAss(
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
   ];
   const events: string[] = [];
-  const gs = groups(words, opts.maxWords ?? 3);
+  const gs = groups(words, opts.maxWords ?? 3, opts.breakAt);
   gs.forEach((group, gi) => {
     const nextStart = gs[gi + 1]?.[0].start ?? Infinity;
+    // Nor does the last word's hold run past a break (where the caption would sit in the wrong place).
+    const nextBreak = opts.breakAt?.filter((b) => b > group[0].start).reduce((a, b) => Math.min(a, b), Infinity) ?? Infinity;
     group.forEach((word, wi) => {
       // Each word's event runs until the next word starts, so the group stays on screen without flicker.
       const start = word.start;
-      const end = wi < group.length - 1 ? group[wi + 1].start : Math.min(word.end + HOLD, nextStart);
+      const end = wi < group.length - 1 ? group[wi + 1].start : Math.min(word.end + HOLD, nextStart, nextBreak);
       if (opts.look === "fancy") {
         const pop = `{\\c${FANCY_YELLOW}&\\fscx${FANCY_POP}\\fscy${FANCY_POP}}`;
         const rest = `{\\c${FANCY_CREAM}&\\fscx100\\fscy100}`;

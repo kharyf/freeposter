@@ -43,6 +43,21 @@ function filterGraph(segs: Segment[], s: EditSettings, opts: { reframe: { width:
   return parts.join(";");
 }
 
+/** Runs an edit's ffmpeg pass (its args include `-progress pipe:1`), reporting progress as a fraction of editedSec. */
+export function runFfmpeg(args: string[], editedSec: number, onProgress?: (fraction: number) => void): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const ff = spawn(config.ffmpeg, args, { windowsHide: true });
+    let stderr = "";
+    ff.stderr.on("data", (d) => (stderr += d));
+    ff.stdout.on("data", (d: Buffer) => {
+      const us = String(d).match(/out_time_us=(\d+)/g)?.at(-1)?.split("=")[1];
+      if (us && editedSec > 0) onProgress?.(Math.min(1, Number(us) / 1e6 / editedSec));
+    });
+    ff.on("error", reject);
+    ff.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`edit failed: ${stderr.trim() || `ffmpeg exited ${code}`}`))));
+  });
+}
+
 /** The source stretches an edit keeps: the cut plan (when tightening), with the user's keep and drop ranges. */
 export function planSegments(transcript: Transcript, s: EditSettings, durationSec: number): Segment[] {
   const base = s.tighten ? planCuts(transcript.words, durationSec) : [{ start: 0, end: durationSec }];
@@ -97,17 +112,7 @@ export async function renderEdit(
     "-movflags", "+faststart", part,
   ];
   try {
-    await new Promise<void>((resolve, reject) => {
-      const ff = spawn(config.ffmpeg, args, { windowsHide: true });
-      let stderr = "";
-      ff.stderr.on("data", (d) => (stderr += d));
-      ff.stdout.on("data", (d: Buffer) => {
-        const us = String(d).match(/out_time_us=(\d+)/g)?.at(-1)?.split("=")[1];
-        if (us && editedSec > 0) onProgress?.(Math.min(1, Number(us) / 1e6 / editedSec));
-      });
-      ff.on("error", reject);
-      ff.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`edit failed: ${stderr.trim() || `ffmpeg exited ${code}`}`))));
-    });
+    await runFfmpeg(args, editedSec, onProgress);
     renameSync(part, outPath);
   } finally {
     for (const f of [...temp, part]) try { unlinkSync(f); } catch {}
