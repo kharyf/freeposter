@@ -215,7 +215,7 @@ async function analyticsReport(params: Record<string, string>, auth: Record<stri
     if (err instanceof FatalError && /\b403\b/.test(message) && /insufficientPermissions|insufficient authentication scopes/i.test(message)) {
       throw new NeedsPermission("sign in to YouTube again to allow analytics");
     }
-    if (err instanceof FatalError && /\b404\b/.test(message)) throw new Gone("YouTube video no longer exists");
+    if (err instanceof FatalError && /^\S+ 404:/.test(message)) throw new Gone("YouTube video no longer exists");
     throw err;
   }
 }
