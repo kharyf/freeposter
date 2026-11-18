@@ -94,12 +94,12 @@ test("a day the line didn't name is never taken from the AI", async () => {
   assert.deepEqual(r.couldNotUnderstand, ["Do the thing alpha"]);
 });
 
-test("a bad instruction doesn't drop the good rule on the same line", async () => {
+test("a bad instruction makes its whole line unread: the good rule on the same line isn't kept as if the line were handled", async () => {
   const f = fake({ lines: [{ index: 0, day: null, instruction: make({ style: "nope" }), rule: stopRule }] });
   const r = await translateCampaign({ ai: f.ai }, "Monday: mixed alpha.", vocab);
   assert.equal(r.compiled.days.mon.length, 0);
-  assert.equal(r.compiled.rules.length, 1);
-  assert.deepEqual(r.couldNotUnderstand, []);
+  assert.equal(r.compiled.rules.length, 0);
+  assert.deepEqual(r.couldNotUnderstand, ["Monday: mixed alpha"]);
 });
 
 test("malformed or empty answers report every unread line", async () => {
@@ -119,4 +119,43 @@ test("out-of-order answers merge in unread order, over several drop passes", asy
   const r = await translateCampaign({ ai: f.ai }, "Monday: a1. Monday: b2. Monday: c3. Monday: d4.", vocab);
   assert.deepEqual(r.compiled.days.mon.map((i) => i.source), ["Monday: a1", "Monday: d4"]);
   assert.deepEqual(r.couldNotUnderstand, ["Monday: b2", "Monday: c3"]);
+});
+
+const rule = (over: object = {}) => ({
+  when: { label: "hook", is: "working", thresholdPct: 25, minVideos: 3, age: "72h", scope: "campaign", ...over },
+  then: { kind: "stop_using" },
+});
+
+test("a line whose instruction survives but whose rule is dropped is unread, and none of it is kept", async () => {
+  const text = "Sunday: do the thing alpha.";
+  const f = fake({ lines: [{ index: 0, day: "sun", instruction: make(), rule: rule({ thresholdPct: 500 }) }] });
+  const r = await translateCampaign({ ai: f.ai }, text, vocab);
+  assert.deepEqual(r.couldNotUnderstand, ["Sunday: do the thing alpha"], "never counted as understood");
+  assert.equal(r.compiled.days.sun.length, 0, "the surviving half isn't shown beside a line that reads as handled");
+  assert.equal(r.compiled.rules.length, 0);
+});
+
+test("a line whose rule survives but whose instruction is dropped is unread too", async () => {
+  const text = "Sunday: do the thing alpha.";
+  const f = fake({ lines: [{ index: 0, day: "sun", instruction: make({ cta: { pick: "named", id: 999 } }), rule: rule() }] });
+  const r = await translateCampaign({ ai: f.ai }, text, vocab);
+  assert.deepEqual(r.couldNotUnderstand, ["Sunday: do the thing alpha"]);
+  assert.equal(r.compiled.rules.length, 0);
+});
+
+test("an instruction the AI gives a line that names no day is a dropped part: the line is unread", async () => {
+  const text = "do the thing alpha.";
+  const f = fake({ lines: [{ index: 0, day: "sun", instruction: make(), rule: rule() }] });
+  const r = await translateCampaign({ ai: f.ai }, text, vocab);
+  assert.deepEqual(r.couldNotUnderstand, ["do the thing alpha"]);
+  assert.equal(r.compiled.rules.length, 0);
+});
+
+test("a line whose parts all survive is understood", async () => {
+  const text = "Sunday: do the thing alpha.";
+  const f = fake({ lines: [{ index: 0, day: "sun", instruction: make(), rule: rule() }] });
+  const r = await translateCampaign({ ai: f.ai }, text, vocab);
+  assert.deepEqual(r.couldNotUnderstand, []);
+  assert.equal(r.compiled.days.sun.length, 1);
+  assert.equal(r.compiled.rules.length, 1);
 });

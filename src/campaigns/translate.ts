@@ -120,12 +120,24 @@ export async function translateCampaign(
     if (isObj(e) && typeof e.index === "number" && !byIndex.has(e.index)) byIndex.set(e.index, e);
   }
   const parts: Part[] = [];
+  // A line is understood only when every part the AI proposed for it survives; one partly dropped (by the strict
+  // check, or an instruction for a line that names no day) is unread as a whole, and none of it is kept, so the
+  // confirm table never shows half of a line beside the whole sentence as if it were handled.
+  const partial = new Set<number>();
   unread.forEach((u, i) => {
     const e = byIndex.get(i);
     if (!e) return;
-    if (u.day && isObj(e.instruction)) parts.push({ at: i, day: u.day, instruction: { ...e.instruction, source: u.line } as unknown as Instruction });
+    if (isObj(e.instruction)) {
+      if (u.day) parts.push({ at: i, day: u.day, instruction: { ...e.instruction, source: u.line } as unknown as Instruction });
+      else partial.add(i);
+    }
     if (isObj(e.rule)) parts.push({ at: i, rule: { ...e.rule, source: u.line } as unknown as Rule });
   });
+  const dropLine = (at: number) => {
+    partial.add(at);
+    for (let k = parts.length - 1; k >= 0; k--) if (parts[k].at === at) parts.splice(k, 1);
+  };
+  for (const at of [...partial]) dropLine(at);
 
   // Merge, validate, and drop exactly the AI parts the strict parser points at until the whole thing checks.
   const build = () => {
@@ -156,9 +168,9 @@ export async function translateCampaign(
       if (!bad.size) for (const p of parts) if (p.instruction?.kind === "make" && p.instruction.cta?.pick === "named") bad.add(p);
       if (!bad.size) for (const p of parts) bad.add(p);
     }
-    for (const p of bad) parts.splice(parts.indexOf(p), 1);
+    for (const at of new Set([...bad].map((p) => p.at))) dropLine(at);
   }
 
-  const kept = new Set(parts.map((p) => p.at));
+  const kept = new Set(parts.map((p) => p.at).filter((at) => !partial.has(at)));
   return { compiled: final, couldNotUnderstand: unread.filter((_, i) => !kept.has(i)).map((u) => u.line) };
 }
