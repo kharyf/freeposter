@@ -2,12 +2,12 @@
 // Resume and the library's CTAs are only changeable from here, never from an agent's MCP tools.
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { accountSets } from "../accounts.ts";
-import { todayUse } from "../ai/budget.ts";
+import { budget, todayUse } from "../ai/budget.ts";
 import type { Store } from "../db.ts";
 import { trustedRequest } from "../mcp.ts";
 import { campaignVocabulary, undoChange } from "./autorun.ts";
 import { parseCompiled } from "./spec.ts";
-import { CampaignStore, type Campaign, type LibraryKind, type TaskState } from "./store.ts";
+import { CampaignStore, confirmedForText, type Campaign, type LibraryKind, type TaskState } from "./store.ts";
 import { translateCampaign } from "./translate.ts";
 import { iso } from "./view.ts";
 import { dayKey, type CampaignWorker } from "./worker.ts";
@@ -62,7 +62,7 @@ function campaignRoutes(app: FastifyInstance, store: Store, worker?: CampaignWor
   /** The campaign as the tab shows it. */
   const view = (c: Campaign) => ({
     id: c.id, name: c.name, text: c.text, textSha: c.textSha, compiled: c.compiled, enabled: c.enabled, autorun: c.autorun,
-    runnable: cs.isRunnable(c), confirmedForText: c.compiledSha !== null && c.compiledSha === c.textSha, confirmedAt: c.confirmedAt, accountSetId: c.accountSetId, defaultPostTimes: c.defaultPostTimes,
+    runnable: cs.isRunnable(c), confirmedForText: confirmedForText(c), confirmedAt: c.confirmedAt, accountSetId: c.accountSetId, defaultPostTimes: c.defaultPostTimes,
     dailyPostCap: c.dailyPostCap, excluded: cs.excluded(c.id),
   });
   /** Resolves `:id` to a campaign, or answers 400/404 itself. */
@@ -79,7 +79,15 @@ function campaignRoutes(app: FastifyInstance, store: Store, worker?: CampaignWor
 
   // ---- campaigns ----
 
-  app.get("/api/campaigns", async () => ({ killed: cs.killed(), campaigns: cs.campaigns().map(view), ai: todayUse(store) }));
+  /** Every campaign; with ?today=1 each carries its tasks for today too (the tab's Today panels, in one call). */
+  app.get("/api/campaigns", async (req) => {
+    const today = (req.query as { today?: string }).today === "1" ? dayKey(Date.now()) : null;
+    return {
+      killed: cs.killed(),
+      campaigns: cs.campaigns().map((c) => (today ? { ...view(c), today: cs.tasksOn(c.id, today) } : view(c))),
+      ai: { ...todayUse(store), max: budget(store) },
+    };
+  });
 
   app.post("/api/campaigns", async (req, reply) => {
     const b = bodyOf(req);

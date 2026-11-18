@@ -50,7 +50,11 @@ test("campaigns: create, list, and the settings routes", async () => {
   const body = res.json();
   assert.equal(body.killed, false);
   assert.ok(body.ai.budgeted);
+  assert.equal(body.ai.max.calls, 50, "the ceiling the tab shows today's use against");
   assert.equal(body.campaigns.length, 2);
+  assert.equal(body.campaigns[0].today, undefined, "today's tasks only when asked for");
+  const withToday = (await send("GET", "/api/campaigns?today=1")).json();
+  assert.ok(withToday.campaigns.every((x: any) => Array.isArray(x.today)), "one call brings every campaign's tasks for today");
   const c = body.campaigns.find((x: any) => x.id === id);
   assert.equal(c.name, "Second");
   assert.equal(c.text, "hello");

@@ -189,7 +189,9 @@ const ENTRY_COLUMNS: Record<string, string> = { name: "name", text: "text", keyw
 const ready = new WeakSet<Store>();
 
 /** Enabled, and its compiled schedule was confirmed for its current text. */
-const runnable = (c: Campaign) => c.enabled && c.compiledSha !== null && c.compiledSha === c.textSha;
+/** Whether the confirmed schedule is the one for the campaign's current text (editing the text unconfirms it). */
+export const confirmedForText = (c: Campaign) => c.compiledSha !== null && c.compiledSha === c.textSha;
+const runnable = (c: Campaign) => c.enabled && confirmedForText(c);
 
 /**
  * Whether a campaign video with these types may post without the user's approval: it has at least one type, and

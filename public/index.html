@@ -586,9 +586,9 @@
     <h2 id="cpArTitle">Turn on Autorun for <span id="cpArName"></span>?</h2>
     <p style="margin:0 0 4px">Whichever AI agent is connected to FreePoster may then change this campaign however it thinks best. Every change is listed under Changes with its reason, and you can undo each one.</p>
     <p class="may">It may:</p>
-    <ul><li>change the schedule, the rules, how many videos are made and their editing styles</li><li>change the types its videos carry</li><li>add hooks and angles to the library (for this campaign only)</li></ul>
+    <ul><li>change the schedule, the rules, how many videos are made and their editing styles</li><li>change the types its videos carry</li><li>add hooks and angles to the library (for this campaign only)</li><li>lower the daily post cap</li></ul>
     <p class="maynot">It may not:</p>
-    <ul><li>change CTA links or add CTAs</li><li>raise the daily post cap</li><li>let a type post without approval</li><li>stop or resume campaigns</li><li>turn Autorun on or off</li></ul>
+    <ul><li>change CTA links or add CTAs</li><li>use a CTA this campaign doesn't already use</li><li>raise the daily post cap</li><li>let a type post without approval, or add a type that posts without approval</li><li>switch the campaign on or off</li><li>stop or resume campaigns</li><li>turn Autorun on or off</li></ul>
     <div class="cp-buttons"><button type="button" id="cpArCancel">Cancel</button><button type="button" id="cpArOk" class="go">Turn on Autorun</button></div>
   </dialog>
 </main>
@@ -2243,8 +2243,8 @@ let anCharts = null; // the open detail's chart series, to redraw on resize
 const anLabel = (p) => status.platforms?.find((x) => x.platform === p)?.label ?? p;
 const anStyleName = (id) => status.editingStyles?.find((s) => s.id === id)?.name ?? id;
 const anHttp = (u) => typeof u === "string" && /^https?:\/\//i.test(u);
-let anBannered = false; // the page banner shows an Analytics load error (cleared by the next good load)
-const anFail = (text) => { anBannered = true; banner("err", text); };
+let anBannerText = null; // the page banner's text when Analytics put it there (cleared by the next good load, if still showing)
+const anFail = (text) => { anBannerText = text; banner("err", text); };
 const anNum = (n) => n >= 10000 ? new Intl.NumberFormat([], { notation: "compact", maximumFractionDigits: 1 }).format(n) : Math.round(n).toLocaleString();
 const anFull = (n) => Number.isInteger(n) ? n.toLocaleString() : n.toLocaleString([], { maximumFractionDigits: 2 });
 const anAge = (sec) => { const h = sec / 3600; return h <= 72 ? `${+h.toFixed(h < 10 ? 1 : 0)}h` : `${+(h / 24).toFixed(h < 240 ? 1 : 0)}d`; };
@@ -2322,7 +2322,8 @@ async function loadAnalytics() {
     if (seq !== anSeq) return;
     if (!res.ok) { anFail(body.error ?? "Couldn't load the analytics"); return; }
     an = body;
-    if (anBannered) { anBannered = false; banner(); }
+    if (anBannerText && $("banner").textContent === anBannerText) banner(); // not another tab's message
+    anBannerText = null;
     keepFocus(renderAnalytics); // the 60 s refresh mustn't move the keyboard off the row it's on
   } catch {
     if (seq === anSeq) anFail("Couldn't reach FreePoster to load the analytics. Is it still running?");
@@ -2653,10 +2654,16 @@ const CP_KIND_WORD = { hook: "hook", angle: "angle", cta: "CTA" };
 const CP_AUTOPOST_WARNING = "Videos with only these types will post without asking you.";
 let cp = null; // the last /api/campaigns answer
 let cpLib = { entries: [], types: [] };
-let cpAi = null; // today's AI use with its ceiling (from /api/analytics)
+let cpAi = null; // today's AI use with its ceiling
+let cpBannerText = null; // the page banner's text when this tab put it there (cleared by the next good load, if still showing)
 let cpLibKind = "hook";
 let cpLibEdit = null; // the library entry whose edit form is open
 let cpLibNote = null; // { kind: "ok" | "err", text }
+const cpLibDrafts = {}; // library form field id -> what's typed in it (every redraw puts it back)
+const CP_LIB_FIELD = /^(cp(?:E\d+|N(?:hook|angle|cta))(?:name|text|kw|url)|cpTypeName|cpTypeColor)$/;
+const cpLibVal = (id, fallback) => esc(cpLibDrafts[id] ?? fallback ?? "");
+const cpLibForget = (...ids) => { for (const id of ids) delete cpLibDrafts[id]; };
+const cpFormIds = (p) => ["name", "text", "kw", "url"].map((f) => `${p}${f}`);
 let cpSeq = 0; // answers to older loads are dropped
 let cpArFor = null; // the campaign the Autorun dialog is asking about
 const cpPreviews = {}; // campaign id -> the last Preview: { compiled, couldNotUnderstand, textSha, text }
@@ -2694,21 +2701,32 @@ const cpTypeName = (id) => { const t = cpLib.types.find((x) => x.id === id); ret
 const cpTypes = (ids) => (ids?.length ? `${ids.length === 1 ? "type" : "types"} ${ids.map(cpTypeName).join(", ")}` : "");
 const cpHttp = (u) => { try { const x = new URL(u); return x.protocol === "http:" || x.protocol === "https:"; } catch { return false; } };
 
+/** Shows a load error in the page banner, remembering it so the next good load can take it away again. */
+function cpFail(text) {
+  cpBannerText = text;
+  banner("err", text);
+}
+
 async function loadCampaigns() {
   const seq = ++cpSeq;
-  const [camps, lib, types, ana] = await Promise.all([cpCall("GET", "/api/campaigns"), cpCall("GET", "/api/library"), cpCall("GET", "/api/types"), cpCall("GET", "/api/analytics?days=7")]);
+  // ?today=1: every campaign's tasks for today come in the same answer (the Today panels)
+  const [camps, lib, types] = await Promise.all([cpCall("GET", "/api/campaigns?today=1"), cpCall("GET", "/api/library"), cpCall("GET", "/api/types")]);
   if (seq !== cpSeq) return;
-  if (!camps.ok) { banner("err", `Couldn't load the campaigns: ${camps.error}`); return; }
+  if (!camps.ok) {
+    cpFail(`Couldn't load the campaigns: ${camps.error}`);
+    if (!cp) { // nothing to show yet: say so instead of "Loading…"
+      $("cpLibrary").innerHTML = `<div class="cp-note err">The campaigns couldn't be loaded. <button type="button" id="cpRetry">Try again</button></div>`;
+      $("cpList").innerHTML = "";
+    }
+    return;
+  }
+  if (cpBannerText && $("banner").textContent === cpBannerText) banner(); // only if it's still this tab's message
+  cpBannerText = null;
   cp = camps.body;
+  for (const c of cp.campaigns) cpToday[c.id] = { tasks: c.today ?? [] };
   if (lib.ok) cpLib.entries = lib.body.entries;
   if (types.ok) cpLib.types = types.body.types;
-  cpAi = ana.ok ? ana.body.ai : cp.ai ? { ...cp.ai, max: null } : null;
-  const today = cpLocalDate();
-  await Promise.all(cp.campaigns.map(async (c) => {
-    const r = await cpCall("GET", `/api/campaigns/${c.id}/tasks?date=${today}`);
-    cpToday[c.id] = r.ok ? { tasks: r.body.tasks } : { error: r.error };
-  }));
-  if (seq !== cpSeq) return;
+  cpAi = cp.ai ?? null;
   keepFocus(renderCampaigns);
 }
 
@@ -2737,9 +2755,18 @@ function renderCpLibrary() {
   const count = (k) => (k === "type" ? cpLib.types.length : cpLib.entries.filter((e) => e.kind === k).length);
   const seg = CP_LIB.map(([k, t]) => `<button type="button" data-cp-lib="${k}" aria-pressed="${cpLibKind === k}">${t} (${count(k)})</button>`).join("");
   const list = cpLibKind === "type" ? cpTypesHtml() : cpEntriesHtml(cpLibKind);
-  const note = cpLibNote ? `<div class="cp-note ${cpLibNote.kind}" role="status">${esc(cpLibNote.text)}</div>` : "";
   $("cpLibrary").innerHTML = `<div class="section-head"><h2>Library</h2><span class="muted">what campaign text can name</span></div>
-    <div class="cp-seg" role="group" aria-label="Library part">${seg}</div>${list}${note}`;
+    <div class="cp-seg" role="group" aria-label="Library part">${seg}</div>${list}<div id="cpLibNote" role="status"></div>`;
+  cpShowLibNote(cpLibNote);
+}
+
+/** Changes only the library's note: the forms (and what's typed in them) stay as they are. */
+function cpShowLibNote(note) {
+  cpLibNote = note;
+  const el = $("cpLibNote");
+  if (!el) return;
+  el.className = note ? `cp-note ${note.kind}` : "";
+  el.textContent = note?.text ?? "";
 }
 
 const cpOwner = (e) => {
@@ -2750,13 +2777,13 @@ const cpOwner = (e) => {
 
 function cpEntryForm(kind, e) {
   const p = e ? `cpE${e.id}` : `cpN${kind}`;
-  const v = (x) => esc(x ?? "");
+  const v = cpLibVal;
   const text = { hook: ["Words", "The words the video opens with"], angle: ["Description", "The problem the video claims to solve"], cta: ["Spoken text", "What the video says at the end"] }[kind];
   return `<div class="cp-form" data-cp-form="${e ? e.id : `new:${kind}`}">
-    <div><label for="${p}name">Name</label><input type="text" id="${p}name" maxlength="100" value="${v(e?.name)}"></div>
-    <div><label for="${p}text">${text[0]}</label><textarea id="${p}text" maxlength="2000" placeholder="${text[1]}">${v(e?.text)}</textarea></div>
-    ${kind === "angle" ? `<div><label for="${p}kw">Keywords</label><input type="text" id="${p}kw" value="${v(e?.keywords?.join(", "))}" placeholder="comma separated: myth, wrong, actually"></div>` : ""}
-    ${kind === "cta" ? `<div><label for="${p}url">Link</label><input type="text" id="${p}url" maxlength="2000" value="${v(e?.url)}" placeholder="https://…" inputmode="url"></div>` : ""}
+    <div><label for="${p}name">Name</label><input type="text" id="${p}name" maxlength="100" value="${v(`${p}name`, e?.name)}"></div>
+    <div><label for="${p}text">${text[0]}</label><textarea id="${p}text" maxlength="2000" placeholder="${text[1]}">${v(`${p}text`, e?.text)}</textarea></div>
+    ${kind === "angle" ? `<div><label for="${p}kw">Keywords</label><input type="text" id="${p}kw" value="${v(`${p}kw`, e?.keywords?.join(", "))}" placeholder="comma separated: myth, wrong, actually"></div>` : ""}
+    ${kind === "cta" ? `<div><label for="${p}url">Link</label><input type="text" id="${p}url" maxlength="2000" value="${v(`${p}url`, e?.url)}" placeholder="https://…" inputmode="url"></div>` : ""}
     <div class="go">${e ? `<button type="button" data-cp-save="${e.id}">Save</button><button type="button" data-cp-cancel>Cancel</button>`
       : `<button type="button" data-cp-add="${kind}">Add ${CP_KIND_WORD[kind]}</button>`}</div></div>`;
 }
@@ -2777,8 +2804,8 @@ function cpTypesHtml() {
       ${t.autoPost ? `<div class="cp-autopost-on">⚠ ${esc(CP_AUTOPOST_WARNING)}</div>` : ""}</div>
     <label class="cp-switch"><input type="checkbox" data-cp-autopost="${t.id}" data-focus="cp-autopost-${t.id}" ${t.autoPost ? "checked" : ""}> Post without approval</label></div>`).join("");
   return `${rows || `<div class="muted">No types yet. A type tags a campaign's videos (“make 2 Fancy videos, type Promo…”).</div>`}
-    <div class="cp-form"><div><label for="cpTypeName">Name</label><input type="text" id="cpTypeName" maxlength="50"></div>
-      <div><label for="cpTypeColor">Colour</label><input type="color" id="cpTypeColor" value="#1f5eff"></div>
+    <div class="cp-form"><div><label for="cpTypeName">Name</label><input type="text" id="cpTypeName" maxlength="50" value="${cpLibVal("cpTypeName")}"></div>
+      <div><label for="cpTypeColor">Colour</label><input type="color" id="cpTypeColor" value="${cpLibVal("cpTypeColor", "#1f5eff")}"></div>
       <div class="go"><button type="button" id="cpTypeAdd">Add type</button></div></div>
     <p class="muted" style="margin:8px 0 0">Every video waits for your approval unless it has at least one type and all its types allow posting without approval.</p>`;
 }
@@ -2799,28 +2826,32 @@ async function cpLibraryAction(e) {
   const seg = t.closest("[data-cp-lib]");
   if (seg) { cpLibKind = seg.dataset.cpLib; cpLibEdit = null; cpLibNote = null; renderCpLibrary(); return; }
   if (t.closest("[data-cp-edit]")) { cpLibEdit = Number(t.closest("[data-cp-edit]").dataset.cpEdit); cpLibNote = null; renderCpLibrary(); $(`cpE${cpLibEdit}name`)?.focus(); return; }
-  if (t.closest("[data-cp-cancel]")) { cpLibEdit = null; renderCpLibrary(); return; }
-  const done = async (r, ok) => {
-    cpLibNote = r.ok ? { kind: "ok", text: ok } : { kind: "err", text: r.error };
-    if (r.ok) await loadCampaigns(); else renderCpLibrary();
+  if (t.closest("[data-cp-cancel]")) { cpLibForget(...cpFormIds(`cpE${cpLibEdit}`)); cpLibEdit = null; renderCpLibrary(); return; }
+  if (t.id === "cpRetry") { loadCampaigns(); return; }
+  // A refusal changes only the note, so what was typed stays; a success forgets the form's draft and reloads.
+  const done = async (r, ok, fields) => {
+    if (!r.ok) return cpShowLibNote({ kind: "err", text: r.error });
+    cpLibForget(...fields);
+    cpLibNote = { kind: "ok", text: ok };
+    await loadCampaigns();
   };
   const add = t.closest("[data-cp-add]");
   if (add) {
     const kind = add.dataset.cpAdd;
     const { body, problem } = cpEntryBody(kind, `cpN${kind}`);
-    if (problem) { cpLibNote = { kind: "err", text: problem }; renderCpLibrary(); return; }
+    if (problem) return cpShowLibNote({ kind: "err", text: problem });
     const r = await cpBusy(add, () => cpCall("POST", "/api/library", { kind, ...body }));
-    await done(r, `Added the ${CP_KIND_WORD[kind]} “${body.name}”.`);
+    await done(r, `Added the ${CP_KIND_WORD[kind]} “${body.name}”.`, cpFormIds(`cpN${kind}`));
     return;
   }
   const save = t.closest("[data-cp-save]");
   if (save) {
     const id = Number(save.dataset.cpSave);
     const { body, problem } = cpEntryBody(cpEntry(id)?.kind, `cpE${id}`);
-    if (problem) { cpLibNote = { kind: "err", text: problem }; renderCpLibrary(); return; }
+    if (problem) return cpShowLibNote({ kind: "err", text: problem });
     const r = await cpBusy(save, () => cpCall("PUT", `/api/library/${id}`, body));
     if (r.ok) cpLibEdit = null;
-    await done(r, `Saved “${body.name}”.`);
+    await done(r, `Saved “${body.name}”.`, cpFormIds(`cpE${id}`));
     return;
   }
   const del = t.closest("[data-cp-del]");
@@ -2829,14 +2860,14 @@ async function cpLibraryAction(e) {
     if (!entry || !confirm(`Delete the ${CP_KIND_WORD[entry.kind]} “${entry.name}” from the library?`)) return;
     const r = await cpBusy(del, () => cpCall("DELETE", `/api/library/${entry.id}`));
     if (!r.ok && r.status === 409) r.error = `“${entry.name}” is in use, so it wasn't deleted: ${r.error}`;
-    await done(r, `Deleted “${entry.name}”.`);
+    await done(r, `Deleted “${entry.name}”.`, cpFormIds(`cpE${entry.id}`));
     return;
   }
   if (t.id === "cpTypeAdd") {
     const name = $("cpTypeName").value.trim();
-    if (!name) { cpLibNote = { kind: "err", text: "Give the type a name." }; renderCpLibrary(); return; }
+    if (!name) return cpShowLibNote({ kind: "err", text: "Give the type a name." });
     const r = await cpBusy(t, () => cpCall("POST", "/api/types", { name, color: $("cpTypeColor").value }));
-    await done(r, `Added the type “${name}”. It waits for approval until you switch on Post without approval.`);
+    await done(r, `Added the type “${name}”. It waits for approval until you switch on Post without approval.`, ["cpTypeName", "cpTypeColor"]);
   }
 }
 
@@ -2909,7 +2940,7 @@ function cpTaskHtml(t) {
   const bits = [ch.hook?.name && `hook ${esc(ch.hook.name)}`, ch.angle?.name && `angle ${esc(ch.angle.name)}`, ch.cta?.name && `CTA ${esc(ch.cta.name)}`,
     ch.postTime && `at ${esc(ch.postTime)}`].filter(Boolean).join(" · ");
   const notes = [...(Array.isArray(ch.notes) ? ch.notes : [])];
-  if (t.kind === "post" && ch.sourceTaskId) notes.push("a kept campaign video with this name was used, so a Drive file held under the same name keeps waiting");
+  if (t.kind === "post" && ch.sourceTaskId) notes.push("this line posts a kept campaign video; if a Drive file with this name arrives, it stays held");
   return `<li><span class="st ${esc(t.state)}">${esc(CP_STATE_WORD[t.state] ?? t.state)}</span> · ${esc(t.kind)}${name}${bits ? ` · ${bits}` : ""}
     ${t.error ? `<span class="why err">${esc(t.error)}</span>` : ""}${notes.map((n) => `<span class="why">Note: ${esc(n)}</span>`).join("")}</li>`;
 }
@@ -2945,6 +2976,12 @@ function cpChangesHtml(c) {
     <div>${x.undoneAt ? `<span class="muted">undone</span>` : `<button type="button" data-cp-undo="${x.id}" data-cp-camp="${c.id}" data-focus="cp-undo-${x.id}">Undo</button>`}</div></div>`).join("");
 }
 
+/** Whether the campaign's preview is still for what the text box says and what the server holds (only then can it be confirmed). */
+function cpPreviewFits(c) {
+  const p = cpPreviews[c.id];
+  return Boolean(p) && (cpDrafts[c.id] ?? c.text) === p.text && c.textSha === p.textSha;
+}
+
 function cpCardHtml(c) {
   const preview = cpPreviews[c.id];
   const draft = cpDrafts[c.id] ?? c.text;
@@ -2956,8 +2993,7 @@ function cpCardHtml(c) {
   const noteHtml = note ? `<div class="cp-note ${note.kind}" role="status">${esc(note.text)}${note.problems?.length ? `<ul>${note.problems.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>` : ""}</div>` : "";
   let week;
   if (preview) {
-    const stale = draft !== preview.text;
-    week = `<h3>Preview <span class="cp-preview-mark">not confirmed yet: nothing runs until you confirm it${stale ? " · the text box has changed since this preview" : ""}</span></h3>
+    week = `<h3>Preview <span class="cp-preview-mark">not confirmed yet: nothing runs until you confirm it<span id="cpStale${c.id}" ${cpPreviewFits(c) ? "hidden" : ""}> · the text has changed since this preview: preview again to confirm</span></span></h3>
       ${cpWeekHtml(preview.compiled, c)}
       ${preview.couldNotUnderstand.length ? `<div class="cp-unread"><strong>Couldn't understand</strong> (these lines are left out; reword them and preview again):
         <ul>${preview.couldNotUnderstand.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></div>` : ""}`;
@@ -2981,7 +3017,7 @@ function cpCardHtml(c) {
     <label for="cpText${c.id}">The week, in your words</label>
     <textarea id="cpText${c.id}" data-cp-text="${c.id}" maxlength="20000" placeholder="On Sunday make and post 3 Fancy videos with Stop Scrolling hook, Myth Bust angle, and Free Guide call to action. On Monday post 'Gatekeeping_5.30.pm_Basic'. …">${esc(draft)}</textarea>
     <div class="cp-buttons"><button type="button" id="cpPrev${c.id}" data-cp-preview="${c.id}" ${cpReading[c.id] ? "disabled" : ""}>${cpReading[c.id] ? "Reading…" : "Preview"}</button>
-      ${preview && !cpReading[c.id] ? `<button type="button" class="go" id="cpConf${c.id}" data-cp-confirm="${c.id}">Confirm this schedule</button>` : ""}</div>
+      ${preview && !cpReading[c.id] ? `<button type="button" class="go" id="cpConf${c.id}" data-cp-confirm="${c.id}" ${cpPreviewFits(c) ? "" : "hidden"}>Confirm this schedule</button>` : ""}</div>
     ${noteHtml}
     ${week}
     <h3>Today</h3>${cpTodayHtml(c)}
@@ -3010,16 +3046,21 @@ async function cpPreview(id) {
     cpPreviews[id] = { ...r.body, text };
     const unread = r.body.couldNotUnderstand.length;
     cpNotes[id] = { kind: unread ? "err" : "ok", text: unread ? `${unread} line${unread === 1 ? "" : "s"} couldn't be understood; see below.` : "Check the table, then confirm it." };
-  } else cpNotes[id] = { kind: "err", text: r.error, problems: r.problems };
+  } else {
+    delete cpPreviews[id]; // an older preview isn't the text being asked about any more
+    cpNotes[id] = { kind: "err", text: r.error, problems: r.problems };
+  }
   await loadCampaigns(); // the text is saved now: the campaign pauses until this schedule is confirmed
 }
 
 async function cpConfirm(id, button) {
   const p = cpPreviews[id];
-  if (!p) return;
+  const c = cpCampaign(id);
+  if (!p || !c) return;
+  if (!cpPreviewFits(c)) { cpNotes[id] = { kind: "err", text: "The text changed since this preview — preview again." }; return keepFocus(renderCampaigns); }
   const r = await cpBusy(button, () => cpCall("POST", `/api/campaigns/${id}/confirm`, { compiled: p.compiled, textSha: p.textSha }));
   if (r.ok) { delete cpPreviews[id]; cpNotes[id] = { kind: "ok", text: r.body.enabled ? "Confirmed. It runs from now on." : "Confirmed. Switch on Enabled to run it." }; }
-  else if (r.status === 409) cpNotes[id] = { kind: "err", text: "The text changed since this preview — preview again." };
+  else if (r.status === 409) { delete cpPreviews[id]; cpNotes[id] = { kind: "err", text: "The text changed since this preview — preview again." }; }
   else cpNotes[id] = { kind: "err", text: r.error, problems: r.problems };
   await loadCampaigns();
 }
@@ -3045,6 +3086,7 @@ function cpOpenAutorun(c) {
 }
 
 $("cpLibrary").addEventListener("click", (e) => { cpLibraryAction(e); });
+$("cpLibrary").addEventListener("input", (e) => { if (CP_LIB_FIELD.test(e.target.id)) cpLibDrafts[e.target.id] = e.target.value; });
 $("cpLibrary").addEventListener("change", (e) => { const box = e.target.closest("[data-cp-autopost]"); if (box) cpAutoPost(box); });
 $("cpLibrary").addEventListener("keydown", (e) => {
   // Enter in a one-line field of a library form presses its Add / Save button
@@ -3058,6 +3100,11 @@ $("cpList").addEventListener("input", (e) => {
   if (!t) return;
   const id = Number(t.dataset.cpText);
   cpDrafts[id] = t.value;
+  const c = cpCampaign(id);
+  if (!c || !cpPreviews[id]) return;
+  const fits = cpPreviewFits(c); // typing past the preview hides its Confirm at once
+  if ($(`cpConf${id}`)) $(`cpConf${id}`).hidden = !fits;
+  if ($(`cpStale${id}`)) $(`cpStale${id}`).hidden = fits;
 });
 $("cpList").addEventListener("click", async (e) => {
   const prev = e.target.closest("[data-cp-preview]");
@@ -3156,9 +3203,9 @@ $("cpNew").addEventListener("click", async (e) => {
   $(`cpText${r.body.id}`)?.focus();
 });
 // Today's counts move as videos are made and posted; keep up while the tab shows, but not under someone typing
-// in a field (a redraw would drop a half-typed library entry or cap).
+// in a field (a redraw would drop a half-typed cap or post time; library forms and the week's text are kept anyway).
 setInterval(() => {
-  const typing = $("campaigns").contains(document.activeElement) && document.activeElement.matches("input:not([type=checkbox]), textarea, select");
+  const typing = $("campaigns").contains(document.activeElement) && document.activeElement.matches("input:not([type=checkbox]):not([type=color]), textarea");
   if (!$("campaigns").hidden && !$("autorun-warning").open && !typing) loadCampaigns();
 }, 15000);
 

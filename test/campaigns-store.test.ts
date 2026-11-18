@@ -1,7 +1,7 @@
 import "./isolated-home.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CampaignStore, heldNames } from "../src/campaigns/store.ts";
+import { CampaignStore, confirmedForText, heldNames } from "../src/campaigns/store.ts";
 import { DAYS, type CompiledCampaign } from "../src/campaigns/spec.ts";
 import { newStore } from "./helpers.ts";
 
@@ -37,6 +37,9 @@ test("editing text makes a confirmed campaign not runnable until confirmed again
   assert.equal(cs.isRunnable(cs.campaign(id)!), true);
   cs.setEnabled(id, false);
   assert.equal(cs.isRunnable(cs.campaign(id)!), false);
+  assert.equal(confirmedForText(cs.campaign(id)!), true, "off, but its schedule is still the current text's");
+  cs.setText(id, "Tuesday make 4");
+  assert.equal(confirmedForText(cs.campaign(id)!), false);
 });
 
 test("ruleFired is true once, then false for the same key", () => {
