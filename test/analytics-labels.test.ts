@@ -5,7 +5,8 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { AnalyticsStore } from "../src/analytics/store.ts";
 import { CampaignStore } from "../src/campaigns/store.ts";
-import { ctaFromTranscript, hookFromTranscript, labelOnPublish, labelRecorded, matchAngle, matchHook } from "../src/analytics/labels.ts";
+import { backfillLabels, ctaFromTranscript, hookFromTranscript, labelOnPublish, labelRecorded, matchAngle, matchHook, onPublished } from "../src/analytics/labels.ts";
+import { ReviewStore } from "../src/review/store.ts";
 import { OverBudget } from "../src/ai/budget.ts";
 import type { Transcript } from "../src/edit/transcribe.ts";
 import { DEFAULT_EDIT } from "../src/edit/settings.ts";
@@ -139,4 +140,50 @@ test("labelOnPublish keeps existing labels and stores bare ones without a transc
 test("labelOnPublish never throws", async () => {
   const store = newStore();
   await labelOnPublish({ store, ai: null }, 12345);
+});
+
+test("a post whose transcript is corrupt still gets a bare label row, so Analytics shows it", async () => {
+  const store = newStore();
+  const { postId, jobs } = publishedPost(store, { words: tr("hello there") });
+  writeFileSync(store.edit(store.post(postId)!.editId!)!.transcriptPath!, "{ not json");
+  await labelOnPublish({ store, ai: null }, jobs[0].id);
+  const l = new AnalyticsStore(store).labels(postId);
+  assert.ok(l, "labelled even though labelling threw");
+  assert.deepEqual([l.source, l.labelledBy, l.hookText, l.ctaText], ["recorded", "transcript", null, null]);
+});
+
+test("labelling still runs when starting the metrics polling throws", async () => {
+  const store = newStore();
+  const { postId, jobs } = publishedPost(store);
+  await onPublished({ store, ai: null, schedule: () => { throw new Error("poller broke"); } }, jobs[0].id);
+  assert.ok(new AnalyticsStore(store).labels(postId));
+});
+
+test("backfillLabels gives every published post with no labels a bare row, and leaves the rest alone", () => {
+  const store = newStore();
+  const an = new AnalyticsStore(store);
+  const old = publishedPost(store);
+  store.finishJob(old.jobs[0].id, "published", { resultUrl: "https://youtube.com/shorts/x" });
+  const labelled = publishedPost(store);
+  store.finishJob(labelled.jobs[0].id, "published", { resultUrl: "https://youtube.com/shorts/y" });
+  an.setLabels({ postId: labelled.postId, source: "generated", styleId: null, hookId: null, hookText: "h", angleId: null, angleText: null, ctaId: null, ctaText: null, campaignId: 3, campaignTaskId: 4, types: [], labelledBy: "campaign" });
+  const waiting = publishedPost(store);
+  assert.equal(backfillLabels(store), 1);
+  assert.deepEqual([an.labels(old.postId)!.source, an.labels(old.postId)!.labelledBy], ["recorded", "transcript"]);
+  assert.equal(an.labels(labelled.postId)!.labelledBy, "campaign");
+  assert.equal(an.labels(waiting.postId), undefined, "not published yet");
+  assert.equal(backfillLabels(store), 0);
+});
+
+test("a post made from a production is labelled generated, not recorded", async () => {
+  const store = newStore();
+  const { postId, jobs } = publishedPost(store);
+  new ReviewStore(store);
+  const now = Date.now();
+  const review = Number(store.db.prepare(
+    "INSERT INTO reviews (subject_kind, subject_id, source_path, draft, state, expires_at, requested_via, created_at, updated_at) VALUES ('production', 7, 'v.mp4', '{}', 'approved', ?, 'agent', ?, ?)",
+  ).run(now + 86_400_000, now, now).lastInsertRowid);
+  store.db.prepare("UPDATE posts SET review_id = ? WHERE id = ?").run(review, postId);
+  await labelOnPublish({ store, ai: null }, jobs[0].id);
+  assert.equal(new AnalyticsStore(store).labels(postId)!.source, "generated");
 });

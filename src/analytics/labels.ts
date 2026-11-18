@@ -119,17 +119,87 @@ export async function labelOnPublish(deps: LabelDeps, jobId: number): Promise<vo
     if (started.has(postId) || analytics.labels(postId)) return;
     started.add(postId);
     const post = deps.store.post(postId);
-    const styleId = deps.store.driveFileForPost(postId)?.choice?.styleId ?? null;
     const path = post?.editId ? deps.store.edit(post.editId)?.transcriptPath : null;
     const transcript: Transcript | null = path && existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : null;
-    const labels = transcript
-      ? await labelRecorded(deps, postId, transcript, styleId)
-      : { postId, source: "recorded", styleId, hookId: null, hookText: null, angleId: null, angleText: null, ctaId: null, ctaText: null, campaignId: null, campaignTaskId: null, types: [], labelledBy: "transcript" } as VideoLabels;
+    const labels = transcript ? await labelRecorded(deps, postId, transcript, bareLabels(deps.store, postId).styleId) : bareLabels(deps.store, postId);
+    if (fromProduction(deps.store, postId)) labels.source = "generated";
     // A campaign may have labelled the post while the AI was thinking; its labels win.
     if (!analytics.labels(postId)) analytics.setLabels(labels);
   } catch (err) {
     console.error(`labels: job ${jobId}: ${(err as Error).message}`);
+    // Labelling failed (a corrupt transcript, say): the post still gets a bare row, so Analytics shows it.
+    try {
+      if (postId !== undefined && !new AnalyticsStore(deps.store).labels(postId)) new AnalyticsStore(deps.store).setLabels(bareLabels(deps.store, postId));
+    } catch (inner) {
+      console.error(`labels: post ${postId}: ${(inner as Error).message}`);
+    }
   } finally {
     if (postId !== undefined) started.delete(postId);
   }
 }
+
+/**
+ * Whether a post's video came from a production (its review was of a production, or the edit it publishes was made
+ * from one): a generated video, not a recorded one.
+ */
+function fromProduction(store: Store, postId: number): boolean {
+  try {
+    const post = store.post(postId);
+    if (!post) return false;
+    const review = post.reviewId ? store.db.prepare("SELECT subject_kind, subject_id FROM reviews WHERE id = ?").get(post.reviewId) as { subject_kind: string; subject_id: number | null } | undefined : undefined;
+    if (review?.subject_kind === "production") return true;
+    const paths = [post.sourcePath];
+    let editId: number | null = review?.subject_kind === "edit" ? review.subject_id : post.editId ?? null;
+    for (let hops = 0; editId !== null && hops < 50; hops++) {
+      const e = store.edit(editId);
+      if (!e) break;
+      paths.push(e.sourcePath);
+      editId = e.parentEditId ?? null;
+    }
+    const made = store.db.prepare("SELECT 1 FROM productions WHERE output_path = ? LIMIT 1");
+    return paths.some((p) => p && made.get(p));
+  } catch {
+    return false; // no reviews or productions table yet: nothing came from one
+  }
+}
+
+/** The label row a post gets when nothing more is known: its source and Drive style, everything else empty. */
+function bareLabels(store: Store, postId: number): VideoLabels {
+  return {
+    postId, source: fromProduction(store, postId) ? "generated" : "recorded", styleId: store.driveFileForPost(postId)?.choice?.styleId ?? null,
+    hookId: null, hookText: null, angleId: null, angleText: null, ctaId: null, ctaText: null, campaignId: null, campaignTaskId: null,
+    types: [], labelledBy: "transcript",
+  };
+}
+
+/**
+ * A job was published: its metrics polling starts, then its post is labelled. Neither can stop the other (a poller
+ * that throws still lets the post be labelled), and neither throws.
+ */
+export async function onPublished(deps: LabelDeps & { schedule: (jobId: number) => void }, jobId: number): Promise<void> {
+  try {
+    deps.schedule(jobId);
+  } catch (err) {
+    console.error(`metrics: job ${jobId}: ${(err as Error).message}`);
+  }
+  await labelOnPublish(deps, jobId);
+}
+
+/**
+ * Every published post with no labels (published before labels existed, or whose labelling never finished) gets a
+ * bare row, so the Analytics tab shows it. Run at start-up. Returns how many were added.
+ */
+export function backfillLabels(store: Store): number {
+  const analytics = new AnalyticsStore(store);
+  const rows = store.db.prepare(
+    "SELECT DISTINCT j.post_id AS id FROM jobs j WHERE j.state = 'published' AND j.post_id IS NOT NULL AND j.post_id NOT IN (SELECT post_id FROM video_labels)",
+  ).all() as { id: number }[];
+  let added = 0;
+  for (const { id } of rows) {
+    if (!store.post(id) || analytics.labels(id)) continue;
+    analytics.setLabels(bareLabels(store, id));
+    added++;
+  }
+  return added;
+}
+
