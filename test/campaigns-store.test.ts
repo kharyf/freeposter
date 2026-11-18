@@ -81,12 +81,12 @@ test("tasks update and filter by state; changes log and undo; kill switch", () =
   const id = mk(cs);
   const t1 = cs.addTask(task(id))!;
   cs.addTask({ ...task(id), instructionIndex: 1, state: "posted" });
-  cs.updateTask(t1, { state: "made", productionId: 9, choices: { hook: 1 } });
+  cs.updateTask(t1, { state: "rendering", productionId: 9, choices: { hook: 1 } });
   const t = cs.task(t1)!;
-  assert.equal(t.state, "made");
+  assert.equal(t.state, "rendering");
   assert.equal(t.productionId, 9);
   assert.deepEqual(t.choices, { hook: 1 });
-  assert.deepEqual(cs.tasksIn(["made", "planned"]).map((x) => x.id), [t1]);
+  assert.deepEqual(cs.tasksIn(["rendering", "queued"]).map((x) => x.id), [t1]);
   assert.deepEqual(cs.tasksIn([]), []);
   const ch = cs.logChange({ campaignId: id, agent: "claude", before: { a: 1 }, after: { a: 2 }, reason: "because" });
   assert.equal(cs.changes(id)[0].undoneAt, null);

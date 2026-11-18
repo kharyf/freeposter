@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS campaign_tasks (
   copy INTEGER NOT NULL DEFAULT 1,
   kind TEXT NOT NULL,
   choices TEXT NOT NULL DEFAULT '{}',
-  state TEXT NOT NULL DEFAULT 'planned',
+  state TEXT NOT NULL DEFAULT 'queued',
   production_id INTEGER,
   edit_id INTEGER,
   review_id INTEGER,
@@ -117,7 +117,7 @@ export interface Campaign {
 }
 
 export type TaskKind = "make" | "post" | "rule";
-export type TaskState = "planned" | "making" | "made" | "in_review" | "approved" | "posting" | "posted" | "skipped" | "failed";
+export type TaskState = "queued" | "scripting" | "rendering" | "editing" | "reviewing" | "scheduled" | "posted" | "kept" | "missed" | "failed";
 
 export interface CampaignTask {
   id: number;
@@ -290,7 +290,7 @@ export class CampaignStore {
       .prepare(`INSERT OR IGNORE INTO campaign_tasks (campaign_id, date, day_index, instruction_index, copy, kind, choices, state,
                   production_id, edit_id, review_id, post_id, error, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(t.campaignId, t.date, t.dayIndex, t.instructionIndex, t.copy ?? 1, t.kind, JSON.stringify(t.choices ?? {}), t.state ?? "planned",
+      .run(t.campaignId, t.date, t.dayIndex, t.instructionIndex, t.copy ?? 1, t.kind, JSON.stringify(t.choices ?? {}), t.state ?? "queued",
         t.productionId ?? null, t.editId ?? null, t.reviewId ?? null, t.postId ?? null, t.error ?? null, now, now);
     return changes > 0 ? Number(lastInsertRowid) : null;
   }
