@@ -1,0 +1,145 @@
+// Analytics tables: what each posted video is (labels), what the platforms said about it (append-only snapshots)
+// and when to ask next (poll schedule).
+import type { Store } from "../db.ts";
+import type { Snapshot, VideoLabels } from "./types.ts";
+
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS video_labels (
+  post_id INTEGER PRIMARY KEY,
+  source TEXT NOT NULL,
+  style_id TEXT,
+  hook_id INTEGER,
+  hook_text TEXT,
+  angle_id INTEGER,
+  angle_text TEXT,
+  cta_id INTEGER,
+  cta_text TEXT,
+  campaign_id INTEGER,
+  campaign_task_id INTEGER,
+  types TEXT NOT NULL DEFAULT '[]',
+  labelled_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS metric_snapshots (
+  id INTEGER PRIMARY KEY,
+  job_id INTEGER NOT NULL,
+  platform TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  taken_at INTEGER NOT NULL,
+  age_sec INTEGER NOT NULL,
+  metrics TEXT NOT NULL,
+  retention TEXT
+);
+CREATE INDEX IF NOT EXISTS metric_snapshots_job ON metric_snapshots(job_id, age_sec);
+CREATE TABLE IF NOT EXISTS metric_poll (
+  job_id INTEGER PRIMARY KEY,
+  next_at INTEGER NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  done INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS metric_poll_due ON metric_poll(done, next_at);
+`;
+
+const toLabels = (r: any): VideoLabels => ({
+  postId: r.post_id, source: r.source, styleId: r.style_id, hookId: r.hook_id, hookText: r.hook_text,
+  angleId: r.angle_id, angleText: r.angle_text, ctaId: r.cta_id, ctaText: r.cta_text, campaignId: r.campaign_id,
+  campaignTaskId: r.campaign_task_id, types: JSON.parse(r.types), labelledBy: r.labelled_by,
+});
+
+const toSnapshot = (r: any): Snapshot => {
+  const m = JSON.parse(r.metrics);
+  return {
+    id: r.id, jobId: r.job_id, platform: r.platform, externalId: r.external_id, takenAt: r.taken_at, ageSec: r.age_sec,
+    reading: { views: m.views, viewsKind: m.viewsKind, raw: m.raw, retention: r.retention ? JSON.parse(r.retention) : null },
+  };
+};
+
+export interface PollRow {
+  jobId: number;
+  nextAt: number;
+  attempts: number;
+  lastError: string | null;
+  done: boolean;
+}
+
+export class AnalyticsStore {
+  store: Store;
+
+  constructor(store: Store) {
+    this.store = store;
+    store.db.exec(SCHEMA);
+  }
+
+  get db() {
+    return this.store.db;
+  }
+
+  // ---- labels ----
+
+  /** Insert or replace the labels of a post (the user correcting one replaces it). */
+  setLabels(l: VideoLabels) {
+    this.db
+      .prepare(`INSERT INTO video_labels (post_id, source, style_id, hook_id, hook_text, angle_id, angle_text, cta_id, cta_text, campaign_id, campaign_task_id, types, labelled_by, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (post_id) DO UPDATE SET source = excluded.source, style_id = excluded.style_id, hook_id = excluded.hook_id,
+                  hook_text = excluded.hook_text, angle_id = excluded.angle_id, angle_text = excluded.angle_text, cta_id = excluded.cta_id,
+                  cta_text = excluded.cta_text, campaign_id = excluded.campaign_id, campaign_task_id = excluded.campaign_task_id,
+                  types = excluded.types, labelled_by = excluded.labelled_by`)
+      .run(l.postId, l.source, l.styleId, l.hookId, l.hookText, l.angleId, l.angleText, l.ctaId, l.ctaText, l.campaignId,
+        l.campaignTaskId, JSON.stringify(l.types), l.labelledBy, Date.now());
+  }
+
+  labels(postId: number): VideoLabels | undefined {
+    const r = this.db.prepare("SELECT * FROM video_labels WHERE post_id = ?").get(postId);
+    return r ? toLabels(r) : undefined;
+  }
+
+  allLabels(): VideoLabels[] {
+    return this.db.prepare("SELECT * FROM video_labels ORDER BY post_id").all().map(toLabels);
+  }
+
+  // ---- snapshots (append-only) ----
+
+  addSnapshot(s: Omit<Snapshot, "id">): number {
+    const { views, viewsKind, raw, retention } = s.reading;
+    const { lastInsertRowid } = this.db
+      .prepare("INSERT INTO metric_snapshots (job_id, platform, external_id, taken_at, age_sec, metrics, retention) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(s.jobId, s.platform, s.externalId, s.takenAt, s.ageSec, JSON.stringify({ views, viewsKind, raw }), retention ? JSON.stringify(retention) : null);
+    return Number(lastInsertRowid);
+  }
+
+  /** A job's snapshots, youngest first (ascending age). */
+  snapshots(jobId: number): Snapshot[] {
+    return this.db.prepare("SELECT * FROM metric_snapshots WHERE job_id = ? ORDER BY age_sec, id").all(jobId).map(toSnapshot);
+  }
+
+  // ---- poll schedule ----
+
+  pollFor(jobId: number): PollRow | undefined {
+    const r = this.db.prepare("SELECT * FROM metric_poll WHERE job_id = ?").get(jobId) as any;
+    return r ? { jobId: r.job_id, nextAt: r.next_at, attempts: r.attempts, lastError: r.last_error, done: Boolean(r.done) } : undefined;
+  }
+
+  /** Start or reschedule a job's polling; a finished one stays finished. */
+  schedulePoll(jobId: number, nextAt: number) {
+    this.db
+      .prepare("INSERT INTO metric_poll (job_id, next_at) VALUES (?, ?) ON CONFLICT (job_id) DO UPDATE SET next_at = excluded.next_at WHERE done = 0")
+      .run(jobId, nextAt);
+  }
+
+  duePolls(now: number, limit: number): { jobId: number; attempts: number }[] {
+    return (this.db.prepare("SELECT job_id, attempts FROM metric_poll WHERE done = 0 AND next_at <= ? ORDER BY next_at LIMIT ?").all(now, limit) as any[])
+      .map((r) => ({ jobId: r.job_id, attempts: r.attempts }));
+  }
+
+  /** Polling is over (the 30-day snapshot is taken or the video is gone); error says why when it's the latter. */
+  finishPoll(jobId: number, error: string | null) {
+    this.db.prepare("UPDATE metric_poll SET done = 1, last_error = ? WHERE job_id = ?").run(error, jobId);
+  }
+
+  /** A failed poll: remember why, count the attempt and try again at nextAt. */
+  notePollError(jobId: number, error: string, nextAt: number) {
+    this.db.prepare("UPDATE metric_poll SET attempts = attempts + 1, last_error = ?, next_at = ? WHERE job_id = ? AND done = 0").run(error, nextAt, jobId);
+  }
+}
