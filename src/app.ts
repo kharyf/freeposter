@@ -13,6 +13,7 @@ import { EditWorker } from "./edit/worker.ts";
 import { sampleFrames } from "./media.ts";
 import { MetricsPoller } from "./analytics/poller.ts";
 import { labelOnPublish } from "./analytics/labels.ts";
+import { CampaignWorker } from "./campaigns/worker.ts";
 import { Notifier } from "./notify.ts";
 import { publishers } from "./platforms/index.ts";
 import { adapters } from "./produce/adapters/index.ts";
@@ -97,6 +98,8 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
     writeCaption: (input) => writeCaption(input, publishers),
     frames: (sourcePath) => sampleFrames(sourcePath),
   });
+  // Campaigns: today's instructions become tasks, made by plain code and sent for review like everything else.
+  const campaigns = new CampaignWorker({ store, productions: producer, reviews, ai });
   const telegram = new TelegramReview(store, reviews);
   const app = buildServer(store, runner, publishers, options, { intake, poll: () => watcher.poll(), sync: () => watcher.sync() }, ai, producer, { service: reviews, telegram });
 
@@ -115,6 +118,7 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
   captioner.start();
   reviews.start();
   telegram.start();
+  campaigns.start();
   void intake.resume().catch((err) => console.error(`drive resume: ${(err as Error).message}`));
   const intakeTimer = setInterval(() => void intake.tick().catch((err) => console.error(`drive tick: ${(err as Error).message}`)), 10_000);
   watcher.start();
@@ -134,6 +138,7 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
       captioner.stop();
       reviews.stop();
       telegram.stop();
+      campaigns.stop();
       watcher.stop();
       clearInterval(intakeTimer);
       await app.close();

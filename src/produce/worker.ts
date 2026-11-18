@@ -49,6 +49,8 @@ export class ProductionWorker {
   /** running shot rows → their cancel switch */
   running = new Map<number, { controller: AbortController; productionId: number; lane: Lane }>();
   assembling = new Map<number, AbortController>();
+  /** set while someone else (a campaign's WanGP speech or music) has the GPU lane: no GPU shot starts meanwhile */
+  gpuLent = false;
   timer: NodeJS.Timeout | undefined;
   lastCleanup = 0;
 
@@ -93,7 +95,15 @@ export class ProductionWorker {
   }
 
   async create(raw: unknown): Promise<Production> {
-    const { spec, plan } = await this.prepare(raw);
+    return this.queue(await this.prepare(raw));
+  }
+
+  /** A production from a spec FreePoster built itself (a campaign video): staged, never parseSpec'd. */
+  async createStaged(spec: ProductionSpec): Promise<Production> {
+    return this.queue(await this.stage(spec));
+  }
+
+  private queue({ spec, plan }: { spec: ProductionSpec; plan: ShotPlan[] }): Production {
     const p = this.productions.create(spec, plan);
     log(p.id, `queued ${spec.shots.length} shot${spec.shots.length === 1 ? "" : "s"}`);
     void this.tick();
@@ -168,9 +178,25 @@ export class ProductionWorker {
     return { spec, plan };
   }
 
+  /**
+   * Runs `fn` as the GPU lane's one job, when no GPU shot is running: WanGP speech and music (wan-audio.ts) aren't
+   * shots, but they load models into the same VRAM. No GPU shot starts until `fn` ends. Null when the lane is busy
+   * (try again later).
+   */
+  async borrowGpu<T>(fn: () => Promise<T>): Promise<{ value: T } | null> {
+    if (this.gpuLent || [...this.running.values()].some((r) => r.lane === "gpu")) return null;
+    this.gpuLent = true;
+    try {
+      return { value: await fn() };
+    } finally {
+      this.gpuLent = false;
+      void this.tick();
+    }
+  }
+
   /** Starts what the lanes have room for, and assembles finished productions. Returns once started. */
   async tick(): Promise<void> {
-    const limits: Record<Lane, number> = { gpu: 1, cpu: config.produce.cpuLane };
+    const limits: Record<Lane, number> = { gpu: this.gpuLent ? 0 : 1, cpu: config.produce.cpuLane };
     for (const lane of ["gpu", "cpu"] as Lane[]) {
       while ([...this.running.values()].filter((r) => r.lane === lane).length < limits[lane]) {
         const shot = this.productions.claimShot(lane);

@@ -296,10 +296,12 @@ export class Store {
 
   // ---- posts & jobs ----
 
-  createPost(p: Omit<Post, "id" | "createdAt">, accountIds: number[]): number {
+  /** held: the jobs are made held (see holdPost) in the same transaction, so they can never go out before someone releases them. */
+  createPost(p: Omit<Post, "id" | "createdAt">, accountIds: number[], opts: { held?: boolean } = {}): number {
     this.db.exec("BEGIN");
     try {
       const postId = this.insertPost(p, accountIds);
+      if (opts.held) this.holdPost(postId);
       this.db.exec("COMMIT");
       return postId;
     } catch (err) {
@@ -510,12 +512,51 @@ export class Store {
   }
 
   /**
-   * Cancels a post's unstarted jobs; jobs already under way are left alone, since stopping
-   * mid-upload could leave a half-made post. Deletes the post when no jobs remain.
+   * Holds a post's jobs that haven't gone out (the campaign kill switch, or a campaign post waiting for its time):
+   * they won't run until releasePost. The time they had is kept in progress.heldFrom. Returns how many were held.
+   */
+  holdPost(postId: number): number {
+    const jobs = this.db.prepare("SELECT id, next_run_at, progress FROM jobs WHERE post_id = ? AND state IN ('queued', 'retry', 'waiting_quota')").all(postId) as { id: number; next_run_at: number; progress: string }[];
+    let held = 0;
+    for (const j of jobs) {
+      const progress = JSON.parse(j.progress) as Record<string, unknown>;
+      if (typeof progress.heldFrom === "number") continue;
+      progress.heldFrom = j.next_run_at;
+      this.db.prepare("UPDATE jobs SET next_run_at = ?, progress = ?, updated_at = ? WHERE id = ?").run(Number.MAX_SAFE_INTEGER, JSON.stringify(progress), Date.now(), j.id);
+      held++;
+    }
+    return held;
+  }
+
+  /**
+   * Lets a held post's jobs go again: at `at` when given (the post's scheduled time moves with them), else at the
+   * time they had, or now if that has passed. Returns how many were released.
+   */
+  releasePost(postId: number, opts: { at?: number; now?: number } = {}): number {
+    const { at } = opts;
+    const jobs = this.db.prepare("SELECT id, progress FROM jobs WHERE post_id = ? AND state IN ('queued', 'retry', 'waiting_quota')").all(postId) as { id: number; progress: string }[];
+    let released = 0;
+    for (const j of jobs) {
+      const progress = JSON.parse(j.progress) as Record<string, unknown>;
+      if (typeof progress.heldFrom !== "number") continue;
+      const next = at ?? Math.max(progress.heldFrom, opts.now ?? Date.now());
+      delete progress.heldFrom;
+      this.db.prepare("UPDATE jobs SET next_run_at = ?, progress = ?, updated_at = ? WHERE id = ?").run(next, JSON.stringify(progress), Date.now(), j.id);
+      released++;
+    }
+    if (released && at !== undefined) this.db.prepare("UPDATE posts SET scheduled_at = ? WHERE id = ?").run(at, postId);
+    return released;
+  }
+
+  /**
+   * Cancels a post's unstarted jobs (held ones included: holding never sends anything); jobs already under way are
+   * left alone, since stopping mid-upload could leave a half-made post. Deletes the post when no jobs remain.
    */
   cancelPost(postId: number): { cancelled: number; deleted: Post | undefined; orphanedSource: string | null } {
     const post = this.post(postId);
-    const { changes } = this.db.prepare(`DELETE ${this.unstartedJobs(postId)}`).run(postId);
+    const { changes } = this.db
+      .prepare(`DELETE FROM jobs WHERE post_id = ? AND state = 'queued' AND attempts = 0 AND (progress = '{}' OR json_remove(progress, '$.heldFrom') = '{}')`)
+      .run(postId);
     const left = this.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE post_id = ?").get(postId) as { n: number };
     if (left.n === 0) {
       this.db.prepare("DELETE FROM posts WHERE id = ?").run(postId);

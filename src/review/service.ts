@@ -35,8 +35,10 @@ export interface ReviewRequest {
   scheduledAt: number | null;
   tiktok: TikTokOptions | null;
   allowDuplicate: boolean;
-  via: "agent" | "window" | "drive";
+  via: "agent" | "window" | "drive" | "campaign";
   expiresInHours?: number;
+  /** a campaign video made to keep: approving keeps it in the library under this name, and nothing is posted */
+  keep?: string;
   /** false: approving after the scheduled time still posts (at once). Drive videos wait for the user like this. */
   expireAtSchedule?: boolean;
 }
@@ -110,6 +112,11 @@ export class ReviewService {
    * card). Resolves true once the user was told; false leaves it to try again later.
    */
   nudge: (r: Review, text: string) => Promise<boolean> = async () => false;
+  /**
+   * Whether a campaign task is making this video right now (the campaign worker answers). Such a video goes to review
+   * only from its campaign, so it can never be approved, and posted, twice.
+   */
+  ownedByCampaign: (s: Subject) => boolean = () => false;
   timer: NodeJS.Timeout | undefined;
 
   constructor(store: Store, deps: ReviewDeps) {
@@ -156,6 +163,10 @@ export class ReviewService {
 
   /** Checks what can be checked now and queues the review; preparing it (the exact file, the caption) happens in tick(). */
   async request(q: ReviewRequest): Promise<Review> {
+    if (q.via !== "campaign" && this.ownedByCampaign(q.subject)) {
+      throw new Error(`this ${q.subject.kind} is a campaign video that's still being made; its campaign sends it for review by itself`);
+    }
+    if (q.keep !== undefined && q.via !== "campaign") throw new Error("only a campaign keeps videos unposted");
     let source: string;
     let subjectId: number | null = null;
     let revision = 1;
@@ -192,11 +203,11 @@ export class ReviewService {
     if (q.scheduledAt && q.expireAtSchedule !== false) expiresAt = Math.max(Math.min(expiresAt, q.scheduledAt), now + MIN_LIFETIME_MS);
     const draft: ReviewDraft = {
       accountIds: q.accountIds, caption: q.caption, title: q.title, scheduledAt: q.scheduledAt, tiktok: q.tiktok,
-      allowDuplicate: q.allowDuplicate, captionTopic,
+      allowDuplicate: q.allowDuplicate, captionTopic, ...(q.keep !== undefined ? { keep: q.keep } : {}),
     };
     const { review, superseded } = this.reviews.create({ subjectKind: q.subject.kind, subjectId, revision, sourcePath: source, draft, expiresAt, requestedVia: q.via });
     for (const id of superseded) log(id, `replaced by review ${review.id}`);
-    log(review.id, `requested by ${q.via === "drive" ? "Drive intake" : `the ${q.via}`} for ${this.label(review).toLowerCase()}`);
+    log(review.id, `requested by ${q.via === "drive" ? "Drive intake" : q.via === "campaign" ? "a campaign" : `the ${q.via}`} for ${this.label(review).toLowerCase()}`);
     this.onChange();
     void this.tick().catch((err) => console.error(`reviews: ${(err as Error).message}`));
     return review;
@@ -361,6 +372,13 @@ export class ReviewService {
     }
     if (!this.reviews.decide(r.id, "approved", d)) return this.settled(this.reviews.get(id));
     log(r.id, `approved (${d.via})`);
+    if (r.draft.keep) {
+      // Kept for a later "post" line (or the user): approved, and nothing goes out.
+      if (r.subjectKind === "edit") this.store.approveEdit(r.subjectId!);
+      this.event(r, "review.approved", `The user approved ${this.label(r).toLowerCase()} (review ${r.id}); it's kept in the library as ${r.draft.keep}, not posted.`, { kept_as: r.draft.keep });
+      this.onChange();
+      return { ok: true, message: `Approved. It's kept in the library as ${r.draft.keep}; nothing was posted.`, review: this.reviews.get(id) };
+    }
     const postId = this.makePost(this.reviews.get(id)!);
     this.onChange();
     return { ok: postId !== null, message: postId !== null ? `Approved. Post ${postId} is going out.` : "Approved, but the post couldn't be made.", review: this.reviews.get(id) };
@@ -368,11 +386,14 @@ export class ReviewService {
 
   /** The approved review's post, made once: a crash between the approval and here is finished by tick(). */
   makePost(r: Review): number | null {
+    if (r.draft.keep) return null; // a kept campaign video is never posted by its review
     try {
       const existing = this.store.db.prepare("SELECT id FROM posts WHERE review_id = ?").get(r.id) as { id: number } | undefined;
+      // A campaign's post is made held: the campaign worker places it (its time, the daily cap, the kill switch)
+      // and releases it. Nothing goes out before that, whatever the draft's time.
       const postId = existing?.id ?? this.store.createPost({
         ...this.postDraft(r, r.masterPath!, r.masterSha256!), reviewId: r.id, approvedSha256: r.masterSha256, origin: "review",
-      }, r.draft.accountIds);
+      }, r.draft.accountIds, { held: r.requestedVia === "campaign" });
       this.reviews.setPost(r.id, postId);
       if (r.subjectKind === "edit") this.store.approveEdit(r.subjectId!);
       if (r.subjectKind === "production") this.productions?.approve(r.subjectId!, postId);
@@ -389,7 +410,7 @@ export class ReviewService {
   }
 
   private resumeApproved() {
-    for (const r of this.reviews.inState("approved")) if (r.postId === null) this.makePost(r);
+    for (const r of this.reviews.inState("approved")) if (r.postId === null && !r.draft.keep) this.makePost(r);
   }
 
   async reject(id: number, d: Decision): Promise<Outcome> {
@@ -431,8 +452,8 @@ export class ReviewService {
         { reason: d.reason ?? null, note: d.note ?? null, at_sec: atSec, context, handled_by: "freeposter" });
     } else {
       const tool = r.subjectKind === "edit" ? "revise_edit" : r.subjectKind === "production" ? "revise_production" : "a new edit or production";
-      const next = r.requestedVia === "drive"
-        ? "the new edit goes back to them for review by itself (it's a Drive video), so don't call request_review"
+      const next = r.requestedVia === "drive" || r.requestedVia === "campaign"
+        ? `the new edit goes back to them for review by itself (it's a ${r.requestedVia === "drive" ? "Drive" : "campaign"} video), so don't call request_review`
         : "the new version comes back for review";
       this.event(decided, "review.redo", `${asked} Call get_review, make the change with ${tool}, and tell them what you changed; ${next}.`,
         { reason: d.reason ?? null, note: d.note ?? null, at_sec: atSec, context, handled_by: "agent" });
@@ -582,6 +603,7 @@ export class ReviewService {
       at_sec: r.atSec,
       redo: r.state === "redo" ? this.redoContext(r) : null,
       post_id: r.postId,
+      kept_as: r.draft.keep ?? null,
       error: r.error,
       created_at: iso(r.createdAt),
     };

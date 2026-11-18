@@ -458,7 +458,7 @@ export class TelegramReview {
     const lines = [
       `🎬 ${v.label}${r.durationSec !== null ? ` · ${r.durationSec.toFixed(1)} s` : ""}`,
       `To: ${v.accounts.map((a) => `${a.platform ?? "?"} ${a.name}`).join(", ")}`,
-      `Posts: ${r.draft.scheduledAt ? when(r.draft.scheduledAt) : "as soon as you approve"}`,
+      r.draft.keep ? `Posts: not posted; kept in the library as ${r.draft.keep}` : `Posts: ${r.draft.scheduledAt ? when(r.draft.scheduledAt) : "as soon as you approve"}`,
       ...(r.draft.title && r.draft.title !== r.draft.caption ? [`Title: ${r.draft.title}`] : []),
     ];
     // At most 3 notes of 160 characters each; fewer if the card would still overflow, so the caption keeps its room.

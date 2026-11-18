@@ -74,6 +74,8 @@ export interface ReviewDraft {
   allowDuplicate: boolean;
   /** set while the caption is still to be written (see captionTopicFor) */
   captionTopic: string | null;
+  /** a campaign video made to keep, not post: approving keeps it in the library under this name and makes no post */
+  keep?: string | null;
 }
 
 export interface Review {
@@ -90,8 +92,8 @@ export interface Review {
   state: ReviewState;
   step: ReviewStep | null;
   expiresAt: number;
-  /** drive: Drive intake sent its own edit, and follows the decision itself */
-  requestedVia: "agent" | "window" | "drive";
+  /** drive / campaign: Drive intake or the campaign worker sent its own edit, and follows the decision itself */
+  requestedVia: "agent" | "window" | "drive" | "campaign";
   nonceHash: string | null;
   chatId: number | null;
   cardMessageId: number | null;
