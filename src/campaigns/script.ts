@@ -1,0 +1,123 @@
+// The script for a fully generated campaign video, and the production spec built from it. The AI writes the words
+// and the shot ideas; plain code checks the hook, the call to action and the link, and may ask once more.
+import type { AiService } from "../ai/router.ts";
+import { config } from "../config.ts";
+import type { ProductionSpec, WanShot } from "../produce/spec.ts";
+import type { LibraryEntry } from "./store.ts";
+
+export interface Script { lines: string[]; shots: { prompt: string; sec: number }[]; caption: string; title: string; musicPrompt: string }
+export interface ScriptChoice { hook: LibraryEntry; angle: LibraryEntry; cta: LibraryEntry }
+
+const MAX_LINES = 12;
+const MIN_TOTAL_SEC = 8;
+const MAX_TOTAL_SEC = 60;
+const MAX_SHOTS = 8;
+const MIN_SHOT_SEC = 2;
+const MAX_SHOT_SEC = 10;
+
+const SCHEMA = {
+  type: "object",
+  properties: {
+    lines: { type: "array", items: { type: "string" }, description: "the spoken script, one short line per item" },
+    shots: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: { prompt: { type: "string" }, sec: { type: "number" } },
+        required: ["prompt", "sec"], additionalProperties: false,
+      },
+    },
+    caption: { type: "string" }, title: { type: "string" }, musicPrompt: { type: "string" },
+  },
+  required: ["lines", "shots", "caption", "title", "musicPrompt"],
+  additionalProperties: false,
+};
+
+const SYSTEM = `You write the script for a short vertical social video that is generated end to end: a voiceover, a few AI-generated video shots and a soundtrack.
+Definitions (the owner's own words):
+- hook: a phrase that the video opens with in the first 2-3 seconds
+- angle: the description of the problem the video is claiming to solve
+- CTA: an explicit, direct call to click a link or go to a web page that comes at the very end of the video
+Rules:
+- The first spoken line starts with the hook, word for word.
+- The video is built around the angle.
+- The last spoken line contains the CTA's spoken call, word for word.
+- The only link anywhere (script lines and caption) is the CTA's link, and the caption contains it.
+- At most ${MAX_LINES} lines; no line starts with "#"; no line is empty.
+- ${1} to ${MAX_SHOTS} shots, each ${MIN_SHOT_SEC} to ${MAX_SHOT_SEC} seconds, ${MIN_TOTAL_SEC} to ${MAX_TOTAL_SEC} seconds in all. Each shot prompt describes one moving scene to generate, in plain visual terms, with no text on screen.
+- musicPrompt describes an instrumental soundtrack. title is a short name for the video.`;
+
+const normalize = (s: string) => s.toLowerCase().replace(/[\p{P}\p{S}]/gu, "").replace(/\s+/g, " ").trim();
+const URL_RE = /\b(?:https?:\/\/)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:\/[^\s]*)?/gi;
+const normUrl = (u: string) => u.toLowerCase().replace(/^https?:\/\//, "").replace(/[.,;:!?)"'\]]+$/, "").replace(/\/+$/, "");
+
+export function checkScript(s: Script, choice: ScriptChoice): string[] {
+  const problems: string[] = [];
+  const lines = Array.isArray(s.lines) ? s.lines : [];
+  const shots = Array.isArray(s.shots) ? s.shots : [];
+  if (!lines.length) problems.push("the script has no lines");
+  if (lines.length > MAX_LINES) problems.push(`the script has ${lines.length} lines; at most ${MAX_LINES}`);
+  lines.forEach((l, i) => {
+    if (typeof l !== "string" || !l.trim()) problems.push(`line ${i + 1} is empty`);
+    else if (l.trimStart().startsWith("#")) problems.push(`line ${i + 1} starts with "#"; no line may`);
+  });
+  if (lines.length) {
+    if (!normalize(String(lines[0])).startsWith(normalize(choice.hook.text))) problems.push(`the first line must start with the hook: "${choice.hook.text}"`);
+    if (!normalize(String(lines[lines.length - 1])).includes(normalize(choice.cta.text))) problems.push(`the last line must contain the call to action: "${choice.cta.text}"`);
+  }
+  const allowed = choice.cta.url ? normUrl(choice.cta.url) : null;
+  const seen = new Set<string>();
+  for (const text of [...lines, s.caption ?? ""]) {
+    for (const m of String(text).match(URL_RE) ?? []) {
+      const n = normUrl(m);
+      if (n !== allowed && !seen.has(n)) { seen.add(n); problems.push(`the link ${m} isn't allowed; the only link is ${choice.cta.url ?? "none"}`); }
+    }
+  }
+  if (choice.cta.url && !normUrl(String(s.caption ?? "")).includes(normUrl(choice.cta.url))) problems.push(`the caption must contain the link ${choice.cta.url}`);
+  if (shots.length < 1 || shots.length > MAX_SHOTS) problems.push(`there must be 1 to ${MAX_SHOTS} shots (got ${shots.length})`);
+  let total = 0;
+  shots.forEach((sh, i) => {
+    if (!sh || typeof sh.prompt !== "string" || !sh.prompt.trim()) problems.push(`shot ${i + 1} has no prompt`);
+    if (!sh || typeof sh.sec !== "number" || !(sh.sec >= MIN_SHOT_SEC && sh.sec <= MAX_SHOT_SEC)) problems.push(`shot ${i + 1} must be ${MIN_SHOT_SEC} to ${MAX_SHOT_SEC} seconds`);
+    else total += sh.sec;
+  });
+  if (total < MIN_TOTAL_SEC || total > MAX_TOTAL_SEC) problems.push(`the shots add up to ${total} seconds; they must be ${MIN_TOTAL_SEC} to ${MAX_TOTAL_SEC} seconds in all`);
+  if (typeof s.title !== "string" || !s.title.trim()) problems.push("the title is empty");
+  if (typeof s.musicPrompt !== "string" || !s.musicPrompt.trim()) problems.push("the music prompt is empty");
+  return problems;
+}
+
+export async function writeScript(deps: { ai: AiService }, choice: ScriptChoice): Promise<Script> {
+  const { hook, angle, cta } = choice;
+  const brief = [
+    `Hook: ${hook.text}`,
+    `Angle: ${angle.text}`,
+    `CTA (spoken call): ${cta.text}`,
+    cta.url ? `CTA link: ${cta.url}` : "The CTA has no link; the script and caption contain no link.",
+  ].join("\n");
+  let prompt = `${brief}\n\nWrite the script.`;
+  let problems: string[] = [];
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const s = await deps.ai.ask<Script>("script", { system: SYSTEM, prompt, schema: SCHEMA, effort: "medium" });
+    problems = checkScript(s, choice);
+    if (!problems.length) return s;
+    prompt = `${brief}\n\nYour last script had these problems:\n- ${problems.join("\n- ")}\n\nWrite the whole script again and fix every one.`;
+  }
+  throw new Error(`the script writer failed twice; problems:\n- ${problems.join("\n- ")}`);
+}
+
+/** The production spec for a script: one WanGP shot per script shot, the voiceover and music as files. Built by FreePoster, so it goes to `stage`, never parseSpec. */
+export function buildGeneratedProduction(s: Script, audio: { voiceover: string; music: string }, presenter: boolean): ProductionSpec {
+  const model = config.produce.wangpPresenterModel;
+  const shots: WanShot[] = s.shots.map((sh, i) => {
+    const shot: WanShot = { id: `shot-${i + 1}`, kind: "wan", duration_sec: sh.sec, prompt: sh.prompt, negative_prompt: "", image: null, seed: 1000 + i };
+    if (presenter && model && i === 0) { shot.model = model; shot.audio_guide = audio.voiceover; }
+    return shot;
+  });
+  return {
+    version: 1, title: s.title, shots,
+    transitions: { default: { type: "cut", sec: 0 } },
+    audio: { voiceover: audio.voiceover, music: audio.music },
+    sfx: [], captions: { source: "voiceover" }, post: null,
+  };
+}
