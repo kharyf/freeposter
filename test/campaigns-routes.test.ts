@@ -304,3 +304,19 @@ test("a preview made from text that was edited again while the AI was thinking c
   assert.equal(res.statusCode, 409);
   assert.equal(cs.campaign(campaignId)!.compiled, null);
 });
+
+test("the Campaigns tab lists a campaign's held Drive files and can release one, from the window only", async () => {
+  const { app, send, store, campaignId } = setup();
+  store.upsertDriveFile("d1", { name: "Gatekeeping_RAW.mp4", state: "held", heldBy: campaignId, note: "held by campaign Weekday Growth" });
+  store.upsertDriveFile("d2", { name: "Other.mp4", state: "processing" });
+  const listed = (await send("GET", "/api/campaigns")).json().campaigns.find((c: any) => c.id === campaignId);
+  assert.deepEqual(listed.held, [{ driveId: "d1", name: "Gatekeeping_RAW.mp4", taken: false, released: false }]);
+  const url = "/api/campaigns/held/d1/release";
+  assert.equal((await app.inject({ method: "POST", url, headers: { ...OWN, origin: "https://evil.example" } })).statusCode, 403);
+  assert.equal(store.driveFile("d1")!.releasedAt, null, "a refused request changes nothing");
+  assert.equal((await send("GET", url)).statusCode, 404, "never a GET");
+  const res = await send("POST", url);
+  assert.equal(res.statusCode, 200, res.body);
+  assert.ok(store.driveFile("d1")!.releasedAt);
+  assert.equal((await send("POST", "/api/campaigns/held/d2/release")).statusCode, 400, "only a held file");
+});

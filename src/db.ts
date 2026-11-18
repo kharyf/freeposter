@@ -87,6 +87,8 @@ CREATE TABLE IF NOT EXISTS drive_files (
   uploaded_at INTEGER,
   review_id INTEGER,
   filename_review_at INTEGER,
+  held_by INTEGER,
+  released_at INTEGER,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -198,6 +200,9 @@ export class Store {
       this.db.exec("ALTER TABLE drive_files ADD COLUMN filename_review_at INTEGER");
       this.db.exec("UPDATE drive_files SET filename_review_at = updated_at WHERE review_id IS NOT NULL OR post_id IS NOT NULL OR state IN ('reviewing', 'unreviewed', 'rejected', 'scheduled', 'cancelled')");
     }
+    // The campaign holding a held file (null for files held before this was recorded), and when the user let it go.
+    if (!driveColumns.some((c) => c.name === "held_by")) this.db.exec("ALTER TABLE drive_files ADD COLUMN held_by INTEGER");
+    if (!driveColumns.some((c) => c.name === "released_at")) this.db.exec("ALTER TABLE drive_files ADD COLUMN released_at INTEGER");
     const connColumns = this.db.prepare("PRAGMA table_info(drive_connection)").all() as { name: string }[];
     if (!connColumns.some((c) => c.name === "changes_token")) this.db.exec("ALTER TABLE drive_connection ADD COLUMN changes_token TEXT");
     // ...and before the outbox became the event feed every agent can read, not only a webhook.
@@ -857,7 +862,7 @@ export class Store {
     const cols = {
       name: "name", state: "state", size: "size", md5: "md5", scheduledAt: "scheduled_at", sourcePath: "source_path", sha256: "sha256",
       editId: "edit_id", postId: "post_id", title: "title", caption: "caption", note: "note", uploadedAt: "uploaded_at", reviewId: "review_id",
-      choice: "choice", filenameReviewAt: "filename_review_at",
+      choice: "choice", filenameReviewAt: "filename_review_at", heldBy: "held_by", releasedAt: "released_at",
     } as const;
     const keys = (Object.keys(f) as (keyof typeof cols)[]).filter((k) => k in cols);
     const values = keys.map((k) => (k === "choice" ? (f.choice ? JSON.stringify(f.choice) : null) : (f[k] ?? null)));
@@ -1033,6 +1038,8 @@ function toDriveFile(r: any): DriveFileRecord {
     uploadedAt: r.uploaded_at,
     reviewId: r.review_id ?? null,
     filenameReviewAt: r.filename_review_at ?? null,
+    heldBy: r.held_by ?? null,
+    releasedAt: r.released_at ?? null,
     choice: r.choice ? JSON.parse(r.choice) : null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,

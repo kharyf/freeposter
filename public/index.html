@@ -2956,6 +2956,14 @@ function cpTodayHtml(c) {
   return `<div class="cp-counts">${counts}</div>${today.tasks.length ? `<ul class="cp-tasks">${today.tasks.map(cpTaskHtml).join("")}</ul>` : ""}`;
 }
 
+/** The Drive files this campaign holds: they stay held (even while it is edited or off) until you release one. */
+function cpHeldHtml(c) {
+  if (!c.held?.length) return "";
+  return `<h3>Held Drive files</h3><ul class="cp-tasks">${c.held.map((f) => `<li>${esc(f.name)}${f.taken ? ` · <span class="muted">being posted by this campaign</span>`
+    : f.released ? ` · <span class="muted">released; it goes on by its filename</span>`
+    : ` <button type="button" data-cp-release="${esc(f.driveId)}" data-focus="cp-release-${esc(f.driveId)}" title="Let it go on by its filename instead (too late if its filename's day has passed)">Release</button>`}</li>`).join("")}</ul>`;
+}
+
 function cpHistoryHtml(c) {
   const h = cpHistory[c.id];
   const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
@@ -3021,6 +3029,7 @@ function cpCardHtml(c) {
     ${noteHtml}
     ${week}
     <h3>Today</h3>${cpTodayHtml(c)}
+    ${cpHeldHtml(c)}
     <details class="cp-drawer" data-cp-drawer="history" data-cp-id="${c.id}" ${open("history")}><summary>History</summary>${open("history") ? cpHistoryHtml(c) : ""}</details>
     <details class="cp-drawer" data-cp-drawer="changes" data-cp-id="${c.id}" ${open("changes")}><summary>Changes by Autorun</summary>${open("changes") ? cpChangesHtml(c) : ""}</details>
   </section>`;
@@ -3111,6 +3120,15 @@ $("cpList").addEventListener("click", async (e) => {
   if (prev) return cpPreview(Number(prev.dataset.cpPreview));
   const conf = e.target.closest("[data-cp-confirm]");
   if (conf) return cpConfirm(Number(conf.dataset.cpConfirm), conf);
+  const rel = e.target.closest("[data-cp-release]");
+  if (rel) {
+    if (!confirm("Release this Drive file from its campaign?
+
+It goes on by its filename instead: to review, or (a _RAW file) posted at its filename's time. If its filename's day has passed, it is marked too late and nothing posts.")) return;
+    const r = await cpBusy(rel, () => cpCall("POST", `/api/campaigns/held/${encodeURIComponent(rel.dataset.cpRelease)}/release`));
+    if (!r.ok) banner("err", `Couldn't release it: ${r.error}`);
+    return loadCampaigns();
+  }
   const undo = e.target.closest("[data-cp-undo]");
   if (undo) {
     const changeId = Number(undo.dataset.cpUndo), id = Number(undo.dataset.cpCamp);

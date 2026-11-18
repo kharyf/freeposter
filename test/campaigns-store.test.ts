@@ -103,7 +103,7 @@ test("tasks update and filter by state; changes log and undo; kill switch", () =
   assert.equal(cs.killed(), false);
 });
 
-test("heldNames: the lowercased names of post lines in runnable campaigns only", () => {
+test("heldNames: the lowercased post-line names of enabled campaigns, an edited one by its last confirmed schedule", () => {
   const store = newStore();
   const cs = new CampaignStore(store);
   const line = (name: string) => ({ kind: "post" as const, name, at: "20:00", style: null, types: [], source: `post ${name}` });
@@ -115,5 +115,8 @@ test("heldNames: the lowercased names of post lines in runnable campaigns only",
   const edited = mk(cs);
   cs.confirm(edited, { ...compiled(), days: { ...compiled().days, wed: [line("Unconfirmed")] } });
   cs.setText(edited, "changed");
-  assert.deepEqual([...heldNames(store)].sort(), ["gatekeeping", "launch"]);
+  const never = mk(cs);
+  cs.setText(never, "post Never_9pm");
+  // An edit pauses a campaign but doesn't release what it holds: it holds by the schedule it last confirmed.
+  assert.deepEqual([...heldNames(store)].sort(), ["gatekeeping", "launch", "unconfirmed"]);
 });

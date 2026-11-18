@@ -117,6 +117,10 @@ export interface DriveFileRecord {
   choice: DriveChoice | null;
   /** when it was first sent for review by its filename; a file that was is never held by a campaign */
   filenameReviewAt?: number | null;
+  /** the campaign holding it (state "held"); it stays held until the user releases it or the campaign is deleted */
+  heldBy?: number | null;
+  /** when the user released it from its campaign: it goes on by its filename and is never held again */
+  releasedAt?: number | null;
   createdAt: number;
   updatedAt: number;
 }

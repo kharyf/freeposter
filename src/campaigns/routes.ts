@@ -7,7 +7,7 @@ import type { Store } from "../db.ts";
 import { trustedRequest } from "../mcp.ts";
 import { campaignVocabulary, undoChange } from "./autorun.ts";
 import { parseCompiled } from "./spec.ts";
-import { CampaignStore, confirmedForText, type Campaign, type LibraryKind, type TaskState } from "./store.ts";
+import { CampaignStore, confirmedForText, filesHeldBy, releaseHeldFile, type Campaign, type LibraryKind, type TaskState } from "./store.ts";
 import { translateCampaign } from "./translate.ts";
 import { iso } from "./view.ts";
 import { dayKey, type CampaignWorker } from "./worker.ts";
@@ -63,7 +63,7 @@ function campaignRoutes(app: FastifyInstance, store: Store, worker?: CampaignWor
   const view = (c: Campaign) => ({
     id: c.id, name: c.name, text: c.text, textSha: c.textSha, compiled: c.compiled, enabled: c.enabled, autorun: c.autorun,
     runnable: cs.isRunnable(c), confirmedForText: confirmedForText(c), confirmedAt: c.confirmedAt, accountSetId: c.accountSetId, defaultPostTimes: c.defaultPostTimes,
-    dailyPostCap: c.dailyPostCap, excluded: cs.excluded(c.id),
+    dailyPostCap: c.dailyPostCap, excluded: cs.excluded(c.id), held: filesHeldBy(store, c.id),
   });
   /** Resolves `:id` to a campaign, or answers 400/404 itself. */
   const campaignOf = (params: unknown, reply: FastifyReply): Campaign | undefined => {
@@ -187,6 +187,17 @@ function campaignRoutes(app: FastifyInstance, store: Store, worker?: CampaignWor
     const r = undoChange(cs, id);
     if (!r.ok) return reply.code(409).send({ error: r.problem });
     return { ok: true };
+  });
+
+  /**
+   * The user lets a Drive file go from the campaign holding it: Drive intake then carries it on by its filename (late
+   * if its filename's day has passed). A held file never leaves its campaign any other way, short of deleting it.
+   */
+  app.post("/api/campaigns/held/:driveId/release", async (req, reply) => {
+    const driveId = (req.params as { driveId?: string }).driveId ?? "";
+    const r = releaseHeldFile(store, driveId);
+    if (!r.ok) return bad(reply, r.error);
+    return { released: true };
   });
 
   // ---- the kill switch ----

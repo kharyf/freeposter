@@ -2,6 +2,7 @@
 // the daily tasks they materialize, rule firings and the Autorun audit log.
 import { createHash } from "node:crypto";
 import type { Store } from "../db.ts";
+import type { DriveFileRecord } from "../types.ts";
 import type { CompiledCampaign } from "./spec.ts";
 
 const SCHEMA = `
@@ -224,21 +225,55 @@ export function campaignTaskFor(store: Store, kind: "production" | "edit", id: n
   return null;
 }
 
+/** The lowercased Drive names a compiled schedule's "post" lines mention. */
+const postNames = (c: Campaign): string[] =>
+  c.compiled ? Object.values(c.compiled.days).flatMap((lines) => (lines ?? []).flatMap((ins) => (ins.kind === "post" ? [ins.name.toLowerCase()] : []))) : [];
+
 /**
- * The Drive names (the `{name}` part, lowercased) the "post" lines of every runnable campaign mention, each with the
- * first such campaign's name. Drive intake holds a file with one of these names for its campaign, so it's never
- * also posted by its filename.
+ * The Drive names (the `{name}` part, lowercased) the "post" lines of every enabled campaign's last confirmed
+ * schedule mention, each with the first such campaign. Drive intake holds a new file with one of these names for its
+ * campaign, so it's never also posted by its filename. A campaign paused for an edit (its text not confirmed yet)
+ * still holds by the schedule it last confirmed.
  */
-export function heldBy(store: Store): Map<string, string> {
+export function heldBy(store: Store): Map<string, { id: number; name: string }> {
   if (!ready.has(store)) { store.db.exec(SCHEMA); ready.add(store); }
-  const held = new Map<string, string>();
+  const held = new Map<string, { id: number; name: string }>();
   for (const c of store.db.prepare("SELECT * FROM campaigns ORDER BY id").all().map(toCampaign)) {
-    if (!runnable(c) || !c.compiled) continue;
-    for (const lines of Object.values(c.compiled.days)) {
-      for (const ins of lines ?? []) if (ins.kind === "post" && !held.has(ins.name.toLowerCase())) held.set(ins.name.toLowerCase(), c.name);
-    }
+    if (!c.enabled) continue;
+    for (const name of postNames(c)) if (!held.has(name)) held.set(name, { id: c.id, name: c.name });
   }
   return held;
+}
+
+/**
+ * The campaign holding this held Drive file, or undefined when none can be found (it was deleted: an orphan). A file
+ * held before the holder was recorded is tied to the campaign its note names, else one whose schedule names it.
+ */
+export function holderOf(store: Store, f: DriveFileRecord): Campaign | undefined {
+  if (!ready.has(store)) { store.db.exec(SCHEMA); ready.add(store); }
+  const all = store.db.prepare("SELECT * FROM campaigns ORDER BY id").all().map(toCampaign);
+  if (f.heldBy != null) return all.find((c) => c.id === f.heldBy);
+  const noted = /^held by campaign (.+)$/.exec(f.note ?? "")?.[1];
+  const name = (f.choice?.name ?? "").toLowerCase();
+  return all.find((c) => c.name === noted) ?? all.find((c) => postNames(c).includes(name));
+}
+
+/**
+ * The user lets a held Drive file go from its campaign (the Campaigns tab's Release): Drive intake then carries it
+ * on by its filename, and it's never held again. A file a campaign task has already taken can't be released.
+ */
+export function releaseHeldFile(store: Store, driveId: string, now = Date.now()): { ok: true } | { ok: false; error: string } {
+  const f = store.driveFile(driveId);
+  if (!f || f.state !== "held") return { ok: false, error: "no held Drive file with that id" };
+  if (driveFileTaken(store, driveId)) return { ok: false, error: "its campaign has already taken it to post; it can't be released" };
+  if (!f.releasedAt) store.upsertDriveFile(driveId, { releasedAt: now });
+  return { ok: true };
+}
+
+/** The held Drive files a campaign holds, for the Campaigns tab. */
+export function filesHeldBy(store: Store, campaignId: number): { driveId: string; name: string; taken: boolean; released: boolean }[] {
+  return store.driveFilesIn(["held"]).filter((f) => f.heldBy === campaignId)
+    .map((f) => ({ driveId: f.driveId, name: f.name, taken: driveFileTaken(store, f.driveId), released: Boolean(f.releasedAt) }));
 }
 
 /** Whether a campaign task has taken this held Drive file to post (in any state since: it's never released). */
@@ -247,7 +282,7 @@ export function driveFileTaken(store: Store, driveId: string): boolean {
   return Boolean(store.db.prepare("SELECT 1 FROM campaign_tasks WHERE json_extract(choices, '$.driveId') = ? LIMIT 1").get(driveId));
 }
 
-/** The lowercased `{name}`s that runnable campaigns' post lines mention (see heldBy). */
+/** The lowercased `{name}`s new Drive files are held for (see heldBy). */
 export function heldNames(store: Store): Set<string> {
   return new Set(heldBy(store).keys());
 }

@@ -728,13 +728,13 @@ export class CampaignWorker {
   }
 
   /**
-   * A post line's held Drive file (the newest uploaded that no task has taken; taking it is recorded at once, as
+   * A post line's held Drive file (the newest uploaded that no task has taken and the user hasn't released; taking it is recorded at once, as
    * this task's driveId): its own edit goes to review (the line's style can't pick another: intake makes one edit),
    * or, for a _RAW file, the file itself. True when one was taken.
    */
   private takeDriveFile(t: CampaignTask, name: string): boolean {
     const f = this.store.driveFilesIn(["held"])
-      .filter((d) => (d.choice?.name ?? "").toLowerCase() === name && !driveFileTaken(this.store, d.driveId))
+      .filter((d) => (d.choice?.name ?? "").toLowerCase() === name && !d.releasedAt && !driveFileTaken(this.store, d.driveId))
       .sort((a, b) => (b.uploadedAt ?? b.createdAt) - (a.uploadedAt ?? a.createdAt))[0];
     if (!f) return false;
     this.setChoices(t.id, { driveId: f.driveId, style: f.choice?.styleId ?? null });

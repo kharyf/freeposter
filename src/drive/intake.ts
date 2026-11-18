@@ -10,11 +10,13 @@
 // restart picks up where it stopped.
 // A file whose name a confirmed campaign's "post" line mentions is "held" once its edit is ready (a _RAW one once
 // captioned): it isn't reviewed or scheduled by its filename, the campaign posts it (and its day sets the time, so
-// a filename time already past doesn't make it late). If the campaign stops mentioning it before taking it, it goes
-// on as if it had never been held. A file already reviewing or scheduled when the campaign was confirmed is left be.
+// a filename time already past doesn't make it late). It stays held while the campaign is edited, unconfirmed or
+// disabled: it leaves the hold only when the user releases it (Campaigns tab) or the campaign is deleted, and then
+// goes on by its filename, never on another day than its filename's (after that day it is late). A file already
+// reviewing or scheduled when the campaign was confirmed is left be.
 import type { Readable } from "node:stream";
 import { accountSets, defaultSetId, defaultTikTok, setAccounts, setToken } from "../accounts.ts";
-import { driveFileTaken, heldBy } from "../campaigns/store.ts";
+import { driveFileTaken, heldBy, holderOf } from "../campaigns/store.ts";
 import { captionVideo, transcriptText, type CaptionDeps } from "../caption.ts";
 import type { Store } from "../db.ts";
 import { DEFAULT_EDIT, type EditSettings } from "../edit/settings.ts";
@@ -118,12 +120,27 @@ export class Intake {
    * filename time had passed when it arrived (let through because a campaign held its name then) is late now that
    * none does. True when it stops here.
    */
-  private hold(f: DriveFileRecord, held: Map<string, string>): boolean {
-    if (f.filenameReviewAt) return false;
+  private hold(f: DriveFileRecord, held: Map<string, { id: number; name: string }>): boolean {
+    if (f.filenameReviewAt || f.releasedAt) return false;
     const campaign = held.get((this.choice(f)?.name ?? "").toLowerCase());
     if (campaign === undefined) return this.lateAtArrival(f);
-    this.store.upsertDriveFile(f.driveId, { state: "held", note: `held by campaign ${campaign}` });
-    log(f, `held by campaign ${campaign}`);
+    this.store.upsertDriveFile(f.driveId, { state: "held", heldBy: campaign.id, note: `held by campaign ${campaign.name}` });
+    log(f, `held by campaign ${campaign.name}`);
+    return true;
+  }
+
+  /** The end of its filename's day (the local day of its time, or of its date when it has no time). */
+  private filenameDayEnd(f: DriveFileRecord): number | null {
+    const latest = this.choice(f)?.latest ?? f.scheduledAt;
+    return latest === null ? null : new Date(latest).setHours(23, 59, 59, 999);
+  }
+
+  /** Its filename's day is over: it's marked late (true), so it never goes out by its filename on another day. */
+  private pastFilenameDay(f: DriveFileRecord, why: string): boolean {
+    const end = this.filenameDayEnd(f);
+    if (end === null || this.now() <= end) return false;
+    this.store.upsertDriveFile(f.driveId, { state: "late", note: `${why}, and its filename's day had passed; nothing was posted by its filename` });
+    log(f, `late: ${why} after its filename's day`);
     return true;
   }
 
@@ -136,15 +153,32 @@ export class Intake {
   }
 
   /**
-   * A held file no campaign mentions any more, and that none has taken: it carries on as if never held (a file
-   * whose filename time had passed when it arrived is late, as it would have been).
+   * A held file stays held, whatever its campaign's state (edited, unconfirmed, disabled), until the user releases it
+   * or its campaign is deleted; one a campaign task has taken is never released. A released file carries on by its
+   * filename: late if its filename's day has passed (or its filename time had passed when it arrived), else as if
+   * never held. An orphan whose name another campaign now posts is held for that one instead.
    */
-  private release(f: DriveFileRecord, held: Map<string, string>) {
-    const choice = this.choice(f);
-    if (held.has((choice?.name ?? "").toLowerCase()) || driveFileTaken(this.store, f.driveId)) return;
-    if (this.lateAtArrival(f)) return;
-    this.store.upsertDriveFile(f.driveId, { state: "processing", note: null });
-    log(f, "no longer held by a campaign");
+  private release(f: DriveFileRecord, held: Map<string, { id: number; name: string }>) {
+    if (driveFileTaken(this.store, f.driveId)) return;
+    let why: string;
+    if (f.releasedAt) {
+      why = "you released it from its campaign";
+    } else {
+      const holder = holderOf(this.store, f);
+      if (holder) {
+        if (f.heldBy == null) this.store.upsertDriveFile(f.driveId, { heldBy: holder.id });
+        return;
+      }
+      const other = held.get((this.choice(f)?.name ?? "").toLowerCase());
+      if (other) {
+        this.store.upsertDriveFile(f.driveId, { heldBy: other.id, note: `held by campaign ${other.name}` });
+        return;
+      }
+      why = "the campaign that held it was deleted";
+    }
+    if (this.pastFilenameDay(f, why) || this.lateAtArrival(f)) return;
+    this.store.upsertDriveFile(f.driveId, { state: "processing", heldBy: null, note: null });
+    log(f, `no longer held by a campaign: ${why}`);
   }
 
   /** The file's edit, moved on to its newest revision (revise_edit, after a redo); returns its id. */
@@ -499,6 +533,8 @@ export class Intake {
     } finally {
       this.busy.delete(f.driveId);
     }
+    // Released from a campaign: it never posts by its filename on another day than its filename's.
+    if (f.releasedAt && this.pastFilenameDay(f, "you released it from its campaign")) return;
     const target = this.targets(f, sec, false);
     if (!target) return;
     const { to, notes } = target;

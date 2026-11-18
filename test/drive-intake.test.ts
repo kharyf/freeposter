@@ -12,7 +12,7 @@ import type { Transcript } from "../src/edit/transcribe.ts";
 import { ReviewService } from "../src/review/service.ts";
 import { AnalyticsStore } from "../src/analytics/store.ts";
 import { DAYS, type CompiledCampaign, type PostInstruction } from "../src/campaigns/spec.ts";
-import { CampaignStore } from "../src/campaigns/store.ts";
+import { CampaignStore, releaseHeldFile } from "../src/campaigns/store.ts";
 import { CampaignWorker, dayKey, localAt } from "../src/campaigns/worker.ts";
 import { ProductionStore } from "../src/produce/store.ts";
 import { account, newStore, tmp, verticalSilent } from "./helpers.ts";
@@ -657,26 +657,49 @@ test("a held file whose filename time has passed isn't refused as late: the camp
   assert.equal(s.store.driveFile("f1")!.state, "held", s.store.driveFile("f1")!.note ?? "");
 });
 
-test("a held file whose name the campaign no longer posts goes on as if never held", async () => {
+test("a held file stays held while its campaign's text is edited and not yet confirmed again", async () => {
   const s = setup();
   s.clock.now = morning();
   const h = holdBy(s, "Gatekeeping");
-  const at = s.clock.now + 2 * 60 * MIN;
-  await s.intake.handle(s.file(driveName("Gatekeeping", at)));
+  await s.intake.handle(s.file(driveName("Gatekeeping", s.clock.now + 2 * 60 * MIN)));
   s.finishEdit("f1");
   await s.intake.tick();
   assert.equal(s.store.driveFile("f1")!.state, "held");
-  // Edited: until it's confirmed again it posts nothing, so it holds nothing.
+  // Edited: the campaign is paused until the new text is confirmed, but it still holds what it held.
   h.cs.setText(h.id, "new text");
-  const r = await s.approve();
+  for (let i = 0; i < 3; i++) await s.intake.tick();
   const f = s.store.driveFile("f1")!;
-  assert.equal(f.state, "scheduled", f.note ?? "");
-  assert.equal(s.store.post(f.postId!)!.scheduledAt, at, "its filename's time, as if never held");
-  assert.equal(r.requestedVia, "drive");
-  assert.equal(s.posts(), 1);
+  assert.equal(f.state, "held", f.note ?? "");
+  assert.equal(s.reviews.reviews.recent().length, 0, "nothing goes to review by its filename");
+  assert.equal(s.posts(), 0);
 });
 
-test("a held file is released when the campaign is confirmed again without its post line", async () => {
+test("a held _RAW file stays held under a text edit, and never posts unreviewed", async () => {
+  const s = setup();
+  s.clock.now = morning();
+  const h = holdBy(s, "Gatekeeping");
+  await s.intake.handle(s.file(driveName("Gatekeeping", s.clock.now + 2 * 60 * MIN).replace(".mp4", "_RAW.mp4")));
+  await s.intake.tick();
+  assert.equal(s.store.driveFile("f1")!.state, "held");
+  h.cs.setText(h.id, "fixed a typo");
+  for (let i = 0; i < 3; i++) await s.intake.tick();
+  assert.equal(s.store.driveFile("f1")!.state, "held", s.store.driveFile("f1")!.note ?? "");
+  assert.equal(s.posts(), 0);
+});
+
+test("a held file stays held while its campaign is disabled", async () => {
+  const s = setup();
+  s.clock.now = morning();
+  const h = holdBy(s, "Gatekeeping");
+  await s.intake.handle(s.file(driveName("Gatekeeping", s.clock.now + 2 * 60 * MIN).replace(".mp4", "_RAW.mp4")));
+  await s.intake.tick();
+  h.cs.setEnabled(h.id, false);
+  for (let i = 0; i < 3; i++) await s.intake.tick();
+  assert.equal(s.store.driveFile("f1")!.state, "held");
+  assert.equal(s.posts(), 0);
+});
+
+test("a held file stays held when the campaign is confirmed again without its post line", async () => {
   const s = setup();
   s.clock.now = morning();
   const h = holdBy(s, "Gatekeeping");
@@ -688,7 +711,100 @@ test("a held file is released when the campaign is confirmed again without its p
   const days = Object.fromEntries(DAYS.map((d) => [d, []])) as unknown as CompiledCampaign["days"];
   const other: PostInstruction = { kind: "post", name: "Other", at: "21:00", style: null, types: [], source: "post Other_9pm" };
   h.cs.confirm(h.id, { version: 1, days: { ...days, [DAYS[new Date(s.clock.now).getDay()]]: [other] }, rules: [] });
-  await s.reviewOf();
+  for (let i = 0; i < 3; i++) await s.intake.tick();
+  assert.equal(s.store.driveFile("f1")!.state, "held", "only the user (or deleting the campaign) lets it go");
+  assert.equal(s.reviews.reviews.recent().length, 0);
+});
+
+test("a held file the user releases goes on by its filename, at its filename's time", async () => {
+  const s = setup();
+  s.clock.now = morning();
+  const h = holdBy(s, "Gatekeeping");
+  const at = s.clock.now + 2 * 60 * MIN;
+  await s.intake.handle(s.file(driveName("Gatekeeping", at)));
+  s.finishEdit("f1");
+  await s.intake.tick();
+  assert.equal(s.store.driveFile("f1")!.heldBy, h.id, "the campaign that holds it is recorded");
+  assert.deepEqual(releaseHeldFile(s.store, "f1"), { ok: true });
+  await h.tick();
+  assert.equal(h.task()?.choices.driveId, undefined, "the campaign doesn't take a released file");
+  const r = await s.approve();
+  const f = s.store.driveFile("f1")!;
+  assert.equal(f.state, "scheduled", f.note ?? "");
+  assert.equal(s.store.post(f.postId!)!.scheduledAt, at, "its filename's time");
+  assert.equal(r.requestedVia, "drive");
+  assert.equal(s.posts(), 1);
+});
+
+test("a released _RAW file posts at its filename's time on its filename's day", async () => {
+  const s = setup();
+  s.clock.now = morning();
+  holdBy(s, "Gatekeeping");
+  const at = s.clock.now + 2 * 60 * MIN;
+  await s.intake.handle(s.file(driveName("Gatekeeping", at).replace(".mp4", "_RAW.mp4")));
+  await s.intake.tick();
+  assert.equal(releaseHeldFile(s.store, "f1").ok, true);
+  await s.intake.tick();
+  await s.intake.tick();
+  const f = s.store.driveFile("f1")!;
+  assert.equal(f.state, "scheduled", f.note ?? "");
+  assert.equal(s.store.post(f.postId!)!.scheduledAt, at);
+});
+
+test("a held _RAW file released after its filename's day is late, not posted", async () => {
+  const s = setup();
+  s.clock.now = morning();
+  holdBy(s, "Gatekeeping");
+  await s.intake.handle(s.file(driveName("Gatekeeping", s.clock.now + 2 * 60 * MIN).replace(".mp4", "_RAW.mp4")));
+  await s.intake.tick();
+  s.clock.now += 24 * 60 * MIN; // the next morning
+  assert.equal(releaseHeldFile(s.store, "f1").ok, true);
+  for (let i = 0; i < 3; i++) await s.intake.tick();
+  const f = s.store.driveFile("f1")!;
+  assert.equal(f.state, "late", f.note ?? "");
+  assert.match(f.note!, /day had passed/);
+  assert.equal(s.posts(), 0);
+});
+
+test("a file a campaign has taken can't be released", async () => {
+  const s = setup();
+  s.clock.now = morning();
+  const h = holdBy(s, "Gatekeeping");
+  await s.intake.handle(s.file(driveName("Gatekeeping", s.clock.now + 2 * 60 * MIN)));
+  s.finishEdit("f1");
+  await s.intake.tick();
+  await h.tick();
+  const out = releaseHeldFile(s.store, "f1");
+  assert.equal(out.ok, false);
+  assert.match((out as { error: string }).error, /already taken/);
+  assert.equal(releaseHeldFile(s.store, "nope").ok, false);
+});
+
+test("a held file whose campaign is deleted goes on by its filename", async () => {
+  const s = setup();
+  s.clock.now = morning();
+  const h = holdBy(s, "Gatekeeping");
+  const at = s.clock.now + 2 * 60 * MIN;
+  await s.intake.handle(s.file(driveName("Gatekeeping", at)));
+  s.finishEdit("f1");
+  await s.intake.tick();
+  s.store.db.prepare("DELETE FROM campaigns WHERE id = ?").run(h.id);
+  const r = await s.approve();
+  assert.equal(r.requestedVia, "drive");
+  assert.equal(s.store.post(s.store.driveFile("f1")!.postId!)!.scheduledAt, at);
+});
+
+test("an orphaned held _RAW file past its filename's day is late, never posted now", async () => {
+  const s = setup();
+  s.clock.now = morning();
+  const h = holdBy(s, "Gatekeeping");
+  await s.intake.handle(s.file(driveName("Gatekeeping", s.clock.now + 2 * 60 * MIN).replace(".mp4", "_RAW.mp4")));
+  await s.intake.tick();
+  s.store.db.prepare("DELETE FROM campaigns WHERE id = ?").run(h.id);
+  s.clock.now += 24 * 60 * MIN;
+  for (let i = 0; i < 3; i++) await s.intake.tick();
+  assert.equal(s.store.driveFile("f1")!.state, "late", s.store.driveFile("f1")!.note ?? "");
+  assert.equal(s.posts(), 0);
 });
 
 test("a file already scheduled by its filename keeps that schedule; the campaign's post line says so and posts nothing", async () => {
@@ -817,6 +933,7 @@ test("a file exempted from late at arrival is late at the hold point if no campa
   const h = holdBy(s, "Gatekeeping");
   await s.intake.handle(s.file(driveName("Gatekeeping", s.clock.now - 3 * 60 * MIN)));
   h.cs.setText(h.id, "new text");
+  h.cs.confirm(h.id, { version: 1, days: Object.fromEntries(DAYS.map((d) => [d, []])) as unknown as CompiledCampaign["days"], rules: [] });
   s.finishEdit("f1");
   await s.intake.tick();
   const f = s.store.driveFile("f1")!;
