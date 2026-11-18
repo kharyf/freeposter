@@ -1,5 +1,6 @@
 import { open } from "node:fs/promises";
-import type { Account, NewAccount, Platform, Post, TokenSet } from "../types.ts";
+import type { MetricReading } from "../analytics/types.ts";
+import type { Account, Job, NewAccount, Platform, Post, TokenSet } from "../types.ts";
 
 /** Thrown when the platform is still processing; the runner re-checks later without spending an attempt. */
 export class StillProcessing extends Error {
@@ -8,6 +9,21 @@ export class StillProcessing extends Error {
     super(message);
     this.delayMs = delayMs;
   }
+}
+
+/** Thrown by metrics() when the account must sign in again to grant the analytics permission. */
+export class NeedsPermission extends Error {}
+
+/** Thrown by metrics() when the video no longer exists or is private. */
+export class Gone extends Error {}
+
+export interface MetricsContext {
+  account: Account;
+  job: Job;
+  /** the job's checkpoint (videoId, mediaId, tweetId, ...) */
+  progress: Record<string, any>;
+  /** ms since epoch */
+  publishedAt: number;
 }
 
 export interface PublishContext {
@@ -35,6 +51,10 @@ export interface Publisher {
   /** null when this account's token can't or needn't be refreshed */
   refresh(account: Account): Promise<TokenSet | null>;
   publish(ctx: PublishContext): Promise<{ url: string; note?: string }>;
+  /** read the published video's numbers; throws NeedsPermission or Gone */
+  metrics?(ctx: MetricsContext): Promise<MetricReading>;
+  /** the scopes metrics() needs; an account missing any of them "needs permission" */
+  analyticsScopes: string[];
 }
 
 export async function readChunk(path: string, start: number, length: number): Promise<Uint8Array<ArrayBuffer>> {

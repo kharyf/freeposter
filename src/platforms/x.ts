@@ -28,6 +28,7 @@ function toTokens(t: any): TokenSet {
 export const x: Publisher = {
   platform: "x",
   label: "X",
+  analyticsScopes: [],
   minDurationSec: 0.5,
   maxDurationSec: () => config.xMaxVideoSeconds,
 

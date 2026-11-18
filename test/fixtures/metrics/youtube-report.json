@@ -1,0 +1,51 @@
+{
+  "kind": "youtubeAnalytics#resultTable",
+  "columnHeaders": [
+    {
+      "name": "views",
+      "columnType": "METRIC",
+      "dataType": "INTEGER"
+    },
+    {
+      "name": "likes",
+      "columnType": "METRIC",
+      "dataType": "INTEGER"
+    },
+    {
+      "name": "comments",
+      "columnType": "METRIC",
+      "dataType": "INTEGER"
+    },
+    {
+      "name": "shares",
+      "columnType": "METRIC",
+      "dataType": "INTEGER"
+    },
+    {
+      "name": "subscribersGained",
+      "columnType": "METRIC",
+      "dataType": "INTEGER"
+    },
+    {
+      "name": "averageViewDuration",
+      "columnType": "METRIC",
+      "dataType": "INTEGER"
+    },
+    {
+      "name": "averageViewPercentage",
+      "columnType": "METRIC",
+      "dataType": "FLOAT"
+    }
+  ],
+  "rows": [
+    [
+      1234,
+      87,
+      12,
+      9,
+      5,
+      14,
+      61.2
+    ]
+  ]
+}

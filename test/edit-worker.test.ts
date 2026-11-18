@@ -64,7 +64,7 @@ function setup() {
   const acct = store.upsertAccount(account("x"));
   const published: number[] = [];
   const fake: Publisher = {
-    platform: "x", label: "Fake", minDurationSec: 1, maxDurationSec: () => 60, validate: () => null,
+    platform: "x", label: "Fake", analyticsScopes: [], minDurationSec: 1, maxDurationSec: () => 60, validate: () => null,
     authorizeUrl: () => "", exchangeCode: async () => [], refresh: async () => null,
     async publish(ctx: PublishContext) { published.push(ctx.durationSec); return { url: "https://x.com/i/1" }; },
   };

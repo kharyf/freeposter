@@ -69,6 +69,7 @@ function toTokens(t: any): TokenSet {
 export const tiktokPublisher: Publisher = {
   platform: "tiktok",
   label: "TikTok",
+  analyticsScopes: [],
   minDurationSec: 3,
   maxDurationSec: (account) => Number(account.meta.maxDurationSec ?? 600),
 

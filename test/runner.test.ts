@@ -18,6 +18,7 @@ function fakePublisher(publish: (ctx: PublishContext) => Promise<{ url: string; 
   return {
     platform: "x",
     label: "Fake",
+    analyticsScopes: [],
     minDurationSec: 1,
     maxDurationSec: () => 60,
     validate: () => null,

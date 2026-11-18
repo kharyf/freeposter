@@ -10,6 +10,7 @@ import { graph, metaAuthorizeUrl, metaPages } from "./meta.ts";
 export const instagram: Publisher = {
   platform: "instagram",
   label: "Instagram Reels",
+  analyticsScopes: [],
   minDurationSec: 3,
   maxDurationSec: () => 900,
 

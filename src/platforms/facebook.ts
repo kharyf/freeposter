@@ -13,6 +13,7 @@ const NOT_FOUND_GRACE_MS = 5 * 60_000;
 export const facebook: Publisher = {
   platform: "facebook",
   label: "Facebook Page Reels",
+  analyticsScopes: [],
   minDurationSec: 3,
   maxDurationSec: () => 90,
 

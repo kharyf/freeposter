@@ -3,14 +3,17 @@ import { config, redirectUri } from "../config.ts";
 import { pkceChallenge } from "../crypto.ts";
 import { FatalError, request, requestJson } from "../http.ts";
 import type { Account } from "../types.ts";
-import { expiresIn, firstLine, pollUntil, readChunk, type PublishContext, type Publisher } from "./base.ts";
+import { Gone, NeedsPermission, expiresIn, firstLine, pollUntil, readChunk, type PublishContext, type Publisher } from "./base.ts";
 
 // Docs: https://developers.google.com/youtube/v3/guides/using_resumable_upload_protocol
 const API = "https://www.googleapis.com/youtube/v3";
 const UPLOAD = "https://www.googleapis.com/upload/youtube/v3/videos";
 const THUMBNAILS = "https://www.googleapis.com/upload/youtube/v3/thumbnails/set";
 const TOKEN = "https://oauth2.googleapis.com/token";
-const SCOPES = ["https://www.googleapis.com/auth/youtube.upload", "https://www.googleapis.com/auth/youtube.readonly"];
+const ANALYTICS = "https://youtubeanalytics.googleapis.com/v2/reports";
+const ANALYTICS_SCOPE = "https://www.googleapis.com/auth/yt-analytics.readonly";
+const SCOPES = ["https://www.googleapis.com/auth/youtube.upload", "https://www.googleapis.com/auth/youtube.readonly", ANALYTICS_SCOPE];
+const REPORT_METRICS = ["views", "likes", "comments", "shares", "subscribersGained", "averageViewDuration", "averageViewPercentage"];
 const CHUNK = 8 * 1024 * 1024; // must be a multiple of 256 KiB
 
 const creds = () => config.credentials.youtube;
@@ -19,6 +22,7 @@ export const youtube: Publisher = {
   platform: "youtube",
   label: "YouTube Shorts",
   minDurationSec: 1,
+  analyticsScopes: [ANALYTICS_SCOPE],
   maxDurationSec: () => 180, // Shorts limit; longer vertical videos post as regular videos
 
   validate(post) {
@@ -169,7 +173,51 @@ export const youtube: Publisher = {
     if (thumbnailNote) notes.push(thumbnailNote);
     return notes.length ? { url, note: notes.join(" ") } : { url };
   },
+
+  async metrics(ctx) {
+    const videoId = ctx.progress.videoId;
+    if (!videoId) throw new Gone("no YouTube video id recorded for this job");
+    const auth = { authorization: `Bearer ${ctx.account.accessToken}` };
+    const range = {
+      startDate: new Date(ctx.publishedAt).toISOString().slice(0, 10),
+      endDate: new Date().toISOString().slice(0, 10),
+    };
+    const report = (params: Record<string, string>) =>
+      analyticsReport({ ids: "channel==MINE", filters: `video==${videoId}`, ...range, ...params }, auth);
+
+    const main = await report({ metrics: REPORT_METRICS.join(",") });
+    const row: unknown[] | undefined = main.rows?.[0];
+    if (!row) {
+      // No data rows: either too early for analytics, or the video is gone.
+      const v = await requestJson(`${API}/videos?part=id&id=${encodeURIComponent(videoId)}`, { headers: auth });
+      if (!v.items?.length) throw new Gone(`YouTube video ${videoId} no longer exists or is private`);
+      return { views: null, viewsKind: "views", raw: {}, retention: null };
+    }
+    const raw: Record<string, number> = {};
+    (main.columnHeaders as { name: string }[]).forEach((c, i) => {
+      if (typeof row[i] === "number") raw[c.name] = row[i] as number;
+    });
+    const views = raw.views ?? null;
+    delete raw.views;
+
+    const curve = await report({ dimensions: "elapsedVideoTimeRatio", metrics: "audienceWatchRatio" });
+    const points = ((curve.rows ?? []) as [number, number][]).slice().sort((a, b) => a[0] - b[0]);
+    return { views, viewsKind: "views", raw, retention: points.length ? points.map((p) => p[1]) : null };
+  },
 };
+
+async function analyticsReport(params: Record<string, string>, auth: Record<string, string>) {
+  try {
+    return await requestJson(`${ANALYTICS}?${new URLSearchParams(params)}`, { headers: auth });
+  } catch (err) {
+    const message = (err as Error).message;
+    if (err instanceof FatalError && /\b403\b/.test(message) && /insufficientPermissions|insufficient authentication scopes/i.test(message)) {
+      throw new NeedsPermission("sign in to YouTube again to allow analytics");
+    }
+    if (err instanceof FatalError && /\b404\b/.test(message)) throw new Gone("YouTube video no longer exists");
+    throw err;
+  }
+}
 
 /**
  * Sets the Fancy cover as the video's thumbnail, once (progress.thumbnailTried): channels that aren't verified for custom
