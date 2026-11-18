@@ -83,10 +83,10 @@ Make a bot with @BotFather, choose **A separate bot only FreePoster uses**, past
 
 If your agent already talks to you through a Telegram bot and you want reviews in that chat, choose **The bot my agent already talks to me through**. Telegram lets only one program read a bot's messages, and that's your agent, so it has to pass FreePoster's part of them on. This is the **relay**:
 
-1. **Which updates.** Only these: callback queries whose `data` starts with `fp:`; text messages replying to a bot message that starts with `🔁 FreePoster redo`; and the `/freeposter` command (pairing). Everything else stays your agent's.
+1. **Which updates.** Only these: callback queries whose `data` starts with `fp:`; text messages replying to a bot message that starts with `🔁 FreePoster redo`; the `/freeposter` command (pairing); and the `/stop` command (the campaigns' kill switch). Everything else stays your agent's.
 2. **Where.** POST each one, as the raw Telegram update JSON, to `http://localhost:4400/api/telegram/relay`. Setup shows the address, and **Show the relay secret** gives the secret.
 3. **Signed.** Sign the exact body bytes with the relay secret, either way the webhook is signed: `X-Webhook-Timestamp` + `X-Webhook-Signature-V2`, or Standard Webhooks headers. Timestamps more than 5 minutes off are refused.
-4. **Pair.** Send `/freeposter <code>` to the bot in your private chat with it.
+4. **Pair.** Send `/freeposter <code>` to the bot in your private chat with it. `/stop` works the same way: forward it and FreePoster stops every campaign (only the window resumes them).
 
 A tap counts only when Telegram itself confirms it (FreePoster calls `answerCallbackQuery`, which only succeeds for a tap Telegram really delivered). It must also come from your account in your chat, carry the current buttons' one-time code, and the review must still be waiting. So a relay that's tampered with can't approve anything with a made-up tap.
 

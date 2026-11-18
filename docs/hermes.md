@@ -69,7 +69,7 @@ Hermes checks the `X-Webhook-Signature-V2` signature, one of the two FreePoster 
 
 ## Reviews on Hermes's Telegram bot
 
-Telegram lets only one program read a bot's messages, and for your bot that's Hermes. FreePoster still sends reviews with the same bot, and the `freeposter-review` plugin is the relay ([agents.md](agents.md#the-bot-your-agent-already-uses-one-chat)). It passes FreePoster's part of the incoming messages straight to FreePoster: taps on its buttons (`fp:…`), replies to its redo prompts, and `/freeposter <code>`. Hermes's model never sees them, and everything else in the chat stays Hermes's.
+Telegram lets only one program read a bot's messages, and for your bot that's Hermes. FreePoster still sends reviews with the same bot, and the `freeposter-review` plugin is the relay ([agents.md](agents.md#the-bot-your-agent-already-uses-one-chat)). It passes FreePoster's part of the incoming messages straight to FreePoster: taps on its buttons (`fp:…`), replies to its redo prompts, `/freeposter <code>` and `/stop` (the campaign kill switch). Hermes's model never sees them, and everything else in the chat stays Hermes's.
 
 1. In **Setup → Production tools → Review on Telegram**, choose **The bot my agent already talks to me through**, paste Hermes's `TELEGRAM_BOT_TOKEN` (from `%LOCALAPPDATA%\hermes\.env`), and click **Connect**.
 2. Under **Hermes Agent plugin**, click **Install the plugin**. FreePoster copies it to `%LOCALAPPDATA%\hermes\plugins\freeposter-review` with the relay's address and secret (`settings.json`).

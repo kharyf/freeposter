@@ -6,6 +6,7 @@ program read a bot's updates, and that is Hermes, so this plugin takes just Free
   - button taps whose data starts with "fp:",
   - replies to FreePoster's redo prompts (bot messages starting with the redo marker),
   - the /freeposter command (pairing the chat with FreePoster),
+  - the /stop command (FreePoster's campaign kill switch),
 
 and posts each raw update to FreePoster, signed with the shared secret in settings.json (hex HMAC-SHA256 of
 "<timestamp>.<body>"). Hermes's model never sees them, and nothing the model does can make one: FreePoster also
@@ -89,6 +90,7 @@ def register(ctx) -> None:
         # Scoped, so Hermes's own buttons and messages are untouched; Hermes places these ahead of its catch-alls.
         app.add_handler(CallbackQueryHandler(relay, pattern=r"^fp:"))
         app.add_handler(CommandHandler("freeposter", relay))
+        app.add_handler(CommandHandler("stop", relay))
         app.add_handler(MessageHandler(filters.REPLY & filters.TEXT & _RedoReply(), relay))
 
     ctx.register_telegram_handler(factory)
