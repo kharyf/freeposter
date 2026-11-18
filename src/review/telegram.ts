@@ -142,13 +142,16 @@ export class TelegramReview {
   controller: AbortController | undefined;
   syncTimer: NodeJS.Timeout | undefined;
   syncing: Promise<void> | undefined;
+  /** The campaigns' kill switch (CampaignWorker.stopAll): /stop from the paired user. Returns how many posts it held. */
+  stopCampaigns: (() => number) | undefined;
 
-  constructor(store: Store, service: ReviewService, opts: { fetch?: typeof fetch; base?: string; pollTimeoutSec?: number } = {}) {
+  constructor(store: Store, service: ReviewService, opts: { fetch?: typeof fetch; base?: string; pollTimeoutSec?: number; stopCampaigns?: () => number } = {}) {
     this.store = store;
     this.service = service;
     this.fetch = opts.fetch ?? ((...args) => fetch(...args));
     this.base = opts.base ?? API;
     this.pollTimeoutSec = opts.pollTimeoutSec ?? 25;
+    this.stopCampaigns = opts.stopCampaigns;
     service.onChange = () => this.poke();
     service.nudge = (r, text) => this.nudge(r, text);
   }
@@ -416,7 +419,7 @@ export class TelegramReview {
     }
   }
 
-  // ---- typed messages: pairing, redo notes, and a reminder that typing approves nothing ----
+  // ---- typed messages: pairing, redo notes, /stop, and a reminder that typing approves nothing ----
 
   private async handleMessage(updateId: number, m: any) {
     const api = this.api();
@@ -438,6 +441,13 @@ export class TelegramReview {
       return;
     }
     if (m.chat?.id !== paired.chatId || m.from?.id !== paired.userId) return;
+    // The kill switch: every campaign stops at once. Only the window's Resume starts them again.
+    if (/^\/stop(@\w+)?$/i.test(text)) {
+      if (!this.stopCampaigns) { await reply("Campaigns aren't running in this FreePoster."); return; }
+      const held = this.stopCampaigns();
+      await reply(`Stopped every campaign. Nothing new will be made or scheduled${held ? `, and ${held} campaign post${held === 1 ? " is" : "s are"} held` : ""}. Resume them from the Campaigns tab in the FreePoster window.`, { reply_to_message_id: m.message_id });
+      return;
+    }
     const prompt = m.reply_to_message ? this.service.reviews.byPrompt(paired.chatId, m.reply_to_message.message_id) : undefined;
     if (prompt) {
       const note = /^(go|skip|-|no note)$/i.test(text) ? null : text.slice(0, 2000) || null;

@@ -6,6 +6,11 @@ import { config } from "../src/config.ts";
 import type { Publisher } from "../src/platforms/base.ts";
 import { publishers as real } from "../src/platforms/index.ts";
 import { queueEvent } from "../src/notify.ts";
+import { AnalyticsStore } from "../src/analytics/store.ts";
+import { DAYS, type CompiledCampaign } from "../src/campaigns/spec.ts";
+import { CampaignStore } from "../src/campaigns/store.ts";
+import { CampaignWorker } from "../src/campaigns/worker.ts";
+import { ProductionStore } from "../src/produce/store.ts";
 import { ReviewService } from "../src/review/service.ts";
 import { Runner } from "../src/runner.ts";
 import { buildServer } from "../src/server.ts";
@@ -14,7 +19,7 @@ import { account, json, mockFetch, newStore, tmp, verticalSilent } from "./helpe
 
 const HOST = { host: `localhost:${config.port}` };
 
-function setup() {
+function setup(opts: { campaigns?: boolean } = {}) {
   const dir = tmp();
   const store = newStore();
   const published: string[] = [];
@@ -28,7 +33,11 @@ function setup() {
   const publishers = { ...real, x: fakeX } as Record<Platform, Publisher>;
   const runner = new Runner(store, publishers, dir);
   const reviews = new ReviewService(store, { publishers, runner, dir: tmp() });
-  const app = buildServer(store, runner, publishers, {}, undefined, undefined, undefined, { service: reviews });
+  const ps = new ProductionStore(store);
+  const worker = opts.campaigns
+    ? new CampaignWorker({ store, reviews, ai: null, productions: { productions: ps, createStaged: async () => { throw new Error("not in this test"); }, borrowGpu: async () => null } })
+    : undefined;
+  const app = buildServer(store, runner, publishers, {}, undefined, undefined, undefined, { service: reviews }, worker);
   let id = 0;
   /** One JSON-RPC request to /mcp. */
   const rpc = async (method: string, params?: unknown, headers: Record<string, string> = {}) => {
@@ -43,7 +52,7 @@ function setup() {
   };
   /** The user's Approve button in the window. */
   const approve = async (id: number) => (await app.inject({ method: "POST", url: `/api/reviews/${id}/approve`, headers: HOST })).json();
-  return { dir, store, app, rpc, call, published, reviews, prepared, approve };
+  return { dir, store, app, rpc, call, published, reviews, prepared, approve, worker };
 }
 
 test("MCP handshake and tool list", async () => {
@@ -63,7 +72,7 @@ test("MCP handshake and tool list", async () => {
   assert.equal(note.statusCode, 202);
 
   const names = (await rpc("tools/list")).body.result.tools.map((t: any) => t.name);
-  assert.deepEqual(names.sort(), ["add_editing_style", "audit_reviews", "cancel_post", "cancel_production", "create_edit", "describe_production_tools", "get_edit", "get_post", "get_production", "get_review", "get_tiktok_creator_info", "list_accounts", "list_editing_styles", "list_events", "list_posts", "list_reviews", "publish_video", "request_review", "reschedule_post", "retry_job", "revise_edit", "revise_production", "start_production", "transcribe_media", "wait_for_events"]);
+  assert.deepEqual(names.sort(), ["add_editing_style", "add_library_entry", "audit_reviews", "cancel_post", "cancel_production", "create_edit", "describe_production_tools", "get_analytics", "get_campaign", "get_edit", "get_post", "get_production", "get_review", "get_tiktok_creator_info", "get_video_metrics", "list_accounts", "list_campaigns", "list_editing_styles", "list_events", "list_library", "list_posts", "list_reviews", "publish_video", "request_review", "reschedule_post", "retry_job", "revise_edit", "revise_production", "start_production", "stop_campaigns", "transcribe_media", "update_campaign", "wait_for_events"]);
   // Agents have no way to approve: only the user does, on a review (review.test.ts).
   assert.ok(!names.some((n: string) => /approve|decide|accept/.test(n)), "no approve tool");
   assert.equal((await rpc("nope")).body.error.code, -32601);
@@ -290,4 +299,101 @@ test("list_reviews filters by state; get_review on a redo marks it picked up", a
 test("the event guide tells agents campaign videos go to review by themselves", async () => {
   const { EVENT_GUIDE } = await import("../src/mcp.ts");
   assert.match(EVENT_GUIDE, /campaign videos, with campaign_task_id/);
+});
+
+const emptyDays = () => Object.fromEntries(DAYS.map((d) => [d, []])) as unknown as CompiledCampaign["days"];
+
+/** A confirmed campaign with one make line using its own CTA. */
+function campaign(store: ReturnType<typeof newStore>) {
+  const cs = new CampaignStore(store);
+  const hook = cs.addEntry({ kind: "hook", name: "Stop Scrolling", text: "Stop scrolling" });
+  const cta = cs.addEntry({ kind: "cta", name: "Free Guide", text: "Get the guide", url: "https://example.com/guide" });
+  const id = cs.create({ name: "Weekday Growth", text: "the text", accountSetId: null, defaultPostTimes: ["09:00"], dailyPostCap: 3 });
+  cs.confirm(id, { version: 1, days: { ...emptyDays(), tue: [{ kind: "make", count: 1, style: "basic", hook: { pick: "named", id: hook }, angle: { pick: "random" }, cta: { pick: "named", id: cta }, types: [], post: null, source: "make 1" }] }, rules: [] });
+  return { cs, id, hook, cta };
+}
+
+test("Autorun tools: changes need Autorun and a reason, and are made in the MCP client's name", async () => {
+  const { app, rpc, call, store } = setup({ campaigns: true });
+  await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "codex", version: "1" } });
+  const { cs, id } = campaign(store);
+  const off = await call("update_campaign", { campaign_id: id, daily_post_cap: 2, reason: "fewer, better posts" });
+  assert.equal(off.isError, true);
+  assert.match(off.content[0].text, /Autorun is off/);
+  cs.setAutorun(id, true);
+  const noReason = await call("update_campaign", { campaign_id: id, daily_post_cap: 2 });
+  assert.equal(noReason.isError, true);
+  assert.match(noReason.content[0].text, /reason/);
+  const raise = await call("update_campaign", { campaign_id: id, daily_post_cap: 5, reason: "more" });
+  assert.equal(raise.isError, true);
+  const ok = await call("update_campaign", { campaign_id: id, daily_post_cap: 2, reason: "fewer, better posts" });
+  assert.ok(!ok.isError, ok.content[0].text);
+  assert.equal(cs.campaign(id)!.dailyPostCap, 2);
+  assert.equal(cs.changes(id)[0].agent, "codex");
+
+  const cta = await call("add_library_entry", { campaign_id: id, kind: "cta", name: "Buy", text: "Buy now", reason: "sell" });
+  assert.equal(cta.isError, true);
+  const hook = await call("add_library_entry", { campaign_id: id, kind: "hook", name: "Nobody Tells", text: "Nobody tells you this", reason: "a new hook to test" });
+  assert.ok(!hook.isError, hook.content[0].text);
+  assert.ok(cs.entries("hook").some((e) => e.name === "Nobody Tells"));
+
+  const list = (await call("list_campaigns")).structuredContent;
+  assert.equal(list.campaigns[0].id, id);
+  assert.equal(list.campaigns[0].autorun, true);
+  const got = (await call("get_campaign", { campaign_id: id })).structuredContent;
+  assert.equal(got.daily_post_cap, 2);
+  assert.equal(got.changes.length, 2);
+  assert.equal(got.changes[0].reason, "fewer, better posts");
+  const lib = (await call("list_library", { kind: "hook" })).structuredContent;
+  assert.deepEqual(lib.entries.map((e: any) => e.name), ["Stop Scrolling", "Nobody Tells"]);
+
+  const tools = (await rpc("tools/list")).body.result.tools;
+  for (const name of ["get_analytics", "get_video_metrics", "list_campaigns", "get_campaign", "list_library"]) {
+    assert.equal(tools.find((t: any) => t.name === name).annotations.readOnlyHint, true, name);
+  }
+  assert.ok(tools.find((t: any) => t.name === "update_campaign").inputSchema.required.includes("reason"));
+  await app.close();
+});
+
+test("stop_campaigns turns the kill switch on; no tool turns it off", async () => {
+  const { app, rpc, call, store } = setup({ campaigns: true });
+  const cs = new CampaignStore(store);
+  assert.equal(cs.killed(), false);
+  const r = await call("stop_campaigns");
+  assert.ok(!r.isError, r.content[0].text);
+  assert.equal(cs.killed(), true);
+  const names = (await rpc("tools/list")).body.result.tools.map((t: any) => t.name);
+  assert.ok(!names.some((n: string) => /resume|restart|start_campaign|unkill/.test(n)));
+  await app.close();
+});
+
+test("get_analytics gives scores and label comparisons; get_video_metrics gives one post's snapshots", async () => {
+  const { app, call, store } = setup();
+  const a = new AnalyticsStore(store);
+  const acct = store.upsertAccount(account("youtube", { expiresAt: null }));
+  const posts: number[] = [];
+  for (let i = 0; i < 4; i++) {
+    const postId = store.createPost({ caption: "", title: "", sourcePath: "x.mp4", sha256: `sha-${i}`, tiktok: null }, [acct.id]);
+    const job = store.jobsForPost(postId)[0];
+    store.finishJob(job.id, "published", { resultUrl: "https://youtube.com/shorts/x" });
+    store.db.prepare("UPDATE jobs SET published_at = ? WHERE id = ?").run(Date.now() - 4 * 86_400_000, job.id);
+    a.addSnapshot({ jobId: job.id, platform: "youtube", externalId: `v${i}`, takenAt: Date.now(), ageSec: 259_200, reading: { views: 100 * (i + 1), viewsKind: "views", raw: { likes: i }, retention: null } });
+    a.setLabels({ postId, source: i < 3 ? "generated" : "recorded", styleId: "basic", hookId: null, hookText: "hi", angleId: null, angleText: null, ctaId: null, ctaText: null, campaignId: null, campaignTaskId: null, types: [], labelledBy: "user" });
+    posts.push(postId);
+  }
+  const all = (await call("get_analytics")).structuredContent;
+  assert.equal(all.videos.length, 4);
+  assert.ok(all.videos.every((v: any) => !("snapshots" in v)));
+  assert.ok(all.videos.some((v: any) => typeof v.score["72h"] === "number"));
+  assert.ok(Array.isArray(all.comparisons.source));
+  assert.equal(all.comparisons.source.find((r: any) => r.key === "generated").n, 3);
+  const recorded = (await call("get_analytics", { source: "recorded", days: 30, account_id: acct.id })).structuredContent;
+  assert.deepEqual(recorded.videos.map((v: any) => v.post_id), [posts[3]]);
+  const none = (await call("get_analytics", { days: 1 })).structuredContent;
+  assert.equal(none.videos.length, 0);
+  const m = (await call("get_video_metrics", { post_id: posts[1] })).structuredContent;
+  assert.equal(m.labels.source, "generated");
+  assert.equal(m.jobs[0].snapshots[0].views, 200);
+  assert.equal((await call("get_video_metrics", { post_id: 9999 })).isError, true);
+  await app.close();
 });

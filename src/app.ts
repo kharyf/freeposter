@@ -109,8 +109,9 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
       console.error(`campaign rules: ${(err as Error).message}`);
     }
   };
-  const telegram = new TelegramReview(store, reviews);
-  const app = buildServer(store, runner, publishers, options, { intake, poll: () => watcher.poll(), sync: () => watcher.sync() }, ai, producer, { service: reviews, telegram });
+  // /stop from the paired Telegram user is the campaigns' kill switch.
+  const telegram = new TelegramReview(store, reviews, { stopCampaigns: () => campaigns.stopAll() });
+  const app = buildServer(store, runner, publishers, options, { intake, poll: () => watcher.poll(), sync: () => watcher.sync() }, ai, producer, { service: reviews, telegram }, campaigns);
 
   try {
     await app.listen({ port: config.port, host: "127.0.0.1" });

@@ -15,6 +15,9 @@ import { parseTime, ReviewService } from "../src/review/service.ts";
 import { hermesPluginStatus, installHermesPlugin, pluginEnabled } from "../src/integrations/hermes.ts";
 import { keyboard, TelegramReview } from "../src/review/telegram.ts";
 import { Runner } from "../src/runner.ts";
+import { CampaignStore } from "../src/campaigns/store.ts";
+import { CampaignWorker } from "../src/campaigns/worker.ts";
+import { ProductionStore } from "../src/produce/store.ts";
 import { buildServer } from "../src/server.ts";
 import type { Platform } from "../src/types.ts";
 import { account, json, newStore, tmp, verticalSilent } from "./helpers.ts";
@@ -327,6 +330,22 @@ test("typing yes approves nothing", async () => {
   assert.equal(reviews.reviews.get(review.id)!.state, "pending");
   assert.equal(posts(), 0);
   assert.match(tg.last("sendMessage")!.params.text, /don't approve or reject anything/);
+});
+
+test("/stop from the paired user stops every campaign; from anyone else it does nothing", async () => {
+  const { telegram, message, reviews, store, tg } = await setup();
+  const worker = new CampaignWorker({ store, reviews, ai: null, productions: { productions: new ProductionStore(store), createStaged: async () => { throw new Error("unused"); }, borrowGpu: async () => null } });
+  telegram.stopCampaigns = () => worker.stopAll();
+  const cs = new CampaignStore(store);
+  const sent = () => tg.all("sendMessage").length;
+  const before = sent();
+  await telegram.handleUpdate(message("/stop", { from: 999, chat: 999 }));
+  await telegram.handleUpdate(message("/stop", { from: 999, chat: ME }));
+  assert.equal(cs.killed(), false);
+  assert.equal(sent(), before, "no reply to anyone else");
+  await telegram.handleUpdate(message("/stop"));
+  assert.equal(cs.killed(), true);
+  assert.match(tg.last("sendMessage")!.params.text, /stopped/i);
 });
 
 test("a tap on an old version's card is refused: the review is superseded", async () => {

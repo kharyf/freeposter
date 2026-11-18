@@ -341,6 +341,18 @@ export class CampaignStore {
     this.db.prepare("UPDATE campaigns SET autorun = ?, updated_at = ? WHERE id = ?").run(on ? 1 : 0, Date.now(), id);
   }
 
+  setDailyPostCap(id: number, cap: number) {
+    this.db.prepare("UPDATE campaigns SET daily_post_cap = ?, updated_at = ? WHERE id = ?").run(cap, Date.now(), id);
+  }
+
+  /** Undoing an Autorun change: the text, compiled schedule (and what it was confirmed for) and cap as they were. */
+  restore(id: number, c: Pick<Campaign, "text" | "textSha" | "compiled" | "compiledSha" | "confirmedAt" | "dailyPostCap">) {
+    this.db
+      .prepare(`UPDATE campaigns SET text = ?, text_sha = ?, compiled = ?, compiled_sha = ?, confirmed_at = ?, daily_post_cap = ?, updated_at = ?
+                WHERE id = ?`)
+      .run(c.text, c.textSha, c.compiled ? JSON.stringify(c.compiled) : null, c.compiledSha, c.confirmedAt, c.dailyPostCap, Date.now(), id);
+  }
+
   isRunnable(c: Campaign): boolean {
     return runnable(c);
   }
@@ -419,6 +431,11 @@ export class CampaignStore {
 
   changes(campaignId: number): CampaignChange[] {
     return this.db.prepare("SELECT * FROM campaign_changes WHERE campaign_id = ? ORDER BY id").all(campaignId).map(toChange);
+  }
+
+  change(id: number): CampaignChange | undefined {
+    const r = this.db.prepare("SELECT * FROM campaign_changes WHERE id = ?").get(id);
+    return r ? toChange(r) : undefined;
   }
 
   markUndone(id: number) {

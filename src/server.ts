@@ -15,6 +15,7 @@ import { codeDir, config, dataDir, envFile, isConfigured, isLocalUrl, needsRedir
 import { randomToken } from "./crypto.ts";
 import type { SignIn, Store } from "./db.ts";
 import { registerMcp, trustedRequest } from "./mcp.ts";
+import type { CampaignWorker } from "./campaigns/worker.ts";
 import { postSigned } from "./notify.ts";
 import { blenderTemplates } from "./produce/adapters/blender.ts";
 import { adapters as productionAdapters } from "./produce/adapters/index.ts";
@@ -90,7 +91,7 @@ export interface ReviewServices {
   telegram?: TelegramReview;
 }
 
-export function buildServer(store: Store, runner: Runner, publishers: Record<Platform, Publisher>, options: ServerOptions = {}, drive?: DriveServices, ai?: AiService, producer?: ProductionWorker, review?: ReviewServices): FastifyInstance {
+export function buildServer(store: Store, runner: Runner, publishers: Record<Platform, Publisher>, options: ServerOptions = {}, drive?: DriveServices, ai?: AiService, producer?: ProductionWorker, review?: ReviewServices, campaigns?: CampaignWorker): FastifyInstance {
   const app = Fastify({ logger: false, bodyLimit: 1024 * 1024 });
   const reviews = review?.service ?? new ReviewService(store, { publishers, runner, productions: () => producer?.productions });
   const telegram = review?.telegram;
@@ -996,7 +997,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     return { ok: true };
   });
 
-  registerMcp(app, store, runner, publishers, reviews, producer, reviewChannel);
+  registerMcp(app, store, runner, publishers, reviews, producer, reviewChannel, campaigns);
 
   return app;
 }

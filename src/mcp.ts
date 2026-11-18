@@ -21,6 +21,9 @@ import type { ReviewService, ReviewRequest } from "./review/service.ts";
 import { REVIEW_STATES, type ReviewState } from "./review/store.ts";
 import { captionTopicFor, checkDraft, DuplicateError, editView, parseSchedule, postView, saveUpload, type Draft } from "./posts.ts";
 import { PRODUCTION_INSTRUCTIONS, productionTools } from "./produce/mcp-tools.ts";
+import { analyticsTools } from "./analytics/mcp-tools.ts";
+import { CAMPAIGN_INSTRUCTIONS, campaignTools } from "./campaigns/mcp-tools.ts";
+import type { CampaignWorker } from "./campaigns/worker.ts";
 import type { ProductionWorker } from "./produce/worker.ts";
 import type { Runner } from "./runner.ts";
 import { PLATFORMS, type Platform, type TikTokOptions } from "./types.ts";
@@ -56,7 +59,9 @@ create_edit makes an edited cut (pauses and filler words cut, captions, speaker 
 FreePoster tells you what happens through its event log, so you never have to guess or poll each thing: production.ready / production.failed, edit.ready / edit.failed, review.waiting / approved / rejected / redo / failed / expired, and post.done, each with a one-sentence summary you can pass on. wait_for_events waits (up to about a minute per call) and returns them as they happen; list_events returns what you haven't read yet, so call it whenever the user comes back to you. list_reviews with needs_agent shows redos waiting for you. How to handle each event:
 ${EVENT_GUIDE}
 
-${PRODUCTION_INSTRUCTIONS}`;
+${PRODUCTION_INSTRUCTIONS}
+
+${CAMPAIGN_INSTRUCTIONS}`;
 
 /** Prompts: ready-made requests the user can pick in agents that offer them (often as slash commands). */
 const PROMPTS = [
@@ -150,6 +155,9 @@ const POST_PROPS = {
   dry_run: { type: "boolean", default: false, description: "Run every check and report, without asking for a review." },
 };
 
+/** Tools whose text result is compact JSON rather than indented. */
+const COMPACT = new Set<string>();
+
 interface Tool {
   name: string;
   title: string;
@@ -159,7 +167,7 @@ interface Tool {
   run(args: Args): Promise<unknown>;
 }
 
-export function mcpTools(store: Store, runner: Runner, publishers: Record<Platform, Publisher>, reviews: ReviewService, producer?: ProductionWorker, reviewChannel: () => Record<string, unknown> = () => ({})): Tool[] {
+export function mcpTools(store: Store, runner: Runner, publishers: Record<Platform, Publisher>, reviews: ReviewService, producer?: ProductionWorker, reviewChannel: () => Record<string, unknown> = () => ({}), campaigns?: CampaignWorker, agent: () => string = () => "agent"): Tool[] {
   const view = (p: Parameters<typeof postView>[1]) => {
     const v = postView(store, p);
     return {
@@ -632,6 +640,11 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
     reviewChannel,
     fail: (message) => new ToolError(message),
   }));
+  // Analytics and campaign results can be long: their text is compact JSON.
+  for (const t of [...analyticsTools({ store, fail: (message) => new ToolError(message) }), ...campaignTools({ store, worker: () => campaigns, agent, fail: (message) => new ToolError(message) })]) {
+    COMPACT.add(t.name);
+    tools.push(t);
+  }
   return tools;
 
   /**
@@ -758,8 +771,10 @@ export function trustedRequest(req: FastifyRequest): string | null {
   return null;
 }
 
-export function registerMcp(app: FastifyInstance, store: Store, runner: Runner, publishers: Record<Platform, Publisher>, reviews: ReviewService, producer?: ProductionWorker, reviewChannel?: () => Record<string, unknown>) {
-  const tools = mcpTools(store, runner, publishers, reviews, producer, reviewChannel);
+export function registerMcp(app: FastifyInstance, store: Store, runner: Runner, publishers: Record<Platform, Publisher>, reviews: ReviewService, producer?: ProductionWorker, reviewChannel?: () => Record<string, unknown>, campaigns?: CampaignWorker) {
+  // The server is stateless, so the agent's name for the Autorun log is the clientInfo.name of the latest initialize.
+  let agentName = "agent";
+  const tools = mcpTools(store, runner, publishers, reviews, producer, reviewChannel, campaigns, () => agentName);
 
   async function handle(msg: any): Promise<object | null> {
     if (!msg || typeof msg !== "object" || msg.jsonrpc !== "2.0" || typeof msg.method !== "string") {
@@ -769,13 +784,16 @@ export function registerMcp(app: FastifyInstance, store: Store, runner: Runner, 
     const reply = (result: object) => (isNotification ? null : { jsonrpc: "2.0", id: msg.id, result });
     const params = msg.params ?? {};
     switch (msg.method) {
-      case "initialize":
+      case "initialize": {
+        const name = params.clientInfo?.name;
+        if (typeof name === "string" && name.trim()) agentName = name.trim().slice(0, 100);
         return reply({
           protocolVersion: PROTOCOL_VERSIONS.includes(params.protocolVersion) ? params.protocolVersion : PROTOCOL_VERSIONS[0],
           capabilities: { tools: { listChanged: false }, prompts: { listChanged: false } },
           serverInfo: { name: "freeposter", title: "FreePoster", version: VERSION },
           instructions: INSTRUCTIONS,
         });
+      }
       case "ping":
         return reply({});
       case "prompts/list":
@@ -797,7 +815,7 @@ export function registerMcp(app: FastifyInstance, store: Store, runner: Runner, 
         if (typeof args !== "object" || Array.isArray(args)) return isNotification ? null : rpcError(msg.id, -32602, "arguments must be an object");
         try {
           const result = await tool.run(args);
-          return reply({ content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result });
+          return reply({ content: [{ type: "text", text: COMPACT.has(tool.name) ? JSON.stringify(result) : JSON.stringify(result, null, 2) }], structuredContent: result });
         } catch (err) {
           // Platform and validation errors go back to the model, which can fix its call or tell the user.
           if (!(err instanceof ToolError)) console.error(`mcp ${tool.name}:`, (err as Error).message);
