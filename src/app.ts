@@ -12,6 +12,7 @@ import { DriveWatcher } from "./drive/watcher.ts";
 import { EditWorker } from "./edit/worker.ts";
 import { sampleFrames } from "./media.ts";
 import { MetricsPoller } from "./analytics/poller.ts";
+import { labelOnPublish } from "./analytics/labels.ts";
 import { Notifier } from "./notify.ts";
 import { publishers } from "./platforms/index.ts";
 import { adapters } from "./produce/adapters/index.ts";
@@ -53,7 +54,11 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
   setAi(ai);
   const runner = new Runner(store, publishers);
   const poller = new MetricsPoller(store, publishers, { freshAccount: (a, force) => runner.freshAccount(a, force) });
-  runner.onPublished = (jobId) => poller.schedule(jobId);
+  // A published job starts its metrics polling and, for a recorded video, its labels (never affecting publishing).
+  runner.onPublished = (jobId) => {
+    poller.schedule(jobId);
+    void labelOnPublish({ store, ai }, jobId);
+  };
   const editor = new EditWorker(store);
   const notifier = new Notifier(store);
   // Inputs are stored by content hash, so a file's name is its hash: the edit pipeline's transcript cache key.
