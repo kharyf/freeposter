@@ -1,6 +1,8 @@
 // Takes metric snapshots of published videos at 1h, 6h, 24h, 72h, 7d and 30d after publish.
+import type { Account, Job } from "../types.ts";
+import { AuthError } from "../http.ts";
 import type { Store } from "../db.ts";
-import { Gone, NeedsPermission, PlanLimited, StillProcessing, type Publisher } from "../platforms/base.ts";
+import { Gone, NeedsPermission, PlanLimited, StillProcessing, type MetricsContext, type Publisher } from "../platforms/base.ts";
 import { backoffMs } from "../runner.ts";
 import type { Platform } from "../types.ts";
 import { AnalyticsStore } from "./store.ts";
@@ -29,6 +31,13 @@ export function nextPollAt(publishedAt: number, lastAgeSec: number | null, rando
   return Math.round(publishedAt + age * 1000 + (random() * 2 - 1) * JITTER * gapBefore(age) * 1000);
 }
 
+/** The platform's id for the video, from where each publisher keeps it. */
+export function externalIdOf(job: Job): string {
+  const p = job.progress;
+  const id = job.platform === "instagram" ? p.mediaId : job.platform === "x" ? p.tweetId : job.platform === "tiktok" ? job.resultUrl?.match(/\/video\/(\d+)/)?.[1] : p.videoId;
+  return String(id ?? job.id);
+}
+
 export class MetricsPoller {
   store: Store;
   analytics: AnalyticsStore;
@@ -37,10 +46,14 @@ export class MetricsPoller {
   random: () => number;
   timer: NodeJS.Timeout | undefined;
   running = false;
+  stopped = false;
+  /** token refresh, shared with the posting runner so the two never refresh the same account at once */
+  freshAccount: (account: Account, force?: boolean) => Promise<Account>;
   /** told which jobs got a new snapshot, after a tick */
   onRefresh: (jobIds: number[]) => void = () => {};
 
-  constructor(store: Store, publishers: Record<Platform, Publisher>, opts: { now?: () => number; random?: () => number } = {}) {
+  constructor(store: Store, publishers: Record<Platform, Publisher>, opts: { now?: () => number; random?: () => number; freshAccount?: (account: Account, force?: boolean) => Promise<Account> } = {}) {
+    this.freshAccount = opts.freshAccount ?? (async (a) => a);
     this.store = store;
     this.analytics = new AnalyticsStore(store);
     this.publishers = publishers;
@@ -70,11 +83,13 @@ export class MetricsPoller {
   }
 
   start(intervalMs = 60_000) {
+    this.stopped = false;
     this.backfill();
     const run = () => {
       void this.tick()
         .catch((err) => console.error(`metrics poll: ${(err as Error).message}`))
         .finally(() => {
+          if (this.stopped) return;
           this.timer = setTimeout(run, intervalMs);
           this.timer.unref();
         });
@@ -83,6 +98,7 @@ export class MetricsPoller {
   }
 
   stop() {
+    this.stopped = true;
     clearTimeout(this.timer);
   }
 
@@ -121,7 +137,7 @@ export class MetricsPoller {
     const now = this.now();
     const job = this.store.job(jobId)!;
     const publishedAt = this.publishedAt(jobId);
-    let account = this.store.account(accountId);
+    const account = this.store.account(accountId);
     const publisher = this.publishers[job.platform];
     if (publishedAt === null || !account) {
       a.finishPoll(jobId, "account or post removed");
@@ -132,19 +148,25 @@ export class MetricsPoller {
       return false;
     }
     const before = a.pollFor(jobId)!;
+    // Past the last age nothing is worth recording, whatever state the poll was in.
+    if (now > publishedAt + GIVE_UP_MS) {
+      a.finishPoll(jobId, before.lastError);
+      return false;
+    }
 
     try {
-      if (account.expiresAt !== null && account.expiresAt - now < 5 * 60_000) {
-        const tokens = await publisher.refresh(account);
-        if (tokens) {
-          this.store.saveTokens(account.id, tokens);
-          account = this.store.account(account.id)!;
-        }
+      const ctx = (acct: Account): MetricsContext => ({ account: acct, job, progress: job.progress, publishedAt });
+      let reading;
+      try {
+        reading = await publisher.metrics(ctx(await this.freshAccount(this.store.account(accountId)!)));
+      } catch (err) {
+        if (!(err instanceof AuthError)) throw err;
+        // The runner's way: one forced refresh, then try again.
+        reading = await publisher.metrics(ctx(await this.freshAccount(this.store.account(accountId)!, true)));
       }
-      const reading = await publisher.metrics({ account, job, progress: job.progress, publishedAt });
       const takenAt = this.now();
       const ageSec = Math.round((takenAt - publishedAt) / 1000);
-      const externalId = String(job.progress.videoId ?? job.progress.mediaId ?? job.progress.tweetId ?? job.progress.publishId ?? job.resultUrl ?? job.id);
+      const externalId = externalIdOf(job);
       a.addSnapshot({ jobId, platform: job.platform, externalId, takenAt, ageSec, reading });
       // Ages that passed while we couldn't read (permission, outage) are skipped, not back-filled.
       const next = nextPollAt(publishedAt, slotOf(ageSec), this.random);
@@ -153,7 +175,7 @@ export class MetricsPoller {
       return true;
     } catch (err) {
       if (err instanceof StillProcessing) {
-        a.schedulePoll(jobId, now + err.delayMs);
+        a.deferPoll(jobId, null, now + err.delayMs);
       } else if (err instanceof Gone) {
         // Some platforms say "not found" for permission or transient problems, so only a second Gone in a row counts.
         if (before.lastError === "gone?") a.finishPoll(jobId, "gone");
@@ -164,8 +186,6 @@ export class MetricsPoller {
         const next = nextPollAt(publishedAt, slotOf(Math.round((now - publishedAt) / 1000)), this.random);
         if (next === null) a.finishPoll(jobId, "limited by plan");
         else a.deferPoll(jobId, "limited by plan", next);
-      } else if (now > publishedAt + GIVE_UP_MS) {
-        a.finishPoll(jobId, (err as Error).message);
       } else {
         a.notePollError(jobId, (err as Error).message, now + backoffMs(before.attempts + 1, this.random));
       }

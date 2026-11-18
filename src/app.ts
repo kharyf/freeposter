@@ -52,7 +52,7 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
   const ai = new AiService(store);
   setAi(ai);
   const runner = new Runner(store, publishers);
-  const poller = new MetricsPoller(store, publishers);
+  const poller = new MetricsPoller(store, publishers, { freshAccount: (a, force) => runner.freshAccount(a, force) });
   runner.onPublished = (jobId) => poller.schedule(jobId);
   const editor = new EditWorker(store);
   const notifier = new Notifier(store);

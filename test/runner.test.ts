@@ -181,3 +181,17 @@ test("post.done is queued once, when the post's last job finishes", async () => 
     config.produce.webhookUrl = saved;
   }
 });
+
+test("onPublished is told the job id once it is published, and a throwing hook doesn't fail the job", async () => {
+  const { store, runner, queue, runDue } = setup(fakePublisher(async () => ({ url: "https://x.com/u/status/9" })));
+  const told: { id: number; state: string }[] = [];
+  runner.onPublished = (id) => {
+    told.push({ id, state: store.job(id)!.state });
+    throw new Error("hook broke");
+  };
+  const postId = queue();
+  await runDue();
+  const [job] = store.jobsForPost(postId);
+  assert.equal(job.state, "published");
+  assert.deepEqual(told, [{ id: job.id, state: "published" }]);
+});

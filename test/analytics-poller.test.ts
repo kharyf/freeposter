@@ -2,11 +2,14 @@ import "./isolated-home.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AnalyticsStore } from "../src/analytics/store.ts";
-import { MetricsPoller, nextPollAt } from "../src/analytics/poller.ts";
+import { AuthError } from "../src/http.ts";
+import { Runner } from "../src/runner.ts";
+import type { Job } from "../src/types.ts";
+import { MetricsPoller, externalIdOf, nextPollAt } from "../src/analytics/poller.ts";
 import { AGES, type MetricReading } from "../src/analytics/types.ts";
 import { Gone, NeedsPermission, PlanLimited, StillProcessing, type MetricsContext, type Publisher } from "../src/platforms/base.ts";
 import type { Platform } from "../src/types.ts";
-import { account, newStore } from "./helpers.ts";
+import { account, newStore, tmp } from "./helpers.ts";
 
 const H = 3_600_000;
 const T0 = Date.UTC(2026, 10, 1);
@@ -24,7 +27,7 @@ function publishedJob(store: ReturnType<typeof newStore>, platform: Platform, n 
   const postId = store.createPost({ caption: "", title: "", sourcePath: "x.mp4", sha256: `sha-${platform}-${n}`, tiktok: null }, [acct.id]);
   const job = store.jobsForPost(postId)[0];
   store.finishJob(job.id, "published", { resultUrl: "https://example.com/v" });
-  store.db.prepare("UPDATE jobs SET published_at = ?, progress = ? WHERE id = ?").run(T0, JSON.stringify({ videoId: "vid" }), job.id);
+  store.db.prepare("UPDATE jobs SET published_at = ?, progress = ? WHERE id = ?").run(T0, JSON.stringify({ videoId: "vid", mediaId: "vid", tweetId: "vid" }), job.id);
   return job.id;
 }
 
@@ -222,4 +225,99 @@ test("back-fill schedules published jobs that have no poll row", () => {
   assert.equal(t.analytics.pollFor(job), undefined);
   t.poller.backfill();
   assert.equal(t.analytics.pollFor(job)!.nextAt, T0 + H);
+});
+
+test("tokens are refreshed through the shared refresher, once even when refreshes overlap", async () => {
+  const store = newStore();
+  let refreshes = 0;
+  const seen: string[] = [];
+  const pub = {
+    ...fake("x", async (ctx) => { seen.push(ctx.account.accessToken); return reading(1); }),
+    refresh: async () => {
+      refreshes++;
+      await new Promise((r) => setTimeout(r, 30));
+      return { accessToken: "fresh", refreshToken: "r2", expiresAt: T0 + 100 * H, refreshExpiresAt: null };
+    },
+  } as Publisher;
+  const publishers = { x: pub } as Record<Platform, Publisher>;
+  const runner = new Runner(store, publishers, tmp());
+  const poller = new MetricsPoller(store, publishers, { now: () => T0 + H, random: mid, freshAccount: (a, force) => runner.freshAccount(a, force) });
+  const acct = store.upsertAccount(account("x", { expiresAt: Date.now() + 60_000 }));
+  const postId = store.createPost({ caption: "", title: "", sourcePath: "x.mp4", sha256: "s", tiktok: null }, [acct.id]);
+  const job = store.jobsForPost(postId)[0];
+  store.finishJob(job.id, "published", {});
+  store.db.prepare("UPDATE jobs SET published_at = ? WHERE id = ?").run(T0, job.id);
+  poller.schedule(job.id);
+  await Promise.all([runner.freshAccount(store.account(acct.id)!), poller.tick()]);
+  assert.equal(refreshes, 1);
+  assert.deepEqual(seen, ["fresh"]);
+});
+
+test("a rejected token is force-refreshed once and the read retried", async () => {
+  const forced: (boolean | undefined)[] = [];
+  let calls = 0;
+  const store = newStore();
+  const poller = new MetricsPoller(store, { x: fake("x", async () => { if (calls++ === 0) throw new AuthError("401"); return reading(5); }) } as Record<Platform, Publisher>,
+    { now: () => T0 + H, random: mid, freshAccount: async (a, force) => { forced.push(force); return a; } });
+  const analytics = new AnalyticsStore(store);
+  const job = publishedJob(store, "x");
+  poller.schedule(job);
+  await poller.tick();
+  assert.deepEqual(forced, [undefined, true]);
+  assert.equal(analytics.snapshots(job).length, 1);
+});
+
+test("past the 30-day window every outcome ends the poll without a snapshot", async () => {
+  for (const err of [new NeedsPermission("p"), new StillProcessing("s", 1000), new Gone("g"), null]) {
+    let calls = 0;
+    const t = setup({ x: fake("x", async () => { calls++; if (err) throw err; return reading(1); }) });
+    const job = publishedJob(t.store, "x");
+    t.poller.schedule(job);
+    t.at(T0 + 40 * 24 * H);
+    await t.poller.tick();
+    assert.equal(t.analytics.pollFor(job)!.done, true, String(err?.constructor.name));
+    assert.equal(calls, 0);
+    assert.equal(t.analytics.snapshots(job).length, 0);
+  }
+});
+
+test("StillProcessing clears a pending gone? so only two Gones in a row count", async () => {
+  const modes: (Error | null)[] = [new Gone("g"), new StillProcessing("s", 1000), new Gone("g")];
+  const t = setup({ x: fake("x", async () => { const m = modes.shift(); if (m) throw m; return reading(1); }) });
+  const job = publishedJob(t.store, "x");
+  t.poller.schedule(job);
+  for (let i = 0; i < 3; i++) {
+    t.at(T0 + H + i * 7 * H);
+    await t.poller.tick();
+  }
+  const p = t.analytics.pollFor(job)!;
+  assert.equal(p.done, false);
+  assert.equal(p.lastError, "gone?");
+});
+
+test("stop() during a tick keeps the poller from running again", async () => {
+  const t = setup({ x: fake("x", async () => { await new Promise((r) => setTimeout(r, 40)); return reading(1); }) });
+  const job = publishedJob(t.store, "x");
+  t.poller.schedule(job);
+  t.at(T0 + H);
+  let ticks = 0;
+  const real = t.poller.tick.bind(t.poller);
+  t.poller.tick = () => { ticks++; return real(); };
+  t.poller.start(5);
+  await new Promise((r) => setTimeout(r, 10));
+  t.poller.stop();
+  await new Promise((r) => setTimeout(r, 120));
+  assert.equal(ticks, 1);
+  assert.equal(t.poller.timer === undefined || t.poller.stopped, true);
+});
+
+test("the external id comes from where each publisher keeps it", () => {
+  const job = (platform: Platform, progress: Record<string, unknown>, resultUrl: string | null = null) =>
+    ({ id: 99, platform, progress, resultUrl }) as Job;
+  assert.equal(externalIdOf(job("youtube", { videoId: "yt1", uploadUrl: "u" })), "yt1");
+  assert.equal(externalIdOf(job("facebook", { videoId: "fb1" })), "fb1");
+  assert.equal(externalIdOf(job("instagram", { containerId: "c", mediaId: "ig1" })), "ig1");
+  assert.equal(externalIdOf(job("x", { mediaId: "m", tweetId: "tw1" })), "tw1");
+  assert.equal(externalIdOf(job("tiktok", { publishId: "p" }, "https://www.tiktok.com/@u/video/7123")), "7123");
+  assert.equal(externalIdOf(job("tiktok", {}, null)), "99");
 });
