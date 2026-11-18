@@ -22,7 +22,6 @@ export const youtube: Publisher = {
   platform: "youtube",
   label: "YouTube Shorts",
   minDurationSec: 1,
-  analyticsScopes: [ANALYTICS_SCOPE],
   maxDurationSec: () => 180, // Shorts limit; longer vertical videos post as regular videos
 
   validate(post) {
@@ -174,12 +173,15 @@ export const youtube: Publisher = {
     return notes.length ? { url, note: notes.join(" ") } : { url };
   },
 
+  analyticsScopes: [ANALYTICS_SCOPE],
+
   async metrics(ctx) {
     const videoId = ctx.progress.videoId;
     if (!videoId) throw new Gone("no YouTube video id recorded for this job");
     const auth = { authorization: `Bearer ${ctx.account.accessToken}` };
     const range = {
-      startDate: new Date(ctx.publishedAt).toISOString().slice(0, 10),
+      // Analytics days are Pacific time, up to a day behind UTC; the video filter scopes the data anyway.
+      startDate: new Date(ctx.publishedAt - 86_400_000).toISOString().slice(0, 10),
       endDate: new Date().toISOString().slice(0, 10),
     };
     const report = (params: Record<string, string>) =>
@@ -198,7 +200,6 @@ export const youtube: Publisher = {
       if (typeof row[i] === "number") raw[c.name] = row[i] as number;
     });
     const views = raw.views ?? null;
-    delete raw.views;
 
     const curve = await report({ dimensions: "elapsedVideoTimeRatio", metrics: "audienceWatchRatio" });
     const points = ((curve.rows ?? []) as [number, number][]).slice().sort((a, b) => a[0] - b[0]);

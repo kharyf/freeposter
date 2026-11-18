@@ -35,7 +35,7 @@ test("youtube metrics map report columns and retention", async () => {
     assert.equal(r.raw.averageViewPercentage, 61.2);
     assert.equal(r.raw.likes, 87);
     assert.equal(r.raw.subscribersGained, 5);
-    assert.equal("views" in r.raw, false);
+    assert.equal(r.raw.views, 1234);
     assert.equal(r.retention!.length, 100);
     // sorted by elapsedVideoTimeRatio even though the recorded rows are out of order
     const sorted = fixture("youtube-retention").rows.sort((a: number[], b: number[]) => a[0] - b[0]).map((row: number[]) => row[1]);
@@ -44,7 +44,7 @@ test("youtube metrics map report columns and retention", async () => {
     const q = new URL(m.calls[0].url).searchParams;
     assert.equal(q.get("ids"), "channel==MINE");
     assert.equal(q.get("filters"), "video==vid1");
-    assert.equal(q.get("startDate"), "2026-11-10");
+    assert.equal(q.get("startDate"), "2026-11-09");
     assert.equal(q.get("metrics"), "views,likes,comments,shares,subscribersGained,averageViewDuration,averageViewPercentage");
     assert.equal(m.calls[0].headers.authorization, "Bearer access-1");
     assert.equal(new URL(m.calls[1].url).searchParams.get("metrics"), "audienceWatchRatio");
@@ -84,6 +84,16 @@ test("youtube with no rows yet but the video existing is a reading without views
     const r = await youtube.metrics!(ctx);
     assert.equal(r.views, null);
     assert.equal(r.retention, null);
+  } finally {
+    m.restore();
+  }
+});
+
+test("youtube startDate is a day before the publish date so Pacific-time days are covered", async () => {
+  const m = mockFetch(() => json(fixture("youtube-empty")));
+  try {
+    await youtube.metrics!({ ...ctx, publishedAt: Date.UTC(2026, 10, 10, 3) }).catch(() => {});
+    assert.equal(new URL(m.calls[0].url).searchParams.get("startDate"), "2026-11-09");
   } finally {
     m.restore();
   }
