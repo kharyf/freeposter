@@ -24,7 +24,7 @@ export function classify(model: { architecture?: string; name?: string; image_ou
 
 const dir = wangpDir();
 if (!dir || !existsSync(join(dir, "wgp.py"))) {
-  console.error("WanGP not found: set WANGP_DIR or install it at C:\src\WanGP");
+  console.error("WanGP not found: set WANGP_DIR or install it at C:/src/WanGP");
   process.exit(1);
 }
 console.log(`WanGP: ${dir}`);
@@ -37,7 +37,7 @@ for (const folder of ["defaults", "finetunes"]) {
     try {
       const model = JSON.parse(readFileSync(join(path, file), "utf8"))?.model;
       const group = model && classify(model);
-      if (group) groups[group].push(file.slice(0, -5));
+      if (group) groups[group as Group].push(file.slice(0, -5));
     } catch {} // not a model definition
   }
 }
