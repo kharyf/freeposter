@@ -3,6 +3,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { campaignTaskFor } from "../campaigns/store.ts";
 import { dataDir } from "../config.ts";
 import type { Store } from "../db.ts";
 import { probe } from "../media.ts";
@@ -155,10 +156,14 @@ export class EditWorker {
     log(edit, `ready (${durationSec.toFixed(1)}s)`);
     // A Drive video's edit goes to review by itself (Drive intake asks for it); an agent asking too would only replace that card.
     const drive = this.store.driveFileForEdit(edit.id);
-    queueEvent(this.store, "edit.ready", `edit.ready:${edit.id}`, { edit_id: edit.id, duration_sec: durationSec, parent_edit_id: edit.parentEditId, drive_file: drive?.name ?? null },
+    // So does a campaign's (and an agent asking too is refused).
+    const task = drive ? null : campaignTaskFor(this.store, "edit", edit.id);
+    queueEvent(this.store, "edit.ready", `edit.ready:${edit.id}`, { edit_id: edit.id, duration_sec: durationSec, parent_edit_id: edit.parentEditId, drive_file: drive?.name ?? null, campaign_task_id: task },
       drive
         ? `Edit ${edit.id} of the Drive video "${drive.name}" is ready (${durationSec.toFixed(1)} s). FreePoster sends it to the user for review itself; don't call request_review.`
-        : `Edit ${edit.id} is ready (${durationSec.toFixed(1)} s). Call request_review with it so the user can approve, reject or redo it.`);
+        : task !== null
+          ? `Edit ${edit.id} of a campaign video (campaign task ${task}) is ready (${durationSec.toFixed(1)} s). FreePoster sends it to the user for review itself; don't call request_review.`
+          : `Edit ${edit.id} is ready (${durationSec.toFixed(1)} s). Call request_review with it so the user can approve, reject or redo it.`);
   }
 
   private fail(edit: Edit, err: unknown) {

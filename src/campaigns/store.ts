@@ -180,6 +180,28 @@ const TASK_COLUMNS: Record<string, string> = {
 };
 const ENTRY_COLUMNS: Record<string, string> = { name: "name", text: "text", keywords: "keywords", url: "url" };
 
+const ready = new WeakSet<Store>();
+
+/**
+ * The campaign task a production or edit belongs to (an edit: itself or any edit it was revised from), or null.
+ * Other workers ask, to tell agents that the campaign sends it for review itself.
+ */
+export function campaignTaskFor(store: Store, kind: "production" | "edit", id: number): number | null {
+  if (!ready.has(store)) { store.db.exec(SCHEMA); ready.add(store); }
+  if (kind === "production") {
+    const r = store.db.prepare("SELECT id FROM campaign_tasks WHERE production_id = ? ORDER BY id LIMIT 1").get(id) as { id: number } | undefined;
+    return r?.id ?? null;
+  }
+  const find = store.db.prepare("SELECT id FROM campaign_tasks WHERE edit_id = ? ORDER BY id LIMIT 1");
+  let edit: number | null = id;
+  for (let hops = 0; edit !== null && hops < 50; hops++) {
+    const r = find.get(edit) as { id: number } | undefined;
+    if (r) return r.id;
+    edit = store.edit(edit)?.parentEditId ?? null;
+  }
+  return null;
+}
+
 export class CampaignStore {
   store: Store;
 

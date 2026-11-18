@@ -7,7 +7,7 @@ import { AnalyticsStore } from "../src/analytics/store.ts";
 import type { Script } from "../src/campaigns/script.ts";
 import { DAYS, type CompiledCampaign, type Day, type MakeInstruction, type PostInstruction } from "../src/campaigns/spec.ts";
 import { CampaignStore } from "../src/campaigns/store.ts";
-import { CampaignWorker } from "../src/campaigns/worker.ts";
+import { CampaignWorker, localAt } from "../src/campaigns/worker.ts";
 import { publishers } from "../src/platforms/index.ts";
 import type { ProductionSpec } from "../src/produce/spec.ts";
 import { ProductionStore } from "../src/produce/store.ts";
@@ -21,7 +21,7 @@ process.env.TZ = "America/New_York";
 let clips: string[] = [];
 before(() => {
   const dir = tmp();
-  clips = [3, 4, 5, 6, 7].map((sec, i) => makeVideo(dir, `clip${i}.mp4`, ["-f", "lavfi", "-i", `testsrc2=size=360x640:rate=24`, "-t", String(sec), "-c:v", "libx264", "-pix_fmt", "yuv420p"]));
+  clips = [3, 4, 5, 6, 7, 3.5, 4.5, 5.5, 6.5, 7.5].map((sec, i) => makeVideo(dir, `clip${i}.mp4`, ["-f", "lavfi", "-i", `testsrc2=size=360x640:rate=24`, "-t", String(sec), "-c:v", "libx264", "-pix_fmt", "yuv420p"]));
 });
 
 const at = (y: number, m: number, d: number, h = 0, min = 0) => new Date(y, m - 1, d, h, min).getTime();
@@ -160,6 +160,26 @@ test("DST spring-forward day still gets exactly one set of tasks", () => {
   s.clock.now = at(2027, 3, 14, 23, 59);
   assert.equal(s.worker.materialize(), 0);
   assert.deepEqual(tasksOf(s.cs, id).map((t) => t.date), ["2027-03-13", "2027-03-14", "2027-03-14"]);
+  // 02:30 doesn't exist that day: it lands at 03:30 daylight time, still on the 14th.
+  const landed = new Date(localAt("2027-03-14", "02:30"));
+  assert.deepEqual([landed.getDate(), landed.getHours(), landed.getMinutes()], [14, 3, 30]);
+});
+
+test("DST fall-back day (01:30 happens twice) still gets exactly one set of tasks", () => {
+  const s = setup();
+  const id = s.campaign({ sun: [s.make(2, { at: "01:30" })] });
+  // 7 November 2027: clocks go back from 02:00 to 01:00 in New York.
+  const first = at(2027, 11, 7, 1, 30);
+  s.clock.now = at(2027, 11, 7, 0, 10);
+  assert.equal(s.worker.materialize(), 2);
+  for (const now of [first, first + 3_600_000, at(2027, 11, 7, 23, 59)]) {
+    s.clock.now = now;
+    assert.equal(new Date(now).getDate(), 7);
+    assert.equal(s.worker.materialize(), 0);
+  }
+  assert.deepEqual(tasksOf(s.cs, id).map((t) => t.date), ["2027-11-07", "2027-11-07"]);
+  s.clock.now = at(2027, 11, 8, 0, 0);
+  assert.equal(s.worker.materialize(), 0, "Monday has nothing");
 });
 
 test("random never repeats an angle within one day's batch when the library has enough", () => {
@@ -332,27 +352,32 @@ test("kill switch stops scheduling but lets renders finish", async () => {
 
 test("editing the text mid-render: in-flight tasks finish, no new tasks until confirmed", async () => {
   const s = setup();
-  const id = s.campaign({ tue: [s.make(1, { at: "default" })], wed: [s.make(1, { at: "default" })] });
+  const id = s.campaign({ tue: [s.make(1, { at: "10:00" })], wed: [s.make(1, { at: "default" })] });
   s.worker.materialize();
   const [t] = s.cs.tasksOn(id, "2026-11-17");
   await s.tick();
   assert.equal(s.cs.task(t.id)!.state, "rendering");
   const compiled = s.cs.campaign(id)!.compiled!;
   s.cs.setText(id, "something else entirely");
-  // A new schedule confirmed later can't change the task already made: it keeps the instruction it came from.
+  assert.equal(s.worker.materialize(new Date(at(2026, 11, 18, 8))), 0, "not runnable: Wednesday would get nothing");
+  // The new text moves Tuesday's video to 21:00 and is confirmed while the old task is still rendering.
+  const changed = structuredClone(compiled);
+  (changed.days.tue[0] as MakeInstruction).post = { at: "21:00" };
+  s.cs.confirm(id, changed);
+  assert.equal(s.worker.materialize(), 0, "Tuesday's line was already made");
   s.finishProduction(t.id);
   await s.tick();
   s.finishEdit(t.id);
   await s.tick();
   assert.equal(s.cs.task(t.id)!.state, "reviewing");
   assert.deepEqual(s.cs.task(t.id)!.choices.instruction, compiled.days.tue[0]);
-  s.clock.now = at(2026, 11, 18, 8);
-  assert.equal(s.worker.materialize(), 0, "not runnable: Wednesday gets nothing");
   await s.approve(t.id);
   await s.tick();
-  assert.equal(s.cs.task(t.id)!.state, "scheduled", "the in-flight task still posts");
-  s.cs.confirm(id, compiled);
-  assert.equal(s.worker.materialize(), 1, "confirmed again: today's tasks are made");
+  const done = s.cs.task(t.id)!;
+  assert.equal(done.state, "scheduled", "the in-flight task still posts");
+  assert.equal(s.store.post(done.postId!)!.scheduledAt, at(2026, 11, 17, 10), "at the time it was made with, not the new one");
+  s.clock.now = at(2026, 11, 18, 8);
+  assert.equal(s.worker.materialize(), 1, "confirmed again: Wednesday's tasks are made");
 });
 
 test("one failed task doesn't stop the others; it fails with a notification", async () => {
@@ -382,4 +407,158 @@ test("a campaign's video can't be sent for review another way while its task is 
     s.reviews.request({ subject: { kind: "production", id: productionId }, accountIds: [1], caption: "x", title: "x", scheduledAt: null, tiktok: null, allowDuplicate: false, via: "agent" }),
     /campaign/,
   );
+});
+
+/** A keep video and the post line after it, from queued to the post line's placed post. */
+async function keepThenPost(s: ReturnType<typeof setup>, campaignId: number, date: string) {
+  s.worker.materialize();
+  const [make, post] = s.cs.tasksOn(campaignId, date);
+  await s.toReview(make.id);
+  await s.approve(make.id);
+  await s.tick();
+  assert.equal(s.cs.task(make.id)!.state, "kept");
+  await s.tick();
+  const r = await s.approve(post.id);
+  await s.tick();
+  assert.equal(s.cs.task(post.id)!.state, "scheduled", s.cs.task(post.id)!.error ?? "");
+  return { make: s.cs.task(make.id)!, post: s.cs.task(post.id)!, postId: r.postId! };
+}
+
+test("two weeks: each week's post line posts that week's kept video, and a used one is never taken again", async () => {
+  const s = setup();
+  const id = s.campaign({ tue: [s.make(1, null), s.postLine("WeekdayGrowth-Tue-1", "20:00")] });
+  const one = await keepThenPost(s, id, "2026-11-17");
+  assert.equal(one.post.choices.sourceTaskId, one.make.id);
+  assert.equal(one.make.state, "posted", "the kept video is used once its post exists");
+  assert.equal(one.make.postId, one.postId);
+  s.clock.now = at(2026, 11, 24, 8);
+  const two = await keepThenPost(s, id, "2026-11-24");
+  assert.equal(two.make.choices.libraryName, "WeekdayGrowth-Tue-1");
+  assert.equal(two.post.choices.sourceTaskId, two.make.id, "week 2 posts week 2's video");
+  assert.notEqual(s.store.post(two.postId)!.sha256, s.store.post(one.postId)!.sha256);
+});
+
+test("two keep instructions on one day get distinct names", () => {
+  const s = setup();
+  const id = s.campaign({ tue: [s.make(1, null), s.make(1, { at: "default" }), s.make(2, null)] });
+  s.worker.materialize();
+  const names = s.cs.tasksOn(id, "2026-11-17").map((t) => t.choices.libraryName ?? null);
+  assert.deepEqual(names, ["WeekdayGrowth-Tue-1", null, "WeekdayGrowth-Tue-2", "WeekdayGrowth-Tue-3"]);
+});
+
+test("two post lines with one name: the first takes the video, the second is missed", async () => {
+  const s = setup();
+  const id = s.campaign({ tue: [s.make(1, null), s.postLine("WeekdayGrowth-Tue-1", "20:00"), s.postLine("WeekdayGrowth-Tue-1", "21:00")] });
+  const { make } = await keepThenPost(s, id, "2026-11-17");
+  const second = s.cs.tasksOn(id, "2026-11-17")[2];
+  assert.equal(s.cs.task(second.id)!.state, "queued");
+  assert.equal(make.state, "posted");
+  s.clock.now = at(2026, 11, 18, 0, 0);
+  await s.tick();
+  assert.equal(s.cs.task(second.id)!.state, "missed");
+});
+
+test("a kept or posted campaign video can't be sent for review by an agent", async () => {
+  const s = setup();
+  const id = s.campaign({ tue: [s.make(1, null), s.postLine("WeekdayGrowth-Tue-1", "20:00")] });
+  const { make, post } = await keepThenPost(s, id, "2026-11-17");
+  const ask = (subject: { kind: "production" | "edit"; id: number }) =>
+    s.reviews.request({ subject, accountIds: [1], caption: "x", title: "x", scheduledAt: null, tiktok: null, allowDuplicate: true, via: "agent" });
+  await assert.rejects(ask({ kind: "production", id: make.productionId! }), /campaign/);
+  await assert.rejects(ask({ kind: "edit", id: make.editId! }), /campaign/);
+  await assert.rejects(ask({ kind: "edit", id: post.editId! }), /campaign/);
+});
+
+const onDay = (s: ReturnType<typeof setup>, campaignId: number, day: string) =>
+  s.cs.db.prepare("SELECT p.scheduled_at AS at FROM campaign_tasks t JOIN posts p ON p.id = t.post_id WHERE t.campaign_id = ?").all(campaignId)
+    .map((r: any) => r.at as number).filter((ms) => new Date(ms).toDateString() === new Date(`${day}T12:00:00`).toDateString()).length;
+
+test("killed Monday, resumed Wednesday: held posts are placed again under the cap", async () => {
+  const s = setup({ cap: 1 });
+  s.clock.now = at(2026, 11, 16, 7);
+  const id = s.campaign({ mon: [s.make(2, { at: "default" })] });
+  s.worker.materialize();
+  const [a, b] = s.cs.tasksOn(id, "2026-11-16");
+  for (const t of [a, b]) {
+    await s.toReview(t.id);
+    await s.approve(t.id);
+    await s.tick();
+  }
+  assert.equal(s.store.post(s.cs.task(a.id)!.postId!)!.scheduledAt, at(2026, 11, 16, 9));
+  assert.equal(s.store.post(s.cs.task(b.id)!.postId!)!.scheduledAt, at(2026, 11, 17, 9), "Monday is full: Tuesday 09:00");
+  s.clock.now = at(2026, 11, 16, 8);
+  s.worker.stopAll();
+  s.clock.now = at(2026, 11, 18, 10);
+  s.worker.resumeAll();
+  await s.tick();
+  assert.ok(onDay(s, id, "2026-11-18") <= 1, `Wednesday has ${onDay(s, id, "2026-11-18")} posts`);
+  for (const t of [a, b]) {
+    const postId = s.cs.task(t.id)!.postId!;
+    const jobs = s.store.jobsForPost(postId);
+    assert.equal(jobs[0].nextRunAt, s.store.post(postId)!.scheduledAt, "the post's time moves with its jobs");
+    assert.ok(jobs[0].nextRunAt >= s.clock.now);
+  }
+  assert.deepEqual([a, b].map((t) => s.store.post(s.cs.task(t.id)!.postId!)!.scheduledAt), [at(2026, 11, 18, 18), at(2026, 11, 19, 9)]);
+});
+
+test("a post that can't be placed is cancelled, never left held", async () => {
+  const s = setup();
+  const id = s.campaign({ tue: [s.make(1, { at: "default" })] });
+  s.worker.materialize();
+  const [t] = s.cs.tasksOn(id, "2026-11-17");
+  await s.toReview(t.id);
+  s.cs.db.prepare("DELETE FROM campaigns WHERE id = ?").run(id);
+  const r = await s.approve(t.id);
+  assert.ok(s.store.post(r.postId!));
+  await s.tick();
+  assert.equal(s.cs.task(t.id)!.state, "failed");
+  assert.equal(s.store.post(r.postId!), undefined, "the held post is cancelled");
+});
+
+test("approving a review whose task already failed cancels the held post and says so", async () => {
+  const s = setup();
+  const id = s.campaign({ tue: [s.make(1, { at: "default" })] });
+  s.worker.materialize();
+  const [t] = s.cs.tasksOn(id, "2026-11-17");
+  await s.toReview(t.id);
+  await s.reviews.tick();
+  s.worker.fail(t.id, "something broke");
+  const reviewId = s.cs.task(t.id)!.reviewId!;
+  const out = await s.reviews.approve(reviewId, { via: "window" });
+  const postId = s.reviews.reviews.get(reviewId)!.postId;
+  assert.ok(out.ok && postId);
+  await s.tick();
+  assert.equal(s.store.post(postId), undefined);
+  assert.ok(s.store.eventByKey(`campaign.failed:post:${postId}`));
+});
+
+test("while stopped, a job that fails into a retry stays held, and a held retry can be cancelled", async () => {
+  const s = setup();
+  const id = s.campaign({ tue: [s.make(1, { at: "default" })] });
+  s.worker.materialize();
+  const [t] = s.cs.tasksOn(id, "2026-11-17");
+  await s.toReview(t.id);
+  await s.approve(t.id);
+  await s.tick();
+  const postId = s.cs.task(t.id)!.postId!;
+  const [job] = s.store.jobsForPost(postId);
+  s.store.db.prepare("UPDATE jobs SET state = 'running', attempts = 1 WHERE id = ?").run(job.id);
+  s.worker.stopAll();
+  assert.equal(s.store.job(job.id)!.nextRunAt, job.nextRunAt, "a running job isn't touched");
+  s.store.finishJob(job.id, "retry", { error: "timeout", nextRunAt: Date.now() + 30_000 });
+  assert.equal(s.store.job(job.id)!.nextRunAt, Number.MAX_SAFE_INTEGER, "it fell into a retry while stopped: held");
+  const { cancelled } = s.store.cancelPost(postId);
+  assert.equal(cancelled, 1);
+  assert.equal(s.store.post(postId), undefined);
+});
+
+test("two campaign posts never share a minute", async () => {
+  const s = setup();
+  const a = s.campaign({ tue: [s.make(1, { at: "09:00" })] }, "One");
+  const b = s.campaign({ tue: [s.make(1, { at: "09:00" })] }, "Two");
+  s.worker.materialize();
+  const [ta] = s.cs.tasksOn(a, "2026-11-17");
+  const [tb] = s.cs.tasksOn(b, "2026-11-17");
+  for (const t of [ta, tb]) { await s.toReview(t.id); await s.approve(t.id); await s.tick(); }
+  assert.deepEqual([ta, tb].map((t) => s.store.post(s.cs.task(t.id)!.postId!)!.scheduledAt), [at(2026, 11, 17, 9), at(2026, 11, 17, 9, 1)]);
 });

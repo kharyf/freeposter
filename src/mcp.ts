@@ -26,7 +26,7 @@ import type { Runner } from "./runner.ts";
 import { PLATFORMS, type Platform, type TikTokOptions } from "./types.ts";
 
 /** What an agent should do with each event: in the instructions, and in the check_freeposter prompt. */
-export const EVENT_GUIDE = `- production.ready or edit.ready: show the user the preview if they haven't seen it, then call request_review with the accounts and caption you agreed on, unless the summary says FreePoster sends it for review itself (videos from the user's Drive folder). Don't send the video yourself.
+export const EVENT_GUIDE = `- production.ready or edit.ready: show the user the preview if they haven't seen it, then call request_review with the accounts and caption you agreed on, unless the summary says FreePoster sends it for review itself (videos from the user's Drive folder, with drive_file, and campaign videos, with campaign_task_id: request_review refuses those). Don't send the video yourself.
 - review.redo: if handled_by is "freeposter", tell the user in one line what FreePoster is changing. Otherwise call get_review, make the change with revise_edit or revise_production, and tell them in one line what you changed.
 - review.rejected: acknowledge it and ask whether they want something different.
 - review.failed, production.failed, edit.failed: tell them what failed and offer to fix it.

@@ -317,3 +317,15 @@ test("a damaged notes or cover column reads back as empty", () => {
   assert.deepEqual(read.notes, []);
   assert.equal(read.cover, null);
 });
+
+test("a campaign's edit.ready says FreePoster sends it for review itself", async () => {
+  const store = newStore();
+  const worker = new EditWorker(store, { dir: tmp(), findLyrics: async () => [], transcribe: async () => ({ words, language: null }) });
+  const edit = store.createEdit(video, sha256(video), DEFAULT_EDIT);
+  const { CampaignStore } = await import("../src/campaigns/store.ts");
+  const task = new CampaignStore(store).addTask({ campaignId: 1, date: "2026-11-17", dayIndex: 2, instructionIndex: 0, kind: "make", editId: edit.id });
+  await worker.tick();
+  const body = JSON.parse(store.outbox().find((e) => e.event === "edit.ready")!.body);
+  assert.equal(body.campaign_task_id, task);
+  assert.match(body.summary, /campaign video.*FreePoster sends it to the user for review itself; don't call request_review/);
+});

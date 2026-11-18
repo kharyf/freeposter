@@ -200,7 +200,14 @@ export class Store {
     if (!outboxColumns.some((c) => c.name === "read_at")) this.db.exec("ALTER TABLE notify_outbox ADD COLUMN read_at INTEGER");
     if (!outboxColumns.some((c) => c.name === "nudged_at")) this.db.exec("ALTER TABLE notify_outbox ADD COLUMN nudged_at INTEGER");
     // A crash mid-run leaves jobs "running"; their progress checkpoint lets them resume safely.
-    this.db.prepare("UPDATE jobs SET state = 'retry' WHERE state = 'running'").run();
+    const interrupted = this.db.prepare("UPDATE jobs SET state = 'retry' WHERE state = 'running' RETURNING id").all() as { id: number }[];
+    // ...and a campaign post's job stays held while the campaign kill switch is on.
+    if (interrupted.length && this.pref<boolean>("campaigns.killed") === true) {
+      for (const { id } of interrupted) {
+        const postId = this.campaignPostOfJob(id);
+        if (postId !== null) this.holdPost(postId);
+      }
+    }
   }
 
   // ---- accounts ----
@@ -485,6 +492,23 @@ export class Store {
         Date.now(),
         jobId,
       );
+    // A campaign post's job that was mid-upload when the kill switch was pressed falls back into the queue held.
+    if ((state === "retry" || state === "waiting_quota" || state === "queued") && this.pref<boolean>("campaigns.killed") === true) {
+      const postId = this.campaignPostOfJob(jobId);
+      if (postId !== null) this.holdPost(postId);
+    }
+  }
+
+  /** The post of a job when a campaign's review made it, else null. */
+  private campaignPostOfJob(jobId: number): number | null {
+    try {
+      const r = this.db.prepare(
+        "SELECT p.id FROM jobs j JOIN posts p ON p.id = j.post_id JOIN reviews r ON r.id = p.review_id WHERE j.id = ? AND r.requested_via = 'campaign'",
+      ).get(jobId) as { id: number } | undefined;
+      return r?.id ?? null;
+    } catch {
+      return null; // no reviews table: no campaign posts
+    }
   }
 
   /** The hash of the file a job is about to upload (the audit compares it with what was approved). */
@@ -549,13 +573,14 @@ export class Store {
   }
 
   /**
-   * Cancels a post's unstarted jobs (held ones included: holding never sends anything); jobs already under way are
+   * Cancels a post's unstarted jobs (and held ones: a held job isn't running, whatever it tried before); jobs under way are
    * left alone, since stopping mid-upload could leave a half-made post. Deletes the post when no jobs remain.
    */
   cancelPost(postId: number): { cancelled: number; deleted: Post | undefined; orphanedSource: string | null } {
     const post = this.post(postId);
     const { changes } = this.db
-      .prepare(`DELETE FROM jobs WHERE post_id = ? AND state = 'queued' AND attempts = 0 AND (progress = '{}' OR json_remove(progress, '$.heldFrom') = '{}')`)
+      .prepare(`DELETE FROM jobs WHERE post_id = ? AND ((state = 'queued' AND attempts = 0 AND progress = '{}')
+                OR (state IN ('queued', 'retry', 'waiting_quota') AND json_extract(progress, '$.heldFrom') IS NOT NULL))`)
       .run(postId);
     const left = this.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE post_id = ?").get(postId) as { n: number };
     if (left.n === 0) {

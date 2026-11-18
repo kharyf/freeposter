@@ -286,3 +286,8 @@ test("list_reviews filters by state; get_review on a redo marks it picked up", a
   assert.deepEqual((await call("list_reviews", { needs_agent: true })).structuredContent.reviews, [], "a file redo an agent read is in its hands");
   await app.close();
 });
+
+test("the event guide tells agents campaign videos go to review by themselves", async () => {
+  const { EVENT_GUIDE } = await import("../src/mcp.ts");
+  assert.match(EVENT_GUIDE, /campaign videos, with campaign_task_id/);
+});

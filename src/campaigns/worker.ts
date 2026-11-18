@@ -30,7 +30,7 @@ import { hashFile } from "../review/media.ts";
 import type { ReviewService, Subject } from "../review/service.ts";
 import { buildGeneratedProduction, writeScript, type Script } from "./script.ts";
 import { DAYS, type MakeInstruction, type Pick as ValuePick, type PostInstruction } from "./spec.ts";
-import { CampaignStore, type Campaign, type CampaignTask, type LibraryEntry, type LibraryKind, type TaskState } from "./store.ts";
+import { CampaignStore, campaignTaskFor, type Campaign, type CampaignTask, type LibraryEntry, type LibraryKind, type TaskState } from "./store.ts";
 
 /** What the worker needs of the production worker (a stand-in in tests). */
 export interface Productions {
@@ -81,13 +81,13 @@ export interface TaskChoices {
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 /** States a task is still being worked on in. */
 const ACTIVE: TaskState[] = ["queued", "scripting", "rendering", "editing", "reviewing", "scheduled"];
-/** Before it posts: the video is the campaign's alone (no other review may be asked for it). */
-const IN_FLIGHT: TaskState[] = ["queued", "scripting", "rendering", "editing", "reviewing"];
 const PENDING_JOBS = ["queued", "running", "retry", "waiting_quota"];
 /** Campaign reviews wait for the user well past their post time (approved a later day, it takes a later time). */
 const REVIEW_HOURS = 24 * 7;
 /** How far ahead a post is placed before giving up (a cap of 0, say). */
 const MAX_DAYS_AHEAD = 60;
+/** A post line takes a kept video made at most this many days before its own day. */
+const KEPT_WINDOW_DAYS = 7;
 /** The score age "best" ranks by: the "working" default's. */
 const BEST_AGE = "72h";
 
@@ -104,10 +104,12 @@ export const localAt = (key: string, hhmm: string) => {
   const [h, min] = hhmm.split(":").map(Number);
   return new Date(y, m - 1, d, h, min).getTime();
 };
-const nextDayKey = (key: string) => {
+const addDays = (key: string, n: number) => {
   const [y, m, d] = parseDay(key);
-  return dayKey(new Date(y, m - 1, d + 1, 12).getTime());
+  return dayKey(new Date(y, m - 1, d + n, 12).getTime());
 };
+const nextDayKey = (key: string) => addDays(key, 1);
+const minute = (ms: number) => Math.floor(ms / 60_000);
 /** The local midnight that ends the day. */
 const endOfDay = (key: string) => {
   const [y, m, d] = parseDay(key);
@@ -234,12 +236,17 @@ export class CampaignWorker {
       random: this.random,
       best: (kind) => { if (!best.has(kind)) best.set(kind, this.bestRanking(kind)); return best.get(kind)!; },
     };
+    // Kept videos are numbered across the whole day (instruction, then copy order), so every name is the day's own.
+    const keepNo = new Map<string, number>();
+    instructions.forEach((ins, index) => {
+      if (ins.kind === "make" && ins.post === null) for (let copy = 0; copy < ins.count; copy++) keepNo.set(`${index}:${copy}`, keepNo.size + 1);
+    });
     let made = 0;
     instructions.forEach((ins, index) => {
       const copies = ins.kind === "make" ? ins.count : 1;
       for (let copy = 0; copy < copies; copy++) {
         if (have.has(`${index}:${copy}`)) continue;
-        const { choices, error } = this.resolve(c, ins, copy, DAY_LABELS[dayIndex], ctx);
+        const { choices, error } = this.resolve(c, ins, copy, DAY_LABELS[dayIndex], ctx, keepNo.get(`${index}:${copy}`) ?? copy + 1);
         const id = this.campaigns.addTask({
           campaignId: c.id, date: key, dayIndex, instructionIndex: index, copy, kind: ins.kind, choices: choices as unknown as Record<string, unknown>,
           state: error ? "failed" : "queued", error,
@@ -253,7 +260,7 @@ export class CampaignWorker {
   }
 
   /** One copy's choices; an error when it can't be made at all. */
-  private resolve(c: Campaign, ins: MakeInstruction | PostInstruction, copy: number, day: string, ctx: PickContext): { choices: TaskChoices; error: string | null } {
+  private resolve(c: Campaign, ins: MakeInstruction | PostInstruction, copy: number, day: string, ctx: PickContext, keepNo: number): { choices: TaskChoices; error: string | null } {
     const defaults = c.defaultPostTimes;
     const choices: TaskChoices = {
       instruction: structuredClone(ins), campaignName: c.name, day, style: ins.style, types: [...ins.types], postTime: null, accountSetId: c.accountSetId,
@@ -265,7 +272,7 @@ export class CampaignWorker {
         if (entry) choices[kind] = entry;
         else problems.push(ins[kind].pick === "named" ? `its ${kind} is no longer in the library` : `the library has no ${kind} to pick`);
       }
-      if (ins.post === null) choices.libraryName = `${c.name.replace(/\s+/g, "")}-${day}-${copy + 1}`;
+      if (ins.post === null) choices.libraryName = `${c.name.replace(/\s+/g, "")}-${day}-${keepNo}`;
       else if (ins.post.at !== "default") choices.postTime = ins.post.at;
       else if (defaults.length) choices.postTime = defaults[copy % defaults.length];
       else problems.push("it posts at the default time, and the campaign has no default post times");
@@ -296,6 +303,11 @@ export class CampaignWorker {
   }
 
   private async run() {
+    try {
+      this.sweepHeld();
+    } catch (err) {
+      console.error(`campaigns: held posts: ${(err as Error).message}`);
+    }
     try {
       this.materialize();
     } catch (err) {
@@ -514,6 +526,8 @@ export class CampaignWorker {
     });
     this.store.releasePost(postId, { at });
     this.campaigns.updateTask(t.id, { state: "scheduled", postId });
+    // The kept video a post line posted is used: it's never taken again.
+    if (c.sourceTaskId) this.campaigns.updateTask(c.sourceTaskId, { state: "posted", postId });
     log(t, `post ${postId} scheduled for ${new Date(at).toLocaleString()}`);
   }
 
@@ -521,7 +535,8 @@ export class CampaignWorker {
    * When an approved post goes out (placed within a tick of the approval, or after a restart or resumeAll, so "now"
    * is when it's placed). On its own day: its time, or now if that has passed. A later day: the campaign's next free
    * default time. Either way, a day already at the daily cap (counted by the day posts
-   * actually go out) passes it on to the next day's first default time.
+   * actually go out) passes it on to the next day's first default time, and a minute another campaign post has
+   * taken moves it on a minute.
    */
   postTime(t: CampaignTask, c: TaskChoices, campaign: Campaign): number | null {
     const now = this.now();
@@ -539,7 +554,9 @@ export class CampaignWorker {
         candidate = times.map((hhmm) => localAt(day, hhmm)).find((ms) => ms >= now && !taken.has(ms)) ?? null;
       }
     }
+    const minutes = this.takenMinutes(t.id);
     for (let i = 0; candidate !== null && i < MAX_DAYS_AHEAD; i++) {
+      while (minutes.has(minute(candidate))) candidate += 60_000;
       const d = dayKey(candidate);
       if (!full(d)) return candidate;
       candidate = localAt(nextDayKey(d), times[0]);
@@ -547,13 +564,26 @@ export class CampaignWorker {
     return null;
   }
 
+  /**
+   * The campaign posts placed or out, each counted once, by the task that placed it (the one whose review made it: a
+   * kept video a post line posted shares the post, but isn't its owner). This task's own post is left out.
+   */
+  private placedPosts(exceptTask: number): { campaignId: number; at: number }[] {
+    return this.store.db.prepare(
+      `SELECT t.campaign_id AS campaignId, COALESCE(p.scheduled_at, p.created_at) AS at FROM campaign_tasks t
+       JOIN posts p ON p.id = t.post_id AND p.review_id = t.review_id
+       WHERE t.state IN ('scheduled', 'posted') AND t.id != ?`,
+    ).all(exceptTask) as { campaignId: number; at: number }[];
+  }
+
+  /** The minutes every campaign's placed posts (but this task's) go out at. */
+  private takenMinutes(exceptTask: number): Set<number> {
+    return new Set(this.placedPosts(exceptTask).map((r) => minute(r.at)));
+  }
+
   /** The times of this campaign's posts (placed, or out) that go out on a local day. */
   private postsOn(campaignId: number, day: string, exceptTask: number): number[] {
-    const rows = this.store.db.prepare(
-      `SELECT COALESCE(p.scheduled_at, p.created_at) AS at FROM campaign_tasks t JOIN posts p ON p.id = t.post_id
-       WHERE t.campaign_id = ? AND t.state IN ('scheduled', 'posted') AND t.id != ?`,
-    ).all(campaignId, exceptTask) as { at: number }[];
-    return rows.map((r) => r.at).filter((at) => dayKey(at) === day);
+    return this.placedPosts(exceptTask).filter((r) => r.campaignId === campaignId && dayKey(r.at) === day).map((r) => r.at);
   }
 
   private followPost(t: CampaignTask) {
@@ -569,7 +599,10 @@ export class CampaignWorker {
     return this.fail(t.id, `it couldn't be posted: ${failed.join("; ") || "no uploads"}`);
   }
 
-  /** A post line: the kept campaign video with that name (first made first); missed once its day is over. */
+  /**
+   * A post line: the newest kept campaign video with that name, made in the week up to the line's day, that no other
+   * task has taken (taking it is recorded at once, as this task's sourceTaskId); missed once its day is over.
+   */
   private async findVideo(t: CampaignTask) {
     const c = t.choices as unknown as TaskChoices;
     const ins = c.instruction as PostInstruction;
@@ -580,7 +613,12 @@ export class CampaignWorker {
     }
     if (this.campaigns.killed()) return;
     const name = ins.name.toLowerCase();
-    const kept = this.campaigns.tasksIn(["kept"]).find((k) => String((k.choices as unknown as TaskChoices).libraryName ?? "").toLowerCase() === name);
+    const from = addDays(t.date, -(KEPT_WINDOW_DAYS - 1));
+    const taken = this.store.db.prepare("SELECT 1 FROM campaign_tasks WHERE id != ? AND json_extract(choices, '$.sourceTaskId') = ? LIMIT 1");
+    const kept = this.campaigns.tasksIn(["kept"])
+      .filter((k) => String((k.choices as unknown as TaskChoices).libraryName ?? "").toLowerCase() === name && k.date >= from && k.date <= t.date)
+      .sort((a, b) => (a.date === b.date ? b.id - a.id : a.date < b.date ? 1 : -1))
+      .find((k) => !taken.get(t.id, k.id));
     if (!kept) return; // looked for again next tick
     const keptChoices = kept.choices as unknown as TaskChoices;
     const style = ins.style ?? keptChoices.style;
@@ -602,6 +640,9 @@ export class CampaignWorker {
     const t = this.campaigns.task(id);
     if (!t) return;
     this.campaigns.updateTask(id, { state: "failed", error });
+    // An approved post this task never placed is still held: it must never go out on its own.
+    const r = t.reviewId === null ? undefined : this.reviews.reviews.get(t.reviewId);
+    if (r?.postId && t.state !== "scheduled" && t.state !== "posted") this.cancelHeld(r.postId);
     log(t, `failed: ${error}`);
     if (notify) this.tell(this.campaigns.task(id)!, "campaign.failed", error);
   }
@@ -628,23 +669,78 @@ export class CampaignWorker {
     return held;
   }
 
-  /** Lets campaigns run again: held posts go back to their time (now if it has passed). Returns how many were released. */
+  /**
+   * Lets campaigns run again. Each held post is placed again, earliest first: its old time if that's still ahead and
+   * fits the cap, else the way an approval is placed (now on its own day, else the next free default time, the cap
+   * counted by the day it now goes out). Returns how many were released.
+   */
   resumeAll(): number {
     this.campaigns.setKilled(false);
+    const now = this.now();
+    const held = this.campaigns.tasksIn(["scheduled"]).flatMap((t) => {
+      const from = t.postId === null ? undefined : this.store.jobsForPost(t.postId).map((j) => j.progress.heldFrom).find((h): h is number => typeof h === "number");
+      return from === undefined ? [] : [{ t, from }];
+    }).sort((a, b) => a.from - b.from || a.t.id - b.t.id);
     let released = 0;
-    for (const t of this.campaigns.tasksIn(["scheduled"])) if (t.postId !== null && this.store.releasePost(t.postId, { now: this.now() }) > 0) released++;
+    for (const { t, from } of held) {
+      try {
+        const c = t.choices as unknown as TaskChoices;
+        const campaign = this.campaigns.campaign(t.campaignId);
+        if (!campaign) { this.cancelHeld(t.postId!); this.fail(t.id, "its campaign is gone"); continue; }
+        const stillFits = from >= now && this.postsOn(campaign.id, dayKey(from), t.id).length < campaign.dailyPostCap && !this.takenMinutes(t.id).has(minute(from));
+        const at = stillFits ? from : this.postTime(t, c, campaign);
+        if (at === null) { this.cancelHeld(t.postId!); this.fail(t.id, `no day in the next ${MAX_DAYS_AHEAD} has room under the daily post cap of ${campaign.dailyPostCap}`); continue; }
+        if (this.store.releasePost(t.postId!, { at }) > 0) released++;
+      } catch (err) {
+        this.fail(t.id, (err as Error).message);
+      }
+    }
     console.log(`campaigns: resumed; ${released} post${released === 1 ? "" : "s"} released`);
     void this.tick().catch((err) => console.error(`campaigns: ${(err as Error).message}`));
     return released;
   }
 
+  // ---- held posts nobody will place ----
+
+  /** Cancels a campaign post while it's still held (holding never sends anything, so nothing is half-posted). */
+  private cancelHeld(postId: number) {
+    const held = this.store.jobsForPost(postId).some((j) => typeof j.progress.heldFrom === "number");
+    if (!held) return;
+    this.store.cancelPost(postId);
+    console.log(`campaigns: cancelled held post ${postId}`);
+  }
+
+  /**
+   * Every tick: a held campaign post whose task isn't waiting to place it (reviewing that review) or holding it
+   * (scheduled with it) would be held forever, e.g. approved after its task failed. It's cancelled, and the user told.
+   */
+  private sweepHeld() {
+    const rows = this.store.db.prepare(
+      `SELECT DISTINCT p.id AS post_id, p.review_id AS review_id FROM posts p
+       JOIN jobs j ON j.post_id = p.id JOIN reviews r ON r.id = p.review_id
+       WHERE r.requested_via = 'campaign' AND json_extract(j.progress, '$.heldFrom') IS NOT NULL`,
+    ).all() as { post_id: number; review_id: number }[];
+    for (const { post_id, review_id } of rows) {
+      const tasks = this.store.db.prepare("SELECT id FROM campaign_tasks WHERE review_id = ? OR post_id = ?").all(review_id, post_id) as { id: number }[];
+      const wanted = tasks.map((r) => this.campaigns.task(r.id)!).some((t) =>
+        (t.state === "reviewing" && t.reviewId === review_id) || (t.state === "scheduled" && t.postId === post_id));
+      if (wanted) continue;
+      this.cancelHeld(post_id);
+      const task = tasks[0] ? this.campaigns.task(tasks[0].id) : undefined;
+      queueEvent(this.store, "campaign.failed", `campaign.failed:post:${post_id}`,
+        { campaign_id: task?.campaignId ?? null, task_id: task?.id ?? null, post_id, review_id, error: "approved after its campaign task had stopped" },
+        `A campaign video was approved (review ${review_id}) after its campaign task had stopped${task?.error ? ` (${task.error})` : ""}, so its post was cancelled and nothing was posted.`);
+    }
+  }
+
   // ---- whose video it is ----
 
-  /** Whether a campaign task is still making this video (so only the campaign may send it for review). */
+  /**
+   * Whether this video is a campaign's (its production, its edit, or a revision of that edit, in any state): only
+   * the campaign worker's own requests may send it for review, so it can never be approved, and posted, twice.
+   */
   owns(s: Subject): boolean {
     if (s.kind === "file") return false;
-    const tasks = this.campaigns.tasksIn(IN_FLIGHT);
-    if (s.kind === "production") return tasks.some((t) => t.productionId === s.id);
-    return tasks.some((t) => t.editId !== null && (t.editId === s.id || this.store.latestRevision(t.editId) === s.id));
+    return campaignTaskFor(this.store, s.kind, s.id) !== null;
   }
 }

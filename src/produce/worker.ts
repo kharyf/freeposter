@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { copyFileSync, createReadStream, existsSync, mkdirSync, rmSync } from "node:fs";
 import { extname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
+import { campaignTaskFor } from "../campaigns/store.ts";
 import { config, dataDir } from "../config.ts";
 import type { Store } from "../db.ts";
 import type { Transcript } from "../edit/transcribe.ts";
@@ -314,9 +315,14 @@ export class ProductionWorker {
       if (now.revision !== p.revision || now.state !== "assembling") return;
       ps.setState(p.id, { state: "ready", progress: 1, outputPath: out.final, previewPath: out.preview, thumbPath: out.thumb, durationSec, error: null });
       log(p.id, `ready (${durationSec.toFixed(1)} s)`);
+      // A campaign's production is edited and sent for review by its campaign; an agent asking too is refused.
+      const task = campaignTaskFor(this.store, "production", p.id);
+      const ready = `Production ${p.id}${p.spec.title ? ` (${p.spec.title})` : ""} is ready: ${durationSec.toFixed(1)} s.`;
       queueEvent(this.store, "production.ready", `production.ready:${p.id}:${p.revision}`,
-        { production_id: p.id, revision: p.revision, title: p.spec.title, duration_sec: durationSec, preview_url: previewUrl(p.id), thumb_url: thumbUrl(p.id) },
-        `Production ${p.id}${p.spec.title ? ` (${p.spec.title})` : ""} is ready: ${durationSec.toFixed(1)} s. Call request_review with its production_id so the user can approve, reject or redo it.`);
+        { production_id: p.id, revision: p.revision, title: p.spec.title, duration_sec: durationSec, preview_url: previewUrl(p.id), thumb_url: thumbUrl(p.id), campaign_task_id: task },
+        task !== null
+          ? `${ready} It's a campaign video (campaign task ${task}): FreePoster sends it for review itself; don't call request_review.`
+          : `${ready} Call request_review with its production_id so the user can approve, reject or redo it.`);
     } catch (err) {
       const now = ps.get(p.id)!;
       if (controller.signal.aborted || now.state !== "assembling" || now.revision !== p.revision) return;

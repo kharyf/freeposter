@@ -164,7 +164,7 @@ export class ReviewService {
   /** Checks what can be checked now and queues the review; preparing it (the exact file, the caption) happens in tick(). */
   async request(q: ReviewRequest): Promise<Review> {
     if (q.via !== "campaign" && this.ownedByCampaign(q.subject)) {
-      throw new Error(`this ${q.subject.kind} is a campaign video that's still being made; its campaign sends it for review by itself`);
+      throw new Error(`this ${q.subject.kind} is a campaign video: FreePoster sends it for review itself, from its campaign`);
     }
     if (q.keep !== undefined && q.via !== "campaign") throw new Error("only a campaign keeps videos unposted");
     let source: string;

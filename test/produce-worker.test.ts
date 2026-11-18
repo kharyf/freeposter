@@ -233,3 +233,71 @@ test("a presenter shot's voiceover and the music are copied by content: a new vo
   assert.notEqual(second.spec.audio.music, music);
   assert.equal(readFileSync(second.spec.audio.music!, "utf8"), "track");
 });
+
+test("while the GPU lane is lent (campaign speech or music), no GPU shot starts", async () => {
+  const { adapters, stats } = fakes();
+  const w = new ProductionWorker(newStore(), { adapters, dir: tmp() });
+  let release!: () => void;
+  const lent = w.borrowGpu(() => new Promise<string>((r) => { release = () => r("voiceover.wav"); }));
+  assert.equal(await w.borrowGpu(async () => "second"), null, "one borrower at a time");
+  const p = await w.create(rawSpec());
+  for (let i = 0; i < 5; i++) { await w.tick(); await new Promise((r) => setTimeout(r, 20)); }
+  assert.ok(!stats.renders.includes("hero") && !stats.renders.includes("logo"), `GPU shots ran while lent: ${stats.renders.join(",")}`);
+  assert.ok(stats.renders.includes("intro"), "the CPU lane carries on");
+  release();
+  assert.deepEqual(await lent, { value: "voiceover.wav" });
+  assert.equal((await settle(w, p.id)).state, "ready");
+  assert.ok(stats.renders.includes("hero") && stats.renders.includes("logo"));
+});
+
+test("borrowGpu returns null while a GPU shot is running", async () => {
+  let finish!: () => void;
+  const gate = new Promise<void>((r) => { finish = r; });
+  const { adapters } = fakes((id) => (id === "hero" ? gate : undefined));
+  const w = new ProductionWorker(newStore(), { adapters, dir: tmp() });
+  const p = await w.create({ shots: [{ id: "hero", kind: "wan", duration_sec: 2, prompt: "a phone" }] });
+  await w.tick();
+  assert.ok([...w.running.values()].some((r) => r.lane === "gpu"));
+  let ran = false;
+  assert.equal(await w.borrowGpu(async () => { ran = true; }), null);
+  assert.equal(ran, false);
+  finish();
+  await settle(w, p.id);
+  assert.deepEqual(await w.borrowGpu(async () => 1), { value: 1 });
+});
+
+test("createStaged takes a spec FreePoster built (internal fields too), copies its files and queues it", async () => {
+  const store = newStore();
+  const w = new ProductionWorker(store, { adapters: fakes().adapters, dir: tmp() });
+  const d = tmp();
+  const vo = join(d, "speech.wav");
+  const music = join(d, "music.wav");
+  writeFileSync(vo, "voice");
+  writeFileSync(music, "track");
+  const spec: ProductionSpec = {
+    version: 1, title: "Plan", transitions: { default: { type: "cut", sec: 0 } }, sfx: [], captions: { source: "voiceover" }, post: null,
+    shots: [{ id: "shot-1", kind: "wan", duration_sec: 2, prompt: "a calendar", negative_prompt: "", image: null, seed: 1000, model: "infinitetalk", audio_guide: vo }],
+    audio: { voiceover: vo, music },
+  };
+  assert.throws(() => w.check(spec), "parseSpec refuses the internal fields");
+  const p = await w.createStaged(spec);
+  const saved = w.productions.get(p.id)!;
+  assert.ok(["queued", "rendering"].includes(saved.state), saved.state);
+  assert.equal(w.productions.shots(p.id).length, 1);
+  assert.notEqual(saved.spec.audio.music, music);
+  assert.equal(readFileSync(saved.spec.audio.music!, "utf8"), "track");
+  assert.equal(readFileSync((saved.spec.shots[0] as WanShot).audio_guide!, "utf8"), "voice");
+  w.stop();
+});
+
+test("a campaign's production.ready says FreePoster sends it for review itself", async () => {
+  const store = newStore();
+  const w = new ProductionWorker(store, { adapters: fakes().adapters, dir: tmp() });
+  const p = await w.create(rawSpec());
+  const { CampaignStore } = await import("../src/campaigns/store.ts");
+  const task = new CampaignStore(store).addTask({ campaignId: 1, date: "2026-11-17", dayIndex: 2, instructionIndex: 0, kind: "make", productionId: p.id });
+  await settle(w, p.id);
+  const body = JSON.parse(store.outbox().find((e) => e.event === "production.ready")!.body);
+  assert.equal(body.campaign_task_id, task);
+  assert.match(body.summary, /FreePoster sends it for review itself; don't call request_review/);
+});
