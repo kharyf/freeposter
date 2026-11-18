@@ -26,6 +26,8 @@ export class Runner {
   timer: NodeJS.Timeout | undefined;
   refreshing = new Map<number, Promise<Account>>();
   rendersDir: string;
+  /** called once a job is published (the metrics poller schedules its first look) */
+  onPublished: (jobId: number) => void = () => {};
 
   constructor(store: Store, publishers: Record<Platform, Publisher>, rendersDir = join(dataDir, "renders")) {
     this.store = store;
@@ -140,6 +142,11 @@ export class Runner {
 
       log(job, `published ${result.url}`);
       this.store.finishJob(job.id, "published", { resultUrl: result.url, error: result.note });
+      try {
+        this.onPublished(job.id);
+      } catch (err) {
+        log(job, `after-publish hook failed: ${(err as Error).message}`);
+      }
     } catch (err) {
       this.handleFailure(job, err as Error);
     }

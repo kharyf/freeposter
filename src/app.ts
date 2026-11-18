@@ -11,6 +11,7 @@ import { Intake } from "./drive/intake.ts";
 import { DriveWatcher } from "./drive/watcher.ts";
 import { EditWorker } from "./edit/worker.ts";
 import { sampleFrames } from "./media.ts";
+import { MetricsPoller } from "./analytics/poller.ts";
 import { Notifier } from "./notify.ts";
 import { publishers } from "./platforms/index.ts";
 import { adapters } from "./produce/adapters/index.ts";
@@ -51,6 +52,8 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
   const ai = new AiService(store);
   setAi(ai);
   const runner = new Runner(store, publishers);
+  const poller = new MetricsPoller(store, publishers);
+  runner.onPublished = (jobId) => poller.schedule(jobId);
   const editor = new EditWorker(store);
   const notifier = new Notifier(store);
   // Inputs are stored by content hash, so a file's name is its hash: the edit pipeline's transcript cache key.
@@ -100,6 +103,7 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
     throw err;
   }
   runner.start();
+  poller.start();
   editor.start();
   notifier.start();
   producer.start();
@@ -118,6 +122,7 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
   return {
     async stop() {
       runner.stop();
+      poller.stop();
       editor.stop();
       notifier.stop();
       producer.stop();

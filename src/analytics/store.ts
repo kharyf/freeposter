@@ -142,4 +142,14 @@ export class AnalyticsStore {
   notePollError(jobId: number, error: string, nextAt: number) {
     this.db.prepare("UPDATE metric_poll SET attempts = attempts + 1, last_error = ?, next_at = ? WHERE job_id = ? AND done = 0").run(error, nextAt, jobId);
   }
+
+  /** A successful poll: forget earlier trouble and wait for the next age. */
+  pollOk(jobId: number, nextAt: number) {
+    this.db.prepare("UPDATE metric_poll SET attempts = 0, last_error = NULL, next_at = ? WHERE job_id = ? AND done = 0").run(nextAt, jobId);
+  }
+
+  /** Not a failed attempt (permission, plan, a video that may be gone): say why and look again at nextAt. */
+  deferPoll(jobId: number, error: string | null, nextAt: number) {
+    this.db.prepare("UPDATE metric_poll SET last_error = ?, next_at = ? WHERE job_id = ? AND done = 0").run(error, nextAt, jobId);
+  }
 }
