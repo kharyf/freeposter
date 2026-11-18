@@ -89,7 +89,7 @@ export function scoreVideos(input: {
   const baselineFor = (job: ScoredJob, age: ScoreAge): number[] =>
     jobs
       .filter((j) => j.accountId === job.accountId && j.postId !== job.postId && j.publishedAt != null && j.publishedAt <= now)
-      .sort((a, b) => b.publishedAt! - a.publishedAt!)
+      .sort((a, b) => b.publishedAt! - a.publishedAt! || b.id - a.id)
       .map((j) => get(j, age))
       .filter((v): v is number => v !== null)
       .slice(0, BASELINE_SIZE);
@@ -98,7 +98,7 @@ export function scoreVideos(input: {
     const score: VideoScore = { postId: label.postId, perPlatform: {}, overall: {}, provisional: {} };
     const mine = jobs.filter((j) => j.postId === label.postId);
     for (const age of SCORE_AGES) {
-      const percentiles: number[] = [];
+      const byPlatform = new Map<Platform, number[]>();
       let provisional = false;
       for (const job of mine) {
         const v = get(job, age);
@@ -110,8 +110,16 @@ export function scoreVideos(input: {
         if (base.length < MIN_BASELINE) provisional = true;
         const p = percentile(v, base);
         if (Number.isNaN(p)) continue;
-        (score.perPlatform[job.platform] ??= {})[age] = p;
-        percentiles.push(p);
+        const list = byPlatform.get(job.platform);
+        if (list) list.push(p);
+        else byPlatform.set(job.platform, [p]);
+      }
+      // several jobs of one post on one platform average into that platform's value
+      const percentiles: number[] = [];
+      for (const [platform, list] of byPlatform) {
+        const avg = list.reduce((a, b) => a + b, 0) / list.length;
+        (score.perPlatform[platform] ??= {})[age] = avg;
+        percentiles.push(avg);
       }
       if (percentiles.length > 0) {
         score.overall[age] = median(percentiles);

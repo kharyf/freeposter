@@ -82,3 +82,124 @@ test("compareLabels is deterministic, sorted, and flags small groups", () => {
   const t = compareLabels(scores, [label(1, { types: [1, 2] }), label(2, { types: [2] })], "type", "24h");
   assert.equal(t.find((r) => r.key === "2")!.n, 2);
 });
+
+// ---- scoreVideos: baseline selection and aggregation ----
+
+class Bed {
+  jobs: ScoredJob[] = [];
+  snaps = new Map<number, Snapshot[]>();
+  private nextId = 1000;
+  /** one video (post) with one job; views null = a snapshot that carries no views */
+  add(postId: number, accountId: number, publishedAt: number | null, views: number | null, platform = "youtube"): number {
+    const id = this.nextId++;
+    this.jobs.push({ id, postId, accountId, platform, publishedAt } as unknown as ScoredJob);
+    const s = snap(id, DAY, views as number);
+    s.platform = platform as Snapshot["platform"];
+    s.reading.views = views;
+    this.snaps.set(id, [s]);
+    return id;
+  }
+  score(postIds: number[], now = 1e9) {
+    return scoreVideos({ labels: postIds.map((p) => label(p)), snapshotsByJob: this.snaps, jobs: this.jobs, now });
+  }
+}
+
+test("the baseline is the 30 most recent videos, not the oldest and not all", () => {
+  const bed = new Bed();
+  // posts 1-5 are the oldest and tiny; posts 6-35 are the recent 30 with views 60..350
+  for (let i = 1; i <= 35; i++) bed.add(i, 1, i * 1000, i <= 5 ? 1 : i * 10);
+  bed.add(100, 1, 36_000, 200);
+  const s = bed.score([100])[0]!;
+  // recent 30: 14 values (60..190) below 200, one (post 20) equal -> 14.5 of 30
+  assert.ok(Math.abs(s.overall["24h"]! - (100 * 14.5) / 30) < 1e-9, String(s.overall["24h"]));
+  assert.equal(s.provisional["24h"], false);
+});
+
+test("the baseline skips the video itself, null publishedAt, future publishes and other accounts", () => {
+  const bed = new Bed();
+  for (let i = 1; i <= 8; i++) bed.add(i, 1, i * 1000, i * 100);
+  bed.add(20, 1, null, 1_000_000); // never published
+  bed.add(21, 1, 50_000, 1_000_000); // published after now
+  bed.add(22, 2, 5000, 1_000_000); // another account
+  bed.add(50, 1, 9000, 1000);
+  const s = bed.score([50], 10_000)[0]!;
+  // baseline is exactly posts 1-8 (100..800): the video beats all 8 -> 100, not provisional
+  assert.equal(s.overall["24h"], 100);
+  assert.equal(s.provisional["24h"], false);
+});
+
+test("null-views snapshots are skipped and make a video without a value provisional", () => {
+  const bed = new Bed();
+  for (let i = 1; i <= 8; i++) bed.add(i, 1, i * 1000, i === 3 ? null : i * 100);
+  bed.add(50, 1, 9000, 1000);
+  bed.add(51, 1, 9500, null);
+  const [s50, s51] = bed.score([50, 51]);
+  // the null baseline entry doesn't count: 7 values -> provisional, still 100
+  assert.equal(s50!.overall["24h"], 100);
+  assert.equal(s50!.provisional["24h"], true);
+  // a video whose only snapshot has no views gets no score at all
+  assert.equal(s51!.overall["24h"], undefined);
+  assert.deepEqual(s51!.perPlatform, {});
+});
+
+test("a platform that hasn't reached the age makes the overall provisional", () => {
+  const bed = new Bed();
+  for (let i = 1; i <= 10; i++) bed.add(i, 1, i * 1000, i * 100);
+  bed.add(50, 1, 20_000, 2000);
+  bed.add(50, 2, 20_000, null, "tiktok");
+  const s = bed.score([50])[0]!;
+  assert.equal(s.overall["24h"], 100);
+  assert.equal(s.provisional["24h"], true);
+  assert.equal(s.perPlatform.tiktok, undefined);
+});
+
+test("overall is the median of per-platform percentiles (even count is the mean of the middle two)", () => {
+  const bed = new Bed();
+  for (let i = 1; i <= 10; i++) {
+    bed.add(i, 1, i * 1000, i * 100); // youtube account 1
+    bed.add(100 + i, 2, i * 1000, i * 100, "tiktok"); // tiktok account 2
+    bed.add(200 + i, 3, i * 1000, i * 100, "facebook"); // facebook account 3
+  }
+  bed.add(50, 1, 20_000, 550); // youtube: 5 of 10 below -> 50
+  bed.add(50, 2, 20_000, 2000, "tiktok"); // 100
+  const two = bed.score([50])[0]!;
+  assert.equal(two.perPlatform.youtube!["24h"], 50);
+  assert.equal(two.perPlatform.tiktok!["24h"], 100);
+  assert.equal(two.overall["24h"], 75);
+  bed.add(50, 3, 20_000, 1, "facebook"); // 0
+  const three = bed.score([50])[0]!;
+  assert.equal(three.perPlatform.facebook!["24h"], 0);
+  assert.equal(three.overall["24h"], 50);
+});
+
+test("two jobs of one post on one platform average, so perPlatform and overall agree", () => {
+  const bed = new Bed();
+  for (let i = 1; i <= 10; i++) {
+    bed.add(i, 1, i * 1000, i * 100);
+    bed.add(100 + i, 2, i * 1000, i * 100);
+    bed.add(200 + i, 3, i * 1000, i * 100, "tiktok");
+  }
+  bed.add(50, 1, 20_000, 550); // youtube a: 50
+  bed.add(50, 2, 20_000, 2000); // youtube b: 100
+  bed.add(50, 3, 20_000, 1, "tiktok"); // 0
+  const s = bed.score([50])[0]!;
+  assert.equal(s.perPlatform.youtube!["24h"], 75);
+  assert.equal(s.overall["24h"], 37.5); // median of [75, 0], not of [50, 100, 0]
+});
+
+test("publishedAt ties are broken by job id, newest id first", () => {
+  const bed = new Bed();
+  // 31 videos published at the same instant; the cap keeps the 30 highest job ids, dropping the lowest
+  for (let i = 1; i <= 31; i++) bed.add(i, 1, 1000, i === 1 ? 1_000_000 : 10 * i);
+  bed.add(100, 1, 2000, 5000);
+  const s = bed.score([100])[0]!;
+  assert.equal(s.overall["24h"], 100);
+});
+
+test("identical values give a zero-width interval", () => {
+  const scores = [1, 2, 3, 4].map((postId) => ({ postId, perPlatform: {}, provisional: {}, overall: { "24h": 50 } }));
+  const r = compareLabels(scores, [1, 2, 3, 4].map((p) => label(p, { styleId: "s" })), "style", "24h");
+  assert.equal(r[0]!.lo, 50);
+  assert.equal(r[0]!.hi, 50);
+  assert.equal(r[0]!.median, 50);
+});
