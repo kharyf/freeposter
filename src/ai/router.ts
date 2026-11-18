@@ -1,4 +1,5 @@
 // The AI providers the user connected, their order for each job, and asking down that order until one answers.
+import { checkBudget } from "./budget.ts";
 import { askClaude } from "../claude.ts";
 import type { Store } from "../db.ts";
 import type { ProgramRun } from "./cli.ts";
@@ -106,6 +107,7 @@ export class AiService {
 
   /** Asks the job's providers in order until one answers; says what each one said when none does. */
   async ask<T>(job: AiJob, q: Question): Promise<T> {
+    checkBudget(this.store, job);
     const order = this.ranking(job);
     if (!order.length) throw new Error("no AI provider is connected (connect one under AI Providers)");
     const able = order.filter((id) => this.canDo(id, job));

@@ -146,7 +146,7 @@ export async function balance(key: string, f: Fetch = fetch): Promise<Balance> {
 }
 
 /** Typical size of each job's question, until FreePoster has seen real ones: [prompt tokens, answer tokens, images]. */
-export const TYPICAL_TOKENS = { caption: [1300, 150, 0], frames: [1000, 150, 6], lyrics: [700, 40, 0], graphics: [4000, 800, 0] } as const;
+export const TYPICAL_TOKENS = { caption: [1300, 150, 0], frames: [1000, 150, 6], lyrics: [700, 40, 0], graphics: [4000, 800, 0], campaign: [2500, 600, 0], script: [1500, 700, 0], label: [1200, 60, 0] } as const;
 /** Roughly what a 540×960 still costs in tokens on most models. */
 const IMAGE_TOKENS = 800;
 

@@ -784,6 +784,15 @@ export class Store {
     this.db.prepare("DELETE FROM ai_usage WHERE id <= (SELECT MAX(id) FROM ai_usage) - 5000").run();
   }
 
+  /** Calls (every attempt, ok or not) and tokens (where reported) of the given jobs since `from` (ms). */
+  aiUsageSince(from: number, jobs: string[]): { calls: number; tokens: number } {
+    if (!jobs.length) return { calls: 0, tokens: 0 };
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS calls, COALESCE(SUM(COALESCE(prompt_tokens, 0) + COALESCE(completion_tokens, 0)), 0) AS tokens FROM ai_usage WHERE created_at >= ? AND job IN (${jobs.map(() => "?").join(",")})`)
+      .get(from, ...jobs) as { calls: number; tokens: number };
+    return { calls: row.calls, tokens: row.tokens };
+  }
+
   /** The latest answer and failure per provider. */
   aiLastUses(): { provider: string; ok: number; error: string | null; created_at: number }[] {
     return this.db
