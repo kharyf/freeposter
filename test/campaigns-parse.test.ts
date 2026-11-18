@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { parseCampaignText } from "../src/campaigns/parse.ts";
-import { parseCompiled, type MakeInstruction, type PostInstruction, type Vocabulary } from "../src/campaigns/spec.ts";
+import { renderCampaignText, roundTrip } from "../src/campaigns/render.ts";
+import { parseCompiled, type MakeInstruction, type PostInstruction, type Rule, type Vocabulary } from "../src/campaigns/spec.ts";
 import { readTime } from "../src/drive/filename.ts";
 
 const entry = (id: number, kind: "hook" | "angle" | "cta", name: string) => ({ id, kind, name, text: "t", keywords: [], url: null, createdAt: 0 });
@@ -203,4 +204,58 @@ test("stop using a style or type isn't read: it has nothing to stop", () => {
     assert.deepEqual(unread, [{ line, day: null }]);
     assert.equal(compiled.rules.length, 0);
   }
+});
+
+// ---- renderCampaignText: a compiled schedule written back in the grammar above ----
+
+const back = (compiled: ReturnType<typeof parseCampaignText>["compiled"]) => {
+  const text = renderCampaignText(compiled, vocab);
+  const r = parseCampaignText(text, vocab);
+  assert.deepEqual(r.unread, [], text);
+  const strip = (c: unknown) => JSON.parse(JSON.stringify(c, (k, v) => (k === "source" ? undefined : v)));
+  assert.deepEqual(strip(r.compiled), strip(compiled), text);
+  assert.ok(roundTrip(compiled, vocab).ok, text);
+};
+
+test("render: the user's example schedule reads back as itself", () => {
+  const { compiled, unread } = parse(EXAMPLE);
+  assert.deepEqual(unread, []);
+  back(compiled);
+});
+
+test("render: every make, post and rule shape reads back as itself", () => {
+  const mk = (extra: Partial<MakeInstruction>): MakeInstruction => ({
+    kind: "make", count: 2, style: "basic", hook: { pick: "random" }, angle: { pick: "random" }, cta: { pick: "named", id: 20 }, types: [], post: null, source: "", ...extra,
+  });
+  const pl = (extra: Partial<PostInstruction>): PostInstruction => ({ kind: "post", name: "Gatekeeping", at: null, style: null, types: [], source: "", ...extra });
+  const empty = Object.fromEntries(["sun", "mon", "tue", "wed", "thu", "fri", "sat"].map((d) => [d, []]));
+  const rule = (when: Partial<Rule["when"]>, then: Rule["then"]): Rule => ({
+    when: { label: "hook", is: "working", thresholdPct: 25, minVideos: 3, age: "72h", scope: "campaign", ...when }, then, source: "",
+  });
+  const variants = (label: string, count = 3) => ({ kind: "make" as const, count, keep: [label], vary: ["hook", "angle", "cta"].filter((l) => l !== label), post: true });
+  back({
+    version: 1,
+    days: {
+      ...empty,
+      sun: [mk({ count: 1 }), mk({ hook: { pick: "named", id: 2 }, angle: { pick: "named", id: 10 }, post: { at: "default" } }), mk({ hook: { pick: "best" }, angle: { pick: "best" }, cta: { pick: "random" }, post: { at: "06:05" } })],
+      mon: [mk({ style: "fancy", types: [1], post: { at: "18:00" } }), mk({ count: 20, types: [2, 1] })],
+      tue: [pl({}), pl({ at: "17:30" }), pl({ at: "00:15", style: "fancy" }), pl({ style: "basic", types: [2] }), pl({ name: "It's. Big", at: "12:00" })],
+    } as never,
+    rules: [
+      rule({}, variants("hook")), rule({ label: "angle", scope: "account", age: "7d", minVideos: 5, thresholdPct: 10 }, variants("angle", 1)),
+      rule({ label: "cta", age: "24h" }, variants("cta")), rule({ label: "style" }, variants("style")), rule({ label: "type", minVideos: 12 }, variants("type")),
+      rule({ is: "not_working" }, { kind: "stop_using" }), rule({ label: "angle", is: "not_working", thresholdPct: 40 }, { kind: "stop_using" }),
+      rule({ label: "cta", is: "not_working", scope: "account" }, { kind: "stop_using" }),
+    ],
+  });
+});
+
+test("render: a schedule the text can't say is refused, not stored as text that lies", () => {
+  const empty = Object.fromEntries(["sun", "mon", "tue", "wed", "thu", "fri", "sat"].map((d) => [d, []]));
+  const when: Rule["when"] = { label: "hook", is: "working", thresholdPct: 25, minVideos: 3, age: "72h", scope: "campaign" };
+  const make: MakeInstruction = { kind: "make", count: 1, style: "basic", hook: { pick: "random" }, angle: { pick: "random" }, cta: { pick: "named", id: 20 }, types: [], post: null, source: "" };
+  const withRule = (r: Rule) => ({ version: 1 as const, days: { ...empty, sun: [make] } as never, rules: [r] });
+  assert.equal(roundTrip(withRule({ when, then: { kind: "make", count: 2, keep: ["hook", "angle"], vary: ["cta"], post: true }, source: "" }), vocab).ok, false);
+  assert.equal(roundTrip(withRule({ when, then: { kind: "make", count: 2, keep: ["hook"], vary: ["angle", "cta"], post: false }, source: "" }), vocab).ok, false);
+  assert.equal(roundTrip(withRule({ when: { ...when, thresholdPct: 12.5 }, then: { kind: "make", count: 2, keep: ["hook"], vary: ["angle", "cta"], post: true }, source: "" }), vocab).ok, false);
 });

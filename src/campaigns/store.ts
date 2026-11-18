@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS library (
   text TEXT NOT NULL,
   keywords TEXT NOT NULL DEFAULT '[]',
   url TEXT,
+  owner_campaign_id INTEGER,
   created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS video_types (
@@ -88,6 +89,11 @@ export interface LibraryEntry {
   text: string;
   keywords: string[];
   url: string | null;
+  /**
+   * The campaign whose Autorun added it: only that campaign's random and best picks use it, and no other campaign's
+   * agent may name it. Null (or absent in older snapshots) = the user's own, for every campaign.
+   */
+  ownerCampaignId?: number | null;
   createdAt: number;
 }
 
@@ -155,7 +161,7 @@ export interface CampaignChange {
 }
 
 const toEntry = (r: any): LibraryEntry => ({
-  id: r.id, kind: r.kind, name: r.name, text: r.text, keywords: JSON.parse(r.keywords), url: r.url, createdAt: r.created_at,
+  id: r.id, kind: r.kind, name: r.name, text: r.text, keywords: JSON.parse(r.keywords), url: r.url, ownerCampaignId: r.owner_campaign_id ?? null, createdAt: r.created_at,
 });
 const toType = (r: any): VideoType => ({ id: r.id, name: r.name, color: r.color, autoPost: Boolean(r.auto_post), createdAt: r.created_at });
 const toCampaign = (r: any): Campaign => ({
@@ -250,6 +256,8 @@ export class CampaignStore {
   constructor(store: Store) {
     this.store = store;
     store.db.exec(SCHEMA);
+    const libraryColumns = store.db.prepare("PRAGMA table_info(library)").all() as { name: string }[];
+    if (!libraryColumns.some((c) => c.name === "owner_campaign_id")) store.db.exec("ALTER TABLE library ADD COLUMN owner_campaign_id INTEGER");
   }
 
   get db() {
@@ -258,10 +266,10 @@ export class CampaignStore {
 
   // ---- library ----
 
-  addEntry(e: { kind: LibraryKind; name: string; text: string; keywords?: string[]; url?: string }): number {
+  addEntry(e: { kind: LibraryKind; name: string; text: string; keywords?: string[]; url?: string; ownerCampaignId?: number | null }): number {
     const { lastInsertRowid } = this.db
-      .prepare("INSERT INTO library (kind, name, text, keywords, url, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(e.kind, e.name, e.text, JSON.stringify(e.keywords ?? []), e.url ?? null, Date.now());
+      .prepare("INSERT INTO library (kind, name, text, keywords, url, owner_campaign_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(e.kind, e.name, e.text, JSON.stringify(e.keywords ?? []), e.url ?? null, e.ownerCampaignId ?? null, Date.now());
     return Number(lastInsertRowid);
   }
 

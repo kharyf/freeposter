@@ -9,7 +9,7 @@ import type { CampaignWorker } from "./worker.ts";
 
 type Args = Record<string, unknown>;
 
-export const CAMPAIGN_INSTRUCTIONS = `Campaigns run the user's weekly posting plans by themselves (list_campaigns, get_campaign), and get_analytics / get_video_metrics show how videos did. Only a campaign the user switched Autorun on for can be changed by you: update_campaign (its text, compiled schedule, or a lower daily post cap) and add_library_entry (new hooks and angles), each with a reason the user sees. Autorun can never change CTAs or use one the campaign doesn't already use, raise the daily post cap, change a type's "post without approval", or turn Autorun or the kill switch on or off. Every change is logged and the user can undo it. stop_campaigns stops every campaign at once (the user asked you to, or something is clearly wrong); only the user can resume them.`;
+export const CAMPAIGN_INSTRUCTIONS = `Campaigns run the user's weekly posting plans by themselves (list_campaigns, get_campaign), and get_analytics / get_video_metrics show how videos did. Only a campaign the user switched Autorun on for can be changed by you: update_campaign (its text, compiled schedule, or a lower daily post cap) and add_library_entry (new hooks and angles), each with a reason the user sees. Autorun can never change CTAs or use one the campaign doesn't already use, raise the daily post cap, change a type's "post without approval", or turn Autorun or the kill switch on or off. Every change is logged (under the name your MCP client gave, which is advisory) and the user can undo it; hooks and angles you add belong to that campaign. stop_campaigns stops every campaign at once (the user asked you to, or something is clearly wrong); only the user can resume them.`;
 
 const iso = (ms: number | null | undefined) => (ms === null || ms === undefined ? null : new Date(ms).toISOString());
 
@@ -87,7 +87,7 @@ export function campaignTools(opts: {
     {
       name: "update_campaign",
       title: "Change an Autorun campaign",
-      description: "Changes a campaign the user switched Autorun on for: its plain-English text (translated as the user's edits are; any line that can't be understood refuses the change), or its compiled schedule (the same JSON get_campaign shows, checked strictly), and/or a lower daily post cap. The new schedule takes effect at once. It may only use CTAs the campaign already uses, and never raises the cap. reason is required and the user sees it; they can undo the change.",
+      description: "Changes a campaign the user switched Autorun on for: either its plain-English text (translated as the user's edits are; any line that can't be understood refuses the change) or its compiled schedule (the same JSON get_campaign shows, checked strictly; the text is rewritten to say it, and a schedule the text can't say is refused), not both, and/or a lower daily post cap. Refused while the user is editing the text and hasn't confirmed it. Only videos not yet made pick up the change: today's tasks already made keep what they were given, and undoing a change doesn't touch tasks made in between. It may only use CTAs, and types that post without approval, the campaign already uses, never another campaign's own hooks or angles, and never raises the cap. reason is required and the user sees it; they can undo the change. The change is logged under the name your MCP client introduced itself with (advisory: FreePoster can't verify it).",
       inputSchema: {
         type: "object",
         properties: {
@@ -117,7 +117,7 @@ export function campaignTools(opts: {
     {
       name: "list_library",
       title: "List the library",
-      description: "The hooks, angles and CTAs campaigns use, with their ids (for named picks in a compiled schedule), text and keywords.",
+      description: "The hooks, angles and CTAs campaigns use, with their ids (for named picks in a compiled schedule), text, keywords, and owner_campaign_id: null for the user's own (any campaign may use them), else the campaign whose Autorun added it (only that campaign uses it).",
       inputSchema: {
         type: "object",
         properties: { kind: { type: "string", enum: ["hook", "angle", "cta"] } },
@@ -127,13 +127,13 @@ export function campaignTools(opts: {
       async run(args) {
         const kind = args.kind;
         if (kind !== undefined && !["hook", "angle", "cta"].includes(kind as string)) throw fail("kind must be hook, angle or cta");
-        return { entries: cs().entries(kind as LibraryKind | undefined).map((e) => ({ id: e.id, kind: e.kind, name: e.name, text: e.text, keywords: e.keywords, url: e.url })) };
+        return { entries: cs().entries(kind as LibraryKind | undefined).map((e) => ({ id: e.id, kind: e.kind, name: e.name, text: e.text, keywords: e.keywords, url: e.url, owner_campaign_id: e.ownerCampaignId ?? null })) };
       },
     },
     {
       name: "add_library_entry",
       title: "Add a hook or angle",
-      description: "Adds a hook or angle to the library for an Autorun campaign to use (never a CTA). Logged as a change to that campaign, with your reason; undoing it removes the entry if nothing uses it yet. Name it in update_campaign afterwards to use it.",
+      description: "Adds a hook or angle to the library for an Autorun campaign (never a CTA). It belongs to that campaign: only its random and best picks use it, and no other campaign can name it. Logged as a change to that campaign, with your reason; undoing it removes the entry if nothing uses it yet. Name it in update_campaign afterwards to use it by name. The change is logged under the name your MCP client introduced itself with (advisory: FreePoster can't verify it).",
       inputSchema: {
         type: "object",
         properties: {

@@ -10,6 +10,7 @@ import type { Store } from "../db.ts";
 import { allStyles, styleToken } from "../edit/styles.ts";
 import { queueEvent } from "../notify.ts";
 import { DAYS, parseCompiled, type CompiledCampaign, type Vocabulary } from "./spec.ts";
+import { roundTrip } from "./render.ts";
 import { translateCampaign } from "./translate.ts";
 import type { Campaign, CampaignStore, LibraryEntry } from "./store.ts";
 
@@ -77,6 +78,52 @@ function ctaRefs(c: CompiledCampaign | null): Map<string, string> {
   return refs;
 }
 
+/** Every video type a schedule's lines attach, and the scopes of its make rules that attach a type by its score. */
+function typeRefs(c: CompiledCampaign | null): { ids: Set<number>; ruleScopes: Set<string> } {
+  const ids = new Set<number>(), ruleScopes = new Set<string>();
+  for (const d of DAYS) for (const ins of c?.days[d] ?? []) for (const t of ins.types) ids.add(t);
+  for (const r of c?.rules ?? []) if (r.then.kind === "make" && r.when.label === "type") ruleScopes.add(r.when.scope);
+  return { ids, ruleScopes };
+}
+
+/** Each named hook, angle or CTA in a schedule, with where. */
+function namedRefs(c: CompiledCampaign | null): { id: number; where: string }[] {
+  const out: { id: number; where: string }[] = [];
+  for (const d of DAYS) (c?.days[d] ?? []).forEach((ins, i) => {
+    if (ins.kind !== "make") return;
+    for (const k of ["hook", "angle", "cta"] as const) { const p = ins[k]; if (p.pick === "named") out.push({ id: p.id, where: `days.${d}[${i}].${k}` }); }
+  });
+  return out;
+}
+
+/**
+ * What a new schedule may not bring in that this campaign's confirmed one didn't have: another CTA, a type that
+ * posts without approval, a library entry another campaign's Autorun added.
+ */
+function limitProblems(cs: CampaignStore, c: Campaign, next: CompiledCampaign, vocab: Vocabulary): string[] {
+  const problems: string[] = [];
+  const had = ctaRefs(c.compiled);
+  for (const [key, where] of ctaRefs(next)) {
+    if (!had.has(key)) problems.push(`${where}: this campaign doesn't already use that CTA; Autorun can only re-use the campaign's own CTAs`);
+  }
+  const auto = cs.types().filter((t) => t.autoPost);
+  const old = typeRefs(c.compiled), now = typeRefs(next);
+  for (const t of auto) {
+    if (now.ids.has(t.id) && !old.ids.has(t.id)) problems.push(`type "${t.name}" posts without approval and this campaign doesn't already use it; only the user can attach it`);
+  }
+  const unused = auto.filter((t) => !old.ids.has(t.id));
+  for (const scope of now.ruleScopes) {
+    if (!old.ruleScopes.has(scope) && unused.length) problems.push(`a type rule could attach a type that posts without approval (${unused.map((t) => `"${t.name}"`).join(", ")}); only the user can add one`);
+  }
+  const library = new Map([...vocab.hooks, ...vocab.angles, ...vocab.ctas].map((e) => [e.id, e]));
+  const own = new Set(namedRefs(c.compiled).map((r) => r.id));
+  for (const r of namedRefs(next)) {
+    const owner = library.get(r.id)?.ownerCampaignId;
+    if (owner != null && owner !== c.id && !own.has(r.id)) problems.push(`${r.where}: "${library.get(r.id)!.name}" belongs to another campaign's Autorun`);
+  }
+  return problems;
+}
+
 /** The parts of a campaign a change writes (and an undo restores). */
 const state = (c: Campaign) => JSON.stringify([c.text, c.textSha, c.compiled, c.compiledSha, c.confirmedAt, c.dailyPostCap]);
 
@@ -94,6 +141,13 @@ function precheck(c: Campaign, change: unknown, reason: unknown): string[] {
     problems.push(FORBIDDEN[k] ?? `unknown field "${k}" (an agent can change text, compiled, dailyPostCap and addEntries)`);
   }
   if (["text", "compiled", "dailyPostCap", "addEntries"].every((k) => change[k] === undefined)) problems.push("the change changes nothing");
+  if (change.text !== undefined && change.compiled !== undefined) {
+    problems.push("give text or compiled, not both: a schedule change rewrites the text itself, and new text is translated into the schedule");
+  }
+  // A draft of the user's (text not confirmed yet) is theirs to confirm: a new schedule would confirm it unseen.
+  if ((change.text !== undefined || change.compiled !== undefined) && c.textSha !== c.compiledSha) {
+    problems.push("the user is editing this campaign's text; wait until they confirm it");
+  }
   if (change.text !== undefined && (typeof change.text !== "string" || !change.text.trim() || change.text.length > TEXT_MAX)) {
     problems.push(`text must be non-empty, at most ${TEXT_MAX} characters`);
   }
@@ -123,8 +177,10 @@ function precheck(c: Campaign, change: unknown, reason: unknown): string[] {
 /**
  * Applies an agent's change to an Autorun campaign, or refuses it with every problem found. A new text is translated
  * (plain parser, then the AI fallback) and every unread line refuses the change; a compiled schedule must pass the
- * strict check. The resulting schedule is confirmed directly: Autorun is the user's authority for it. Hooks and
- * angles it adds can be named by that same change's text or schedule.
+ * strict check and be one the campaign text can say exactly (the text is rewritten to say it). Not both at once,
+ * and neither while the user's own text edit waits to be confirmed. The resulting schedule is confirmed directly:
+ * Autorun is the user's authority for it. Hooks and angles it adds belong to this campaign and can be named by that
+ * same change's text or schedule.
  */
 export async function applyAgentChange(
   cs: CampaignStore,
@@ -142,7 +198,7 @@ export async function applyAgentChange(
 
   // Hooks and angles to add get stand-in ids (negative, never real) until the change is accepted.
   const adds = (change.addEntries ?? []).map((e, i): LibraryEntry => ({
-    id: -(i + 1), kind: e.kind, name: e.name.trim(), text: e.text.trim(), keywords: e.keywords ?? [], url: null, createdAt: 0,
+    id: -(i + 1), kind: e.kind, name: e.name.trim(), text: e.text.trim(), keywords: e.keywords ?? [], url: null, ownerCampaignId: campaignId, createdAt: 0,
   }));
   const withAdds: Vocabulary = {
     ...vocab,
@@ -151,10 +207,15 @@ export async function applyAgentChange(
   };
 
   let compiled: CompiledCampaign | null = null;
+  let text: string | null = change.text ?? null;
   if (change.compiled !== undefined) {
     const r = parseCompiled(change.compiled, withAdds);
     if (!r.ok) return { ok: false, problems: r.problems };
-    compiled = r.value;
+    // The text is rewritten to say the new schedule, so it always describes what runs.
+    const rt = roundTrip(r.value, withAdds);
+    if (!rt.ok) return { ok: false, problems: [rt.problem] };
+    compiled = rt.compiled;
+    text = rt.text;
   } else if (change.text !== undefined) {
     const t = await translateCampaign(deps, change.text, withAdds);
     if (t.couldNotUnderstand.length) return { ok: false, problems: t.couldNotUnderstand.map((l) => `couldn't understand: "${l}"`) };
@@ -163,11 +224,8 @@ export async function applyAgentChange(
     compiled = r.value;
   }
 
-  // An agent may only re-use the CTAs this campaign's own schedule already uses.
   if (compiled) {
-    const had = ctaRefs(c.compiled);
-    const problems = [...ctaRefs(compiled)].filter(([key]) => !had.has(key))
-      .map(([, where]) => `${where}: this campaign doesn't already use that CTA; Autorun can only re-use the campaign's own CTAs`);
+    const problems = limitProblems(cs, c, compiled, withAdds);
     if (problems.length) return { ok: false, problems };
   }
 
@@ -181,7 +239,7 @@ export async function applyAgentChange(
   let after: Campaign;
   try {
     const realId = new Map<number, number>();
-    for (const e of adds) realId.set(e.id, cs.addEntry({ kind: e.kind, name: e.name, text: e.text, keywords: e.keywords }));
+    for (const e of adds) realId.set(e.id, cs.addEntry({ kind: e.kind, name: e.name, text: e.text, keywords: e.keywords, ownerCampaignId: campaignId }));
     if (compiled) {
       for (const d of DAYS) for (const ins of compiled.days[d]) {
         if (ins.kind !== "make") continue;
@@ -191,7 +249,7 @@ export async function applyAgentChange(
         }
       }
     }
-    if (change.text !== undefined && change.text !== c.text) cs.setText(campaignId, change.text);
+    if (text !== null && text !== c.text) cs.setText(campaignId, text);
     if (compiled) cs.confirm(campaignId, compiled);
     if (change.dailyPostCap !== undefined) cs.setDailyPostCap(campaignId, change.dailyPostCap);
     after = cs.campaign(campaignId)!;

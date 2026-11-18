@@ -135,6 +135,8 @@ export interface PickContext {
   best: (kind: LibraryKind) => number[];
   /** values a "stop using" rule took out of the campaign's random and best picks */
   excluded?: Record<LibraryKind, Set<number>>;
+  /** the campaign picking: random and best skip entries another campaign's Autorun added */
+  campaignId?: number;
   /** a rule's video: the value it matched, for same_as_rule */
   fixed?: Partial<Record<LibraryKind, number>>;
   /** what the picker had to fall back on, for the task to say */
@@ -145,11 +147,14 @@ export interface PickContext {
  * The hook, angle or CTA for one copy. random: uniform among the values the day's batch hasn't had yet (repeating
  * only once the library runs out); best: the highest median score with enough videos, random until one has;
  * named: that entry; same_as_rule: the value the rule matched. Random and best skip values a rule stopped using
- * (when every value is stopped, they pick from all of them and say so in ctx.notes); named never does. Null when
- * there is nothing to pick.
+ * (when every value is stopped, they pick from all of them and say so in ctx.notes); named never does. Random and
+ * best never pick an entry another campaign's Autorun added (it's that campaign's). Null when there is nothing to
+ * pick.
  */
 export function pickValue(kind: LibraryKind, pick: ValuePick, ctx: PickContext): LibraryEntry | null {
-  const pool = ctx.pool(kind);
+  const all = ctx.pool(kind);
+  const foreign = (e: LibraryEntry) => e.ownerCampaignId != null && e.ownerCampaignId !== ctx.campaignId;
+  const pool = pick.pick === "random" || pick.pick === "best" ? all.filter((e) => !foreign(e)) : all;
   const stopped = ctx.excluded?.[kind];
   let open = stopped?.size ? pool.filter((e) => !stopped.has(e.id)) : pool;
   if ((pick.pick === "random" || pick.pick === "best") && pool.length && !open.length) {
@@ -288,6 +293,7 @@ export class CampaignWorker {
       random: this.random,
       best: (kind) => { if (!best.has(kind)) best.set(kind, this.bestRanking(kind)); return best.get(kind)!; },
       excluded: { hook: new Set(stopped.hook), angle: new Set(stopped.angle), cta: new Set(stopped.cta) },
+      campaignId: c.id,
     };
   }
 

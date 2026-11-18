@@ -571,3 +571,16 @@ test("two campaign posts never share a minute", async () => {
   for (const t of [ta, tb]) { await s.toReview(t.id); await s.approve(t.id); await s.tick(); }
   assert.deepEqual([ta, tb].map((t) => s.store.post(s.cs.task(t.id)!.postId!)!.scheduledAt), [at(2026, 11, 17, 9), at(2026, 11, 17, 9, 1)]);
 });
+
+test("random and best never pick a hook or angle another campaign's Autorun added; its own campaign can", () => {
+  const s = setup();
+  const a = s.campaign({ tue: [s.make(6, null, { hook: { pick: "random" }, angle: { pick: "best" } })] }, "A");
+  const b = s.campaign({ tue: [s.make(6, null)] }, "B");
+  const bHook = s.cs.addEntry({ kind: "hook", name: "b-only", text: "only for B", ownerCampaignId: b });
+  const bAngle = s.cs.addEntry({ kind: "angle", name: "b-angle", text: "only for B", ownerCampaignId: b });
+  s.worker.materialize();
+  const pickedBy = (id: number, kind: "hook" | "angle") => s.cs.tasksOn(id, "2026-11-17").map((t) => (t.choices[kind] as { id: number }).id);
+  assert.ok(!pickedBy(a, "hook").includes(bHook), pickedBy(a, "hook").join(","));
+  assert.ok(!pickedBy(a, "angle").includes(bAngle), pickedBy(a, "angle").join(","));
+  assert.ok(pickedBy(b, "hook").includes(bHook), "B's random picks use its own hook");
+});

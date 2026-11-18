@@ -346,6 +346,7 @@ test("Autorun tools: changes need Autorun and a reason, and are made in the MCP 
   assert.equal(got.changes[0].reason, "fewer, better posts");
   const lib = (await call("list_library", { kind: "hook" })).structuredContent;
   assert.deepEqual(lib.entries.map((e: any) => e.name), ["Stop Scrolling", "Nobody Tells"]);
+  assert.deepEqual(lib.entries.map((e: any) => e.owner_campaign_id), [null, id], "an agent's hook belongs to its campaign");
 
   const tools = (await rpc("tools/list")).body.result.tools;
   for (const name of ["get_analytics", "get_video_metrics", "list_campaigns", "get_campaign", "list_library"]) {

@@ -2,7 +2,10 @@ import "./isolated-home.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { applyAgentChange, campaignVocabulary, undoChange } from "../src/campaigns/autorun.ts";
-import { DAYS, type CompiledCampaign, type MakeInstruction } from "../src/campaigns/spec.ts";
+import type { AiService } from "../src/ai/router.ts";
+import { parseCampaignText } from "../src/campaigns/parse.ts";
+import { renderCampaignText } from "../src/campaigns/render.ts";
+import { DAYS, type CompiledCampaign, type MakeInstruction, type Rule } from "../src/campaigns/spec.ts";
 import { CampaignStore } from "../src/campaigns/store.ts";
 import { newStore } from "./helpers.ts";
 
@@ -183,4 +186,88 @@ test("undo keeps an entry it added once something uses it", async () => {
   s.cs.confirm(other, s.compiled({ mon: [s.make({ hook: { pick: "named", id: kept.id } })] }));
   assert.deepEqual(undoChange(s.cs, r.changeId), { ok: true });
   assert.ok(s.cs.entry(kept.id), "still used by another campaign");
+});
+
+test("while the user is editing the text (not confirmed yet), text and schedule changes wait; cap and library don't", async () => {
+  const s = setup();
+  s.cs.setText(s.id, "On Friday make 1 Basic video with Stop Scrolling hook and Free Guide cta.");
+  for (const c of [{ text: "On Monday make 1 Basic video with Stop Scrolling hook and Free Guide cta." }, { compiled: s.compiled({ mon: [s.make()] }) }]) {
+    const r = await s.change(c);
+    assert.equal(r.ok, false);
+    assert.match((r as { problems: string[] }).problems.join(" "), /editing this campaign's text/);
+  }
+  assert.equal(s.cs.isRunnable(s.cs.campaign(s.id)!), false, "the draft stays a draft");
+  assert.equal((await s.change({ dailyPostCap: 2 })).ok, true);
+  assert.equal((await s.change({ addEntries: [{ kind: "hook", name: "Later", text: "later" }] })).ok, true);
+});
+
+test("text and compiled together are refused", async () => {
+  const s = setup();
+  const r = await s.change({ text: "On Monday make 1 Basic video with Stop Scrolling hook and Free Guide cta.", compiled: s.compiled({ mon: [s.make()] }) });
+  assert.equal(r.ok, false);
+  assert.match((r as { problems: string[] }).problems.join(" "), /not both/);
+});
+
+test("a schedule change rewrites the text to say it; one the text can't say is refused", async () => {
+  const s = setup();
+  const next = s.compiled({ thu: [s.make({ count: 4, post: { at: "18:30" } })] });
+  const ok = await s.change({ compiled: next });
+  assert.ok(ok.ok, JSON.stringify(ok));
+  const c = s.cs.campaign(s.id)!;
+  assert.equal(c.text, renderCampaignText(next, s.vocab()));
+  const read = parseCampaignText(c.text, s.vocab());
+  assert.deepEqual(read.unread, []);
+  assert.deepEqual(read.compiled, c.compiled);
+  assert.equal(s.cs.isRunnable(c), true);
+  const rule: Rule = { when: { label: "hook", is: "working", thresholdPct: 25, minVideos: 3, age: "72h", scope: "campaign" }, then: { kind: "make", count: 2, keep: ["hook", "angle"], vary: ["cta"], post: true }, source: "x" };
+  const refused = await s.change({ compiled: { ...s.compiled(), rules: [rule] } });
+  assert.equal(refused.ok, false);
+  assert.match((refused as { problems: string[] }).problems.join(" "), /can't be written as campaign text/);
+  assert.equal(s.cs.campaign(s.id)!.text, c.text);
+});
+
+test("the campaign changing while a text change is translated refuses it", async () => {
+  const s = setup();
+  const ai = {
+    ask: async () => {
+      s.cs.setDailyPostCap(s.id, 2); // the user, meanwhile
+      return { lines: [{ index: 0, day: "wed", rule: null, instruction: { kind: "make", count: 1, style: "basic", hook: { pick: "named", id: s.hook }, angle: { pick: "random" }, cta: { pick: "named", id: s.cta }, types: [], post: null } }] };
+    },
+  } as unknown as Pick<AiService, "ask">;
+  const r = await applyAgentChange(s.cs, s.id, { text: "On Wednesday do the usual thing." }, "claude-code", "try wednesday", s.vocab(), { ai });
+  assert.equal(r.ok, false);
+  assert.match((r as { problems: string[] }).problems.join(" "), /changed while/);
+  assert.equal(s.cs.campaign(s.id)!.compiled!.days.wed.length, 0);
+});
+
+test("hooks and angles an agent adds belong to its campaign; another campaign can't name them", async () => {
+  const s = setup();
+  const r = await s.change({ addEntries: [{ kind: "hook", name: "Mine", text: "mine" }] });
+  assert.ok(r.ok);
+  const mine = s.cs.entries("hook").find((e) => e.name === "Mine")!;
+  assert.equal(mine.ownerCampaignId, s.id);
+  assert.equal(s.cs.entry(s.hook)!.ownerCampaignId, null, "the user's own entries have no owner");
+  const other = s.cs.create({ name: "Other", text: "x", accountSetId: null, defaultPostTimes: [] });
+  s.cs.confirm(other, s.compiled());
+  s.cs.setText(other, renderCampaignText(s.compiled(), s.vocab()));
+  s.cs.confirm(other, s.compiled());
+  s.cs.setAutorun(other, true);
+  const refused = await applyAgentChange(s.cs, other, { compiled: s.compiled({ tue: [s.make({ hook: { pick: "named", id: mine.id } })] }) }, "claude-code", "borrow it", s.vocab());
+  assert.equal(refused.ok, false);
+  assert.match((refused as { problems: string[] }).problems.join(" "), /belongs to another campaign/);
+  const own = await s.change({ compiled: s.compiled({ tue: [s.make({ hook: { pick: "named", id: mine.id } })] }) });
+  assert.ok(own.ok, JSON.stringify(own));
+});
+
+test("a type that posts without approval can't be newly attached; one the schedule already used can", async () => {
+  const s = setup();
+  const auto = s.cs.addType({ name: "Auto", color: "#0f0" });
+  s.cs.setTypeAutoPost(auto, true);
+  const refused = await s.change({ compiled: s.compiled({ tue: [s.make({ types: [auto] })] }) });
+  assert.equal(refused.ok, false);
+  assert.match((refused as { problems: string[] }).problems.join(" "), /without approval/);
+  // the user's own schedule used it: the agent may keep using it (on another line too)
+  s.cs.confirm(s.id, s.compiled({ tue: [s.make({ types: [auto] })] }));
+  const ok = await s.change({ compiled: s.compiled({ tue: [s.make({ types: [auto] })], wed: [s.make({ types: [auto, s.type] })] }) });
+  assert.ok(ok.ok, JSON.stringify(ok));
 });
