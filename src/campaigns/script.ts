@@ -48,8 +48,20 @@ Rules:
 - musicPrompt describes an instrumental soundtrack. title is a short name for the video.`;
 
 const normalize = (s: string) => s.toLowerCase().replace(/[\p{P}\p{S}]/gu, "").replace(/\s+/g, " ").trim();
-const URL_RE = /\b(?:https?:\/\/)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:\/[^\s]*)?/gi;
-const normUrl = (u: string) => u.toLowerCase().replace(/^https?:\/\//, "").replace(/[.,;:!?)"'\]]+$/, "").replace(/\/+$/, "");
+// Anything that could send a viewer somewhere: any http(s) URL, an IPv4 address, localhost, or a (unicode) domain.
+const URL_PATTERNS = [
+  /https?:\/\/[^\s]+/giu,
+  /(?<![\p{L}\p{N}.])\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?(?:\/[^\s]*)?/gu,
+  /(?<![\p{L}\p{N}.-])localhost(?::\d+)?(?:\/[^\s]*)?/giu,
+  /(?<![\p{L}\p{N}@.-])(?:[\p{L}\p{N}-]+\.)+\p{L}{2,}(?::\d+)?(?:\/[^\s]*)?/gu,
+];
+/** "example dot com", "example[.]com" and "example(dot)com" are read as the domain they spell. */
+const deobfuscate = (t: string) => t
+  .replace(/\s*[[(]\s*dot\s*[\])]\s*/gi, ".")
+  .replace(/\[\.\]|\(\.\)/g, ".")
+  .replace(/\s+dot\s+(?=(?:com|net|org|io|co|app|ai|me|shop|link)\b)/gi, ".");
+const normUrl = (u: string) => u.toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/[.,;:!?)"'\]]+$/, "").replace(/\/+$/, "");
+const linksIn = (text: string) => URL_PATTERNS.flatMap((re) => deobfuscate(text).match(re) ?? []);
 
 export function checkScript(s: Script, choice: ScriptChoice): string[] {
   const problems: string[] = [];
@@ -62,18 +74,22 @@ export function checkScript(s: Script, choice: ScriptChoice): string[] {
     else if (l.trimStart().startsWith("#")) problems.push(`line ${i + 1} starts with "#"; no line may`);
   });
   if (lines.length) {
-    if (!normalize(String(lines[0])).startsWith(normalize(choice.hook.text))) problems.push(`the first line must start with the hook: "${choice.hook.text}"`);
-    if (!normalize(String(lines[lines.length - 1])).includes(normalize(choice.cta.text))) problems.push(`the last line must contain the call to action: "${choice.cta.text}"`);
+    const hook = normalize(choice.hook.text), first = normalize(String(lines[0]));
+    if (!hook) problems.push("the hook has no words, so the first line can't start with it");
+    else if (first !== hook && !first.startsWith(`${hook} `)) problems.push(`the first line must start with the hook: "${choice.hook.text}"`);
+    const cta = normalize(choice.cta.text), last = normalize(String(lines[lines.length - 1]));
+    if (!cta) problems.push("the call to action has no words, so the last line can't contain it");
+    else if (!` ${last} `.includes(` ${cta} `)) problems.push(`the last line must contain the call to action: "${choice.cta.text}"`);
   }
   const allowed = choice.cta.url ? normUrl(choice.cta.url) : null;
   const seen = new Set<string>();
-  for (const text of [...lines, s.caption ?? ""]) {
-    for (const m of String(text).match(URL_RE) ?? []) {
+  for (const text of [...lines, s.caption ?? "", s.title ?? "", s.musicPrompt ?? "", ...shots.map((sh) => sh?.prompt ?? "")]) {
+    for (const m of linksIn(String(text))) {
       const n = normUrl(m);
       if (n !== allowed && !seen.has(n)) { seen.add(n); problems.push(`the link ${m} isn't allowed; the only link is ${choice.cta.url ?? "none"}`); }
     }
   }
-  if (choice.cta.url && !normUrl(String(s.caption ?? "")).includes(normUrl(choice.cta.url))) problems.push(`the caption must contain the link ${choice.cta.url}`);
+  if (choice.cta.url && !linksIn(String(s.caption ?? "")).some((m) => normUrl(m) === normUrl(choice.cta.url!))) problems.push(`the caption must contain the link ${choice.cta.url}`);
   if (shots.length < 1 || shots.length > MAX_SHOTS) problems.push(`there must be 1 to ${MAX_SHOTS} shots (got ${shots.length})`);
   let total = 0;
   shots.forEach((sh, i) => {

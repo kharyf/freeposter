@@ -96,7 +96,7 @@ test("buildGeneratedProduction: one wan shot per script shot, presenter on the f
     assert.equal(b.model, undefined);
     assert.equal(b.audio_guide, undefined);
     assert.notEqual(a.seed, b.seed);
-    assert.equal(buildGeneratedProduction(good(), { voiceover: vo, music }, true).shots[0].kind === "wan" && (buildGeneratedProduction(good(), { voiceover: vo, music }, true).shots[0] as any).seed, a.seed);
+    assert.equal((buildGeneratedProduction(good(), { voiceover: vo, music }, true).shots[0] as any).seed, a.seed);
     assert.deepEqual(spec.audio, { voiceover: vo, music });
     assert.deepEqual(spec.captions, { source: "voiceover" });
     assert.equal(spec.post, null);
@@ -120,4 +120,41 @@ test("no presenter model configured: presenter=true still leaves the shot a plai
     assert.equal(s.model, undefined);
     assert.equal(s.audio_guide, undefined);
   } finally { config.produce.wangpPresenterModel = saved; }
+});
+
+const problemsWith = (patch: Partial<Script>) => checkScript({ ...good(), ...patch }, choice).join("\n");
+
+test("IPv4, host-only, localhost and non-ASCII links are problems anywhere", () => {
+  assert.match(problemsWith({ caption: "Plan https://example.com/plan and http://1.2.3.4/x" }), /1\.2\.3\.4/);
+  assert.match(problemsWith({ caption: "Plan https://example.com/plan and 10.0.0.1:8080/pay" }), /10\.0\.0\.1/);
+  assert.match(problemsWith({ caption: "Plan https://example.com/plan localhost:3000" }), /localhost/);
+  assert.match(problemsWith({ caption: "Plan https://example.com/plan http://intranet/pay" }), /intranet/);
+  assert.match(problemsWith({ lines: ["Stop scrolling now.", "Go to пример.рф", "Try it free today"] }), /пример\.рф/);
+});
+
+test("obfuscated domains are problems unless they are the CTA's", () => {
+  assert.match(problemsWith({ lines: ["Stop scrolling now.", "go to evil dot com", "Try it free today"] }), /evil/);
+  assert.match(problemsWith({ lines: ["Stop scrolling now.", "go to evil[.]org", "Try it free today"] }), /evil/);
+  assert.match(problemsWith({ lines: ["Stop scrolling now.", "go to evil(dot)net", "Try it free today"] }), /evil/);
+  assert.deepEqual(checkScript({ ...good(), lines: ["Stop scrolling now.", "Try it free today at example dot com/plan"] }, choice), []);
+});
+
+test("shot prompts, title and music prompt are scanned for links too", () => {
+  assert.match(problemsWith({ shots: [{ prompt: "a sign saying evil.com", sec: 5 }, { prompt: "x", sec: 5 }] }), /evil\.com/);
+  assert.match(problemsWith({ title: "see evil.com" }), /evil\.com/);
+  assert.match(problemsWith({ musicPrompt: "http://evil.com/x" }), /evil\.com/);
+});
+
+test("caption links: another path, www. and capitals", () => {
+  assert.match(problemsWith({ caption: "Plan https://example.com/other" }), /isn't allowed|must contain/);
+  assert.deepEqual(checkScript({ ...good(), caption: "Plan WWW.EXAMPLE.COM/Plan" }, choice), []);
+  assert.match(problemsWith({ caption: "Plan https://example.com/plan and https://example.com/other" }), /example\.com\/other/);
+});
+
+test("hook: empty after normalization fails; matching is on word boundaries", () => {
+  const empty = { ...choice, hook: entry("hook", "!!!") };
+  assert.match(checkScript(good(), empty).join("\n"), /hook/);
+  const stop = { ...choice, hook: entry("hook", "Stop") };
+  assert.deepEqual(checkScript(good(), stop), []);
+  assert.match(problemsWith({ lines: ["Stopwatch time.", "x", "Try it free today"] }).concat(checkScript({ ...good(), lines: ["Stopwatch time.", "Try it free today"] }, stop).join("\n")), /first line must start with the hook/);
 });
