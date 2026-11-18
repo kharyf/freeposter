@@ -122,10 +122,20 @@ function postingTime(date: string | null, time: string | null, uploadedAt: numbe
   }
   if (time === null) return { ok: true, at: dayStart.getTime(), latest: new Date(year, month - 1, day + 1).getTime() - 1 };
 
-  const t = /^(\d{1,2})(?:[.:](\d{2}))?\.?\s*(am|pm)$/i.exec(time);
-  if (!t) return { ok: false, reason: `"${time}" is not a time like 5.30.pm (hour.two-digit minutes.am or pm)` };
-  const [hour12, minute] = [Number(t[1]), Number(t[2] ?? 0)];
-  if (hour12 < 1 || hour12 > 12 || minute > 59) return { ok: false, reason: `"${time}" is not a valid time` };
-  const at = new Date(year, month - 1, day, (hour12 % 12) + (t[3].toLowerCase() === "pm" ? 12 : 0), minute).getTime();
+  if (!CLOCK.test(time)) return { ok: false, reason: `"${time}" is not a time like 5.30.pm (hour.two-digit minutes.am or pm)` };
+  const t = readTime(time);
+  if (!t) return { ok: false, reason: `"${time}" is not a valid time` };
+  const at = new Date(year, month - 1, day, t.h, t.m).getTime();
   return { ok: true, at, latest: at };
+}
+
+const CLOCK = /^(\d{1,2})(?:[.:](\d{2}))?\.?\s*(am|pm)$/i;
+
+/** A filename's 12-hour time (5.30.pm, 5:30pm, 5pm) as a 24-hour hour and minute, or null. */
+export function readTime(s: string): { h: number; m: number } | null {
+  const t = CLOCK.exec(s);
+  if (!t) return null;
+  const [hour12, minute] = [Number(t[1]), Number(t[2] ?? 0)];
+  if (hour12 < 1 || hour12 > 12 || minute > 59) return null;
+  return { h: (hour12 % 12) + (t[3].toLowerCase() === "pm" ? 12 : 0), m: minute };
 }
