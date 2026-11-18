@@ -111,12 +111,27 @@ export class Intake {
     }
   }
 
-  /** A campaign's post line names it: "held" for the campaign, and nothing goes out by its filename. True if held. */
+  /**
+   * At the point it would go to review (or, _RAW, be scheduled) by its filename. A campaign's post line names it:
+   * "held" for the campaign, and nothing goes out by its filename. A file already sent for review by its filename
+   * (it's back here after a Redo, or to be sent again) is never held: it carries on by its filename. One whose
+   * filename time had passed when it arrived (let through because a campaign held its name then) is late now that
+   * none does. True when it stops here.
+   */
   private hold(f: DriveFileRecord, held: Map<string, string>): boolean {
+    if (f.filenameReviewAt) return false;
     const campaign = held.get((this.choice(f)?.name ?? "").toLowerCase());
-    if (campaign === undefined) return false;
+    if (campaign === undefined) return this.lateAtArrival(f);
     this.store.upsertDriveFile(f.driveId, { state: "held", note: `held by campaign ${campaign}` });
     log(f, `held by campaign ${campaign}`);
+    return true;
+  }
+
+  /** Its filename's time had already passed when it reached the folder: it's marked late (true). */
+  private lateAtArrival(f: DriveFileRecord): boolean {
+    const choice = this.choice(f);
+    if (!choice || choice.latest >= (f.uploadedAt ?? f.createdAt) - GRACE_MS) return false;
+    this.store.upsertDriveFile(f.driveId, { state: "late", note: "no campaign posts it any more, and its filename's time had already passed when it reached the folder" });
     return true;
   }
 
@@ -127,10 +142,7 @@ export class Intake {
   private release(f: DriveFileRecord, held: Map<string, string>) {
     const choice = this.choice(f);
     if (held.has((choice?.name ?? "").toLowerCase()) || driveFileTaken(this.store, f.driveId)) return;
-    if (choice && choice.latest < (f.uploadedAt ?? f.createdAt) - GRACE_MS) {
-      this.store.upsertDriveFile(f.driveId, { state: "late", note: "no campaign posts it any more, and its filename's time had already passed when it reached the folder" });
-      return;
-    }
+    if (this.lateAtArrival(f)) return;
     this.store.upsertDriveFile(f.driveId, { state: "processing", note: null });
     log(f, "no longer held by a campaign");
   }
@@ -447,7 +459,7 @@ export class Intake {
     const open = this.openReviewFor(edit.id);
     if (open) {
       // An agent already asked about this edit: that review is the one the user answers.
-      this.store.upsertDriveFile(f.driveId, { state: "reviewing", reviewId: open.id });
+      this.store.upsertDriveFile(f.driveId, { state: "reviewing", reviewId: open.id, filenameReviewAt: f.filenameReviewAt ?? this.now() });
       return;
     }
     const target = this.targets(f, edit.durationSec ?? 0, true);
@@ -466,7 +478,7 @@ export class Intake {
         via: "drive",
         expireAtSchedule: false,
       });
-      this.store.upsertDriveFile(f.driveId, { state: "reviewing", reviewId: review.id, note: target.notes.join("; ") || null });
+      this.store.upsertDriveFile(f.driveId, { state: "reviewing", reviewId: review.id, note: target.notes.join("; ") || null, filenameReviewAt: f.filenameReviewAt ?? this.now() });
       log(f, `edit ${edit.id} sent for review (review ${review.id})`);
     } catch (err) {
       this.store.upsertDriveFile(f.driveId, { state: "unreviewed", note: `it couldn't be sent for review: ${(err as Error).message}` });

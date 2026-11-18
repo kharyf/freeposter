@@ -679,12 +679,14 @@ export class CampaignWorker {
   }
 
   /**
-   * A Drive file by this name, uploaded in the week up to the line's day, already going out by its own filename (it
-   * reached review or was scheduled before the campaign held its name). Not one a campaign task posted.
+   * A Drive file by this name, uploaded in the week up to the line's day, already going out (or gone out) by its own
+   * filename: it reached review or has a post (scheduled, posting, posted or partly posted: a Drive file stays
+   * "scheduled" while its post goes out). Not one a campaign task posted.
    */
   private scheduledByFilename(t: CampaignTask, name: string): boolean {
     const from = localAt(addDays(t.date, -(KEPT_WINDOW_DAYS - 1)), "00:00");
-    return this.store.driveFilesIn(["reviewing", "scheduled"]).some((d) =>
+    const rows = this.store.db.prepare("SELECT drive_id FROM drive_files WHERE state IN ('reviewing', 'scheduled') OR post_id IS NOT NULL").all() as { drive_id: string }[];
+    return rows.map((r) => this.store.driveFile(r.drive_id)!).some((d) =>
       (d.choice?.name ?? "").toLowerCase() === name && (d.uploadedAt ?? d.createdAt) >= from && !driveFileTaken(this.store, d.driveId));
   }
 
@@ -694,12 +696,18 @@ export class CampaignWorker {
     const t = this.campaigns.task(id);
     if (!t) return;
     this.campaigns.updateTask(id, { state: "failed", error });
+    const r = t.reviewId === null ? undefined : this.reviews.reviews.get(t.reviewId);
     // A held Drive file it took and never posted says why (it isn't taken again, or posted by its filename).
     const driveId = (t.choices as unknown as TaskChoices).driveId;
     const file = driveId ? this.store.driveFile(driveId) : undefined;
-    if (file?.state === "held" && file.postId === null) this.store.upsertDriveFile(file.driveId, { state: "failed", note: `its campaign task couldn't post it: ${error}` });
+    if (file?.state === "held" && file.postId === null) {
+      const rejected = r?.state === "rejected";
+      this.store.upsertDriveFile(file.driveId, {
+        state: rejected ? "rejected" : "failed",
+        note: `${rejected ? "you rejected it in its campaign's review" : `its campaign task couldn't post it: ${error}`}; nothing was posted. To post it, upload it again`,
+      });
+    }
     // An approved post this task never placed is still held: it must never go out on its own.
-    const r = t.reviewId === null ? undefined : this.reviews.reviews.get(t.reviewId);
     if (r?.postId && t.state !== "scheduled" && t.state !== "posted") this.cancelHeld(r.postId);
     log(t, `failed: ${error}`);
     if (notify) this.tell(this.campaigns.task(id)!, "campaign.failed", error);

@@ -115,6 +115,8 @@ export interface DriveFileRecord {
   uploadedAt: number | null;
   /** what its name chose, fixed when it arrived; null until then */
   choice: DriveChoice | null;
+  /** when it was first sent for review by its filename; a file that was is never held by a campaign */
+  filenameReviewAt?: number | null;
   createdAt: number;
   updatedAt: number;
 }

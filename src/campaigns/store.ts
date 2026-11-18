@@ -182,6 +182,9 @@ const ENTRY_COLUMNS: Record<string, string> = { name: "name", text: "text", keyw
 
 const ready = new WeakSet<Store>();
 
+/** Enabled, and its compiled schedule was confirmed for its current text. */
+const runnable = (c: Campaign) => c.enabled && c.compiledSha !== null && c.compiledSha === c.textSha;
+
 /**
  * The campaign task a production or edit belongs to (an edit: itself or any edit it was revised from), or null.
  * Other workers ask, to tell agents that the campaign sends it for review itself.
@@ -208,10 +211,10 @@ export function campaignTaskFor(store: Store, kind: "production" | "edit", id: n
  * also posted by its filename.
  */
 export function heldBy(store: Store): Map<string, string> {
+  if (!ready.has(store)) { store.db.exec(SCHEMA); ready.add(store); }
   const held = new Map<string, string>();
-  const cs = new CampaignStore(store);
-  for (const c of cs.campaigns()) {
-    if (!cs.isRunnable(c) || !c.compiled) continue;
+  for (const c of store.db.prepare("SELECT * FROM campaigns ORDER BY id").all().map(toCampaign)) {
+    if (!runnable(c) || !c.compiled) continue;
     for (const lines of Object.values(c.compiled.days)) {
       for (const ins of lines ?? []) if (ins.kind === "post" && !held.has(ins.name.toLowerCase())) held.set(ins.name.toLowerCase(), c.name);
     }
@@ -328,7 +331,7 @@ export class CampaignStore {
   }
 
   isRunnable(c: Campaign): boolean {
-    return c.enabled && c.compiledSha !== null && c.compiledSha === c.textSha;
+    return runnable(c);
   }
 
   // ---- tasks ----

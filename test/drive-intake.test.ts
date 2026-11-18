@@ -788,3 +788,75 @@ test("a held _RAW file goes through the campaign's review, then posts once", asy
   assert.equal(s.store.driveFile("f1")!.postId, h.task().postId);
   assert.equal(s.posts(), 1);
 });
+
+test("a file reviewing by its filename before the campaign was confirmed still goes by its filename after a Redo", async () => {
+  const s = setup();
+  s.clock.now = morning();
+  const at = s.clock.now + 2 * 60 * MIN;
+  await s.intake.handle(s.file(driveName("Gatekeeping", at)));
+  s.finishEdit("f1");
+  const first = await s.reviewOf();
+  const h = holdBy(s, "Gatekeeping");
+  await h.tick();
+  assert.equal(h.task().error, "already scheduled by its filename");
+  const out = await s.reviews.redo(first.id, { via: "window", reason: "zooms", note: null });
+  assert.ok(out.ok, out.message);
+  assert.equal(s.store.driveFile("f1")!.state, "processing");
+  s.finishEdit("f1");
+  const second = await s.approve();
+  assert.equal(second.requestedVia, "drive", "its filename's review, not held");
+  const f = s.store.driveFile("f1")!;
+  assert.equal(f.state, "scheduled", f.note ?? "");
+  assert.equal(s.store.post(f.postId!)!.scheduledAt, at);
+  assert.equal(s.posts(), 1);
+});
+
+test("a file exempted from late at arrival is late at the hold point if no campaign holds its name any more", async () => {
+  const s = setup();
+  s.clock.now = morning();
+  const h = holdBy(s, "Gatekeeping");
+  await s.intake.handle(s.file(driveName("Gatekeeping", s.clock.now - 3 * 60 * MIN)));
+  h.cs.setText(h.id, "new text");
+  s.finishEdit("f1");
+  await s.intake.tick();
+  const f = s.store.driveFile("f1")!;
+  assert.equal(f.state, "late", f.note ?? "");
+  assert.equal(s.reviews.reviews.recent().length, 0);
+  assert.equal(s.posts(), 0);
+});
+
+test("rejecting the campaign's review of a held file marks the Drive file rejected, and says re-uploading posts it", async () => {
+  const s = setup();
+  s.clock.now = morning();
+  const h = holdBy(s, "Gatekeeping");
+  await s.intake.handle(s.file(driveName("Gatekeeping", s.clock.now + 2 * 60 * MIN)));
+  s.finishEdit("f1");
+  await s.intake.tick();
+  await h.tick();
+  await h.tick();
+  await s.reviews.tick();
+  const t = h.task();
+  assert.ok((await s.reviews.reject(t.reviewId!, { via: "window", reason: "none", note: null })).ok);
+  await h.tick();
+  await s.intake.tick();
+  const f = s.store.driveFile("f1")!;
+  assert.equal(f.state, "rejected", f.note ?? "");
+  assert.match(f.note!, /upload it again/);
+  assert.equal(s.posts(), 0);
+});
+
+test("a post line whose Drive file already went out by its filename is missed, not posted again", async () => {
+  const s = setup();
+  s.clock.now = morning();
+  await s.intake.handle(s.file(driveName("Gatekeeping", s.clock.now + 2 * 60 * MIN)));
+  s.finishEdit("f1");
+  await s.approve();
+  // It went out: posts' jobs are published; the Drive file stays as the intake left it ("scheduled").
+  const postId = s.store.driveFile("f1")!.postId!;
+  s.store.db.prepare("UPDATE jobs SET state = 'published' WHERE post_id = ?").run(postId);
+  const h = holdBy(s, "Gatekeeping");
+  await h.tick();
+  assert.equal(h.task().state, "missed");
+  assert.equal(h.task().error, "already scheduled by its filename");
+  assert.equal(s.posts(), 1);
+});

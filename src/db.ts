@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS drive_files (
   note TEXT,
   uploaded_at INTEGER,
   review_id INTEGER,
+  filename_review_at INTEGER,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -192,6 +193,11 @@ export class Store {
     if (!driveColumns.some((c) => c.name === "uploaded_at")) this.db.exec("ALTER TABLE drive_files ADD COLUMN uploaded_at INTEGER");
     if (!driveColumns.some((c) => c.name === "review_id")) this.db.exec("ALTER TABLE drive_files ADD COLUMN review_id INTEGER");
     if (!driveColumns.some((c) => c.name === "choice")) this.db.exec("ALTER TABLE drive_files ADD COLUMN choice TEXT");
+    if (!driveColumns.some((c) => c.name === "filename_review_at")) {
+      // Files that already reached review by their filename before this column existed are marked as such.
+      this.db.exec("ALTER TABLE drive_files ADD COLUMN filename_review_at INTEGER");
+      this.db.exec("UPDATE drive_files SET filename_review_at = updated_at WHERE review_id IS NOT NULL OR post_id IS NOT NULL OR state IN ('reviewing', 'unreviewed', 'rejected', 'scheduled', 'cancelled')");
+    }
     const connColumns = this.db.prepare("PRAGMA table_info(drive_connection)").all() as { name: string }[];
     if (!connColumns.some((c) => c.name === "changes_token")) this.db.exec("ALTER TABLE drive_connection ADD COLUMN changes_token TEXT");
     // ...and before the outbox became the event feed every agent can read, not only a webhook.
@@ -827,7 +833,7 @@ export class Store {
     const cols = {
       name: "name", state: "state", size: "size", md5: "md5", scheduledAt: "scheduled_at", sourcePath: "source_path", sha256: "sha256",
       editId: "edit_id", postId: "post_id", title: "title", caption: "caption", note: "note", uploadedAt: "uploaded_at", reviewId: "review_id",
-      choice: "choice",
+      choice: "choice", filenameReviewAt: "filename_review_at",
     } as const;
     const keys = (Object.keys(f) as (keyof typeof cols)[]).filter((k) => k in cols);
     const values = keys.map((k) => (k === "choice" ? (f.choice ? JSON.stringify(f.choice) : null) : (f[k] ?? null)));
@@ -1002,6 +1008,7 @@ function toDriveFile(r: any): DriveFileRecord {
     note: r.note,
     uploadedAt: r.uploaded_at,
     reviewId: r.review_id ?? null,
+    filenameReviewAt: r.filename_review_at ?? null,
     choice: r.choice ? JSON.parse(r.choice) : null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
