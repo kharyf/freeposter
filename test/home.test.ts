@@ -54,3 +54,17 @@ test("the window has an Analytics tab and its panel", async () => {
   assert.ok(res.body.includes(`id="tabAnalytics"`), "the Analytics tab button");
   assert.ok(res.body.includes(`id="analytics"`), "the Analytics panel");
 });
+
+test("the window has a Campaigns tab, its panel and the Autorun warning", async () => {
+  const { buildServer } = await import("../src/server.ts");
+  const { Runner } = await import("../src/runner.ts");
+  const { publishers } = await import("../src/platforms/index.ts");
+  const { newStore } = await import("./helpers.ts");
+  const store = newStore();
+  const app = buildServer(store, new Runner(store, publishers, tmp()), publishers);
+  const res = await app.inject("/");
+  assert.equal(res.statusCode, 200);
+  assert.ok(res.body.includes(`id="tabCampaigns"`), "the Campaigns tab button");
+  assert.ok(res.body.includes(`id="campaigns"`), "the Campaigns panel");
+  assert.ok(res.body.includes(`id="autorun-warning"`), "the dialog that says what Autorun may and may not do");
+});

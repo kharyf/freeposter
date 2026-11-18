@@ -124,6 +124,14 @@ test("text → preview (not confirmed) → confirm, refusing a stale textSha and
   assert.equal(res.json().runnable, true);
   assert.equal(cs.isRunnable(cs.campaign(campaignId)!), true);
 
+  // whether the schedule is for the current text shows even while the campaign is off (the tab's "Not confirmed" chip)
+  assert.equal(res.json().confirmedForText, true);
+  await send("PUT", `/api/campaigns/${campaignId}/enabled`, { on: false });
+  await send("PUT", `/api/campaigns/${campaignId}/text`, { text: `${text} edited` });
+  const off = (await send("GET", "/api/campaigns")).json().campaigns.find((c: { id: number }) => c.id === campaignId);
+  assert.equal(off.runnable, false);
+  assert.equal(off.confirmedForText, false);
+
   assert.equal((await send("PUT", `/api/campaigns/${campaignId}/text`, { text: 5 })).statusCode, 400);
   assert.equal((await send("POST", `/api/campaigns/${campaignId}/confirm`, { compiled: compiled() })).statusCode, 400);
 });

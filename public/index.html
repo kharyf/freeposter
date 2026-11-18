@@ -116,7 +116,8 @@
   #setup { display: none; }
   #setup.open { display: block; }
   /* ---- tabs ---- */
-  .tabs { display: flex; gap: 4px; padding: 0 24px; border-bottom: 1px solid var(--line); }
+  .tabs { display: flex; gap: 4px; padding: 0 24px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
+  .tabs button { flex: none; white-space: nowrap; }
   @media (max-width: 900px) { .tabs { padding: 0 16px; } }
   .tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; color: var(--muted); padding: 6px 10px; font-size: 13px; font-weight: 600; margin-bottom: -1px; }
   .tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
@@ -325,6 +326,80 @@
   .an-val svg .dot { fill: var(--accent); stroke: var(--panel); stroke-width: 2; }
   .an-val.thin svg .rg { fill: color-mix(in srgb, var(--muted) 30%, transparent); }
   .an-val.thin svg .dot { fill: var(--muted); }
+  /* ---- Campaigns tab ---- */
+  .cp-top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 16px; }
+  button.cp-stop { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 600; padding: 8px 14px; }
+  .cp-killed { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; background: var(--bad); color: #fff; border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; font-weight: 600; }
+  .cp-killed span { flex: 1; min-width: 200px; }
+  .cp-killed button { background: #fff; color: var(--bad); border-color: #fff; font-weight: 600; }
+  .cp-note { font-size: 13px; margin-top: 8px; white-space: pre-line; overflow-wrap: anywhere; }
+  .cp-note.err { color: var(--bad); } .cp-note.ok { color: var(--ok); }
+  .cp-note ul { margin: 4px 0 0; padding-left: 18px; }
+  .cp-seg { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px; }
+  .cp-seg button { font-size: 13px; padding: 4px 10px; }
+  .cp-seg button[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .cp-entry { border-top: 1px solid var(--line); padding: 10px 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: start; }
+  .cp-entry:first-child { border-top: 0; padding-top: 0; }
+  .cp-entry .nm { font-weight: 600; overflow-wrap: anywhere; }
+  .cp-entry .tx { font-size: 13px; overflow-wrap: anywhere; white-space: pre-wrap; }
+  .cp-entry .meta { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+  .cp-entry .acts { display: flex; gap: 6px; }
+  .cp-entry .acts button { padding: 2px 8px; font-size: 12px; }
+  .cp-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0 12px; align-items: end; border-top: 1px solid var(--line); padding-top: 4px; margin-top: 8px; grid-column: 1 / -1; }
+  .cp-form textarea { min-height: 60px; }
+  .cp-form .go { display: flex; gap: 6px; padding-top: 12px; }
+  .cp-form input[type=color] { width: 48px; height: 36px; padding: 2px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+  .cp-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 3px; vertical-align: baseline; margin-right: 4px; border: 1px solid color-mix(in srgb, var(--ink) 25%, transparent); }
+  .cp-switch { display: inline-flex; gap: 6px; align-items: center; font-weight: 400; margin: 0; font-size: 13px; }
+  .cp-switch input { width: auto; margin: 0; }
+  .cp-autopost-on { color: var(--warn); font-size: 12px; font-weight: 600; }
+  .cp-card h2.cp-name { font-size: 17px; text-transform: none; letter-spacing: -0.01em; color: var(--ink); overflow-wrap: anywhere; }
+  .cp-card .section-head { flex-wrap: wrap; gap: 8px; }
+  .cp-chip { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+  .cp-chip.running { color: var(--ok); } .cp-chip.unconfirmed { color: var(--warn); } .cp-chip.off { color: var(--muted); } .cp-chip.stopped { color: var(--bad); }
+  .cp-controls { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; margin-bottom: 12px; }
+  .cp-autorun { border: 2px solid var(--accent); border-radius: 8px; padding: 4px 10px; background: color-mix(in srgb, var(--accent) 8%, transparent); font-weight: 600; }
+  .cp-autorun.on { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+  .cp-settings { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0 12px; margin-bottom: 4px; }
+  .cp-settings label { margin-top: 0; }
+  .cp-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; align-items: center; }
+  .cp-buttons .go { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .cp-card h3 { font-size: 13px; font-weight: 600; margin: 16px 0 6px; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+  .cp-week { font-size: 13px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .cp-row { display: grid; grid-template-columns: 44px minmax(0, 1.1fr) minmax(0, 1fr); gap: 4px 12px; padding: 6px 10px; border-top: 1px solid var(--line); }
+  .cp-row:first-child { border-top: 0; }
+  .cp-row .d { font-weight: 600; color: var(--muted); }
+  .cp-row .src { color: var(--muted); font-style: italic; overflow-wrap: anywhere; }
+  .cp-row .ins { overflow-wrap: anywhere; }
+  .cp-row.empty .ins { color: var(--muted); }
+  @media (max-width: 700px) { .cp-row { grid-template-columns: 38px minmax(0, 1fr); } .cp-row .src { grid-column: 2; } }
+  .cp-warn { color: var(--warn); font-weight: 600; white-space: nowrap; }
+  .cp-unread { border-left: 3px solid var(--bad); background: color-mix(in srgb, var(--bad) 8%, transparent); border-radius: 6px; padding: 6px 10px; font-size: 13px; margin-top: 8px; }
+  .cp-unread ul { margin: 4px 0 0; padding-left: 18px; overflow-wrap: anywhere; }
+  .cp-preview-mark { color: var(--warn); font-weight: 400; font-size: 12px; }
+  .cp-counts { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .cp-counts .z { color: var(--muted); }
+  .cp-counts .failed:not(.z), .cp-counts .missed:not(.z) { color: var(--bad); font-weight: 600; }
+  .cp-tasks { list-style: none; margin: 6px 0 0; padding: 0; font-size: 13px; }
+  .cp-tasks li { border-top: 1px solid var(--line); padding: 5px 0; overflow-wrap: anywhere; }
+  .cp-tasks .st { font-weight: 600; }
+  .cp-tasks .st.failed, .cp-tasks .st.missed { color: var(--bad); } .cp-tasks .st.posted, .cp-tasks .st.kept { color: var(--ok); } .cp-tasks .st.reviewing { color: var(--warn); }
+  .cp-tasks .why { color: var(--muted); display: block; }
+  .cp-tasks .why.err { color: var(--bad); }
+  .cp-drawer { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 8px; }
+  .cp-drawer > summary { cursor: pointer; font-weight: 600; font-size: 13px; }
+  .cp-drawer .row { margin-top: 8px; }
+  .cp-drawer input[type=date] { padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); font: inherit; color-scheme: light dark; }
+  .cp-change { border-top: 1px solid var(--line); padding: 8px 0; font-size: 13px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; }
+  .cp-change .rs { overflow-wrap: anywhere; }
+  .cp-change.undone .rs { text-decoration: line-through; color: var(--muted); }
+  dialog.cp-dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--ink); max-width: min(520px, calc(100vw - 32px)); padding: 18px; }
+  dialog.cp-dialog::backdrop { background: rgb(0 0 0 / .45); }
+  dialog.cp-dialog h2 { font-size: 16px; text-transform: none; letter-spacing: 0; color: var(--ink); }
+  dialog.cp-dialog ul { margin: 4px 0 10px; padding-left: 20px; font-size: 14px; }
+  dialog.cp-dialog .may { color: var(--ok); font-weight: 600; font-size: 13px; margin: 8px 0 0; }
+  dialog.cp-dialog .maynot { color: var(--bad); font-weight: 600; font-size: 13px; margin: 8px 0 0; }
+  dialog.cp-dialog .cp-buttons { justify-content: flex-end; }
 </style>
 </head>
 <body>
@@ -336,6 +411,7 @@
   <button type="button" role="tab" id="tabStyles" aria-selected="false" aria-controls="styles">Editing Styles</button>
   <button type="button" role="tab" id="tabCalendar" aria-selected="false" aria-controls="calendar">Calendar</button>
   <button type="button" role="tab" id="tabAnalytics" aria-selected="false" aria-controls="analytics">Analytics</button>
+  <button type="button" role="tab" id="tabCampaigns" aria-selected="false" aria-controls="campaigns">Campaigns</button>
   <button type="button" role="tab" id="tabSetup" aria-selected="false" aria-controls="setup">Setup</button>
 </nav>
 <div id="redirectBanner"></div>
@@ -495,6 +571,26 @@
   <div id="anPermission"></div>
   <div id="anBody"><div class="muted">Loading…</div></div>
   <section id="anDetail" class="an-detail" hidden></section>
+</main>
+
+<main id="campaigns" class="page" role="tabpanel" aria-label="Campaigns" hidden>
+  <div class="cp-top">
+    <button type="button" id="cpStop" class="cp-stop" title="Holds every campaign post and stops making new videos until you resume">■ Stop all campaigns</button>
+    <button type="button" id="cpNew">New campaign</button>
+    <span id="cpAi" class="muted an-ai"></span>
+  </div>
+  <div id="cpKilled"></div>
+  <section id="cpLibrary"><div class="muted">Loading…</div></section>
+  <div id="cpList"></div>
+  <dialog id="autorun-warning" class="cp-dialog" aria-labelledby="cpArTitle">
+    <h2 id="cpArTitle">Turn on Autorun for <span id="cpArName"></span>?</h2>
+    <p style="margin:0 0 4px">Whichever AI agent is connected to FreePoster may then change this campaign however it thinks best. Every change is listed under Changes with its reason, and you can undo each one.</p>
+    <p class="may">It may:</p>
+    <ul><li>change the schedule, the rules, how many videos are made and their editing styles</li><li>change the types its videos carry</li><li>add hooks and angles to the library (for this campaign only)</li></ul>
+    <p class="maynot">It may not:</p>
+    <ul><li>change CTA links or add CTAs</li><li>raise the daily post cap</li><li>let a type post without approval</li><li>stop or resume campaigns</li><li>turn Autorun on or off</li></ul>
+    <div class="cp-buttons"><button type="button" id="cpArCancel">Cancel</button><button type="button" id="cpArOk" class="go">Turn on Autorun</button></div>
+  </dialog>
 </main>
 
 <div id="setup" role="tabpanel" aria-label="FreePoster setup" hidden>
@@ -879,8 +975,8 @@ async function openSetup(stepId) {
   renderSetup();
 }
 
-/** Home, Editing Styles, Calendar, Analytics and Setup share the page; one shows at a time. */
-const TABS = { home: "tabHome", styles: "tabStyles", calendar: "tabCalendar", analytics: "tabAnalytics", setup: "tabSetup" };
+/** Home, Editing Styles, Calendar, Analytics, Campaigns and Setup share the page; one shows at a time. */
+const TABS = { home: "tabHome", styles: "tabStyles", calendar: "tabCalendar", analytics: "tabAnalytics", campaigns: "tabCampaigns", setup: "tabSetup" };
 function showTab(name) {
   $("setup").classList.toggle("open", name === "setup");
   for (const [panel, tab] of Object.entries(TABS)) {
@@ -890,6 +986,7 @@ function showTab(name) {
   if (name === "styles") renderStyles();
   if (name === "calendar") loadCalendar();
   if (name === "analytics") showAnalytics();
+  if (name === "campaigns") loadCampaigns();
 }
 
 function closeSetup() {
@@ -1413,7 +1510,7 @@ document.addEventListener("click", (e) => {
   const link = e.target.closest("[data-open-tab]");
   if (link) { e.preventDefault(); $(TABS[link.dataset.openTab]).click(); }
 });
-for (const name of ["styles", "calendar", "analytics"]) {
+for (const name of ["styles", "calendar", "analytics", "campaigns"]) {
   $(TABS[name]).addEventListener("click", () => {
     if ($("setup").classList.contains("open")) closeSetup();
     showTab(name);
@@ -2142,8 +2239,12 @@ let anOpen = null; // the post whose detail is showing
 let anSeq = 0; // answers to older requests are dropped
 let anCharts = null; // the open detail's chart series, to redraw on resize
 
-const anLabel = (p) => status.platforms.find((x) => x.platform === p)?.label ?? p;
-const anStyleName = (id) => status.editingStyles.find((s) => s.id === id)?.name ?? id;
+// status may still be loading (the tab can open first): read it with ?.
+const anLabel = (p) => status.platforms?.find((x) => x.platform === p)?.label ?? p;
+const anStyleName = (id) => status.editingStyles?.find((s) => s.id === id)?.name ?? id;
+const anHttp = (u) => typeof u === "string" && /^https?:\/\//i.test(u);
+let anBannered = false; // the page banner shows an Analytics load error (cleared by the next good load)
+const anFail = (text) => { anBannered = true; banner("err", text); };
 const anNum = (n) => n >= 10000 ? new Intl.NumberFormat([], { notation: "compact", maximumFractionDigits: 1 }).format(n) : Math.round(n).toLocaleString();
 const anFull = (n) => Number.isInteger(n) ? n.toLocaleString() : n.toLocaleString([], { maximumFractionDigits: 2 });
 const anAge = (sec) => { const h = sec / 3600; return h <= 72 ? `${+h.toFixed(h < 10 ? 1 : 0)}h` : `${+(h / 24).toFixed(h < 240 ? 1 : 0)}d`; };
@@ -2219,9 +2320,12 @@ async function loadAnalytics() {
     const res = await fetch(`/api/analytics?${anQuery()}`);
     const body = await res.json().catch(() => ({}));
     if (seq !== anSeq) return;
-    if (!res.ok) { banner("err", body.error ?? "Couldn't load the analytics"); return; }
+    if (!res.ok) { anFail(body.error ?? "Couldn't load the analytics"); return; }
     an = body;
-    renderAnalytics();
+    if (anBannered) { anBannered = false; banner(); }
+    keepFocus(renderAnalytics); // the 60 s refresh mustn't move the keyboard off the row it's on
+  } catch {
+    if (seq === anSeq) anFail("Couldn't reach FreePoster to load the analytics. Is it still running?");
   } finally {
     if (seq === anSeq) $("anBody").classList.remove("an-loading");
   }
@@ -2256,7 +2360,7 @@ function renderAnalytics() {
   const label = (x) => (x ? x.name ?? x.text ?? "" : "");
   const rows = an.videos.map((v) => {
     const parts = [v.hook, v.angle, v.cta].map(label);
-    return `<tr data-an-post="${v.postId}" tabindex="0" class="${v.postId === anOpen ? "on" : ""}">
+    return `<tr data-an-post="${v.postId}" data-focus="an-post-${v.postId}" tabindex="0" class="${v.postId === anOpen ? "on" : ""}">
       <td class="ttl" title="${esc(v.title)}">${esc(v.title || "(untitled)")}</td>
       <td>${v.source === "recorded" ? "rec" : "gen"}</td>
       <td>${esc(v.styleId ? anStyleName(v.styleId) : "–")}</td>
@@ -2359,23 +2463,27 @@ function anLogTicks(lo, hi) {
 async function loadAnDetail(postId) {
   anOpen = postId;
   for (const tr of $("anBody").querySelectorAll("[data-an-post]")) tr.classList.toggle("on", Number(tr.dataset.anPost) === postId);
-  const res = await fetch(`/api/analytics/videos/${postId}`);
-  const d = await res.json().catch(() => ({}));
-  if (anOpen !== postId) return;
-  if (!res.ok) { banner("err", d.error ?? "Couldn't load that video"); return; }
-  renderAnDetail(d);
+  try {
+    const res = await fetch(`/api/analytics/videos/${postId}`);
+    const d = await res.json().catch(() => ({}));
+    if (anOpen !== postId) return;
+    if (!res.ok) { anFail(d.error ?? "Couldn't load that video"); return; }
+    renderAnDetail(d);
+  } catch {
+    if (anOpen === postId) anFail("Couldn't reach FreePoster to load that video. Is it still running?");
+  }
 }
 
 function anPick(kind, title, l) {
   const entries = anRefs.entries.filter((e) => e.kind === kind);
   const id = l?.[`${kind}Id`] ?? null, text = l?.[`${kind}Text`] ?? null;
-  const sel = id !== null ? `id:${id}` : text ? "text" : "";
+  // An entry deleted from the library since shows as None (saving then clears it).
   const known = id === null || entries.some((e) => e.id === id);
+  const sel = id !== null && known ? `id:${id}` : text ? "text" : "";
   return `<div><label for="anL_${kind}">${title}</label>
     <select id="anL_${kind}" data-an-pick="${kind}">
       <option value="">None</option>
       ${entries.map((e) => `<option value="id:${e.id}" ${sel === `id:${e.id}` ? "selected" : ""}>${esc(e.name)}</option>`).join("")}
-      ${known ? "" : `<option value="id:${id}" selected>Library entry ${id}</option>`}
       <option value="text" ${sel === "text" ? "selected" : ""}>Other (type it)…</option>
     </select>
     <input type="text" id="anL_${kind}Text" maxlength="2000" value="${esc(text ?? "")}" placeholder="The ${kind === "cta" ? "CTA" : kind}'s words" aria-label="${title} text" ${sel === "text" ? "" : "hidden"}></div>`;
@@ -2398,18 +2506,18 @@ function renderAnDetail(d) {
   const per = Object.entries(d.scores.perPlatform).map(([p, a]) => `<span class="row" style="display:inline-flex;gap:4px">${icon(p)} ${["24h", "72h", "7d"].map((x) => (a[x] === undefined ? "–" : Math.round(a[x]))).join(" / ")}</span>`).join("");
   const legend = (list) => `<div class="an-legend">${list.map((s) => `<span><i style="background:${s.color}"></i>${icon(s.platform)} ${esc(s.name)}</span>`).join("")}</div>`;
   const retained = d.platforms.filter((p) => p.retention?.length);
-  const rawKeys = (p) => [...new Set(p.snapshots.flatMap((s) => Object.keys(s.raw)))].sort();
+  const rawKeys = (p) => [...new Set(p.snapshots.flatMap((s) => Object.keys(s.raw ?? {})))].sort();
   const raw = d.platforms.map((p) => {
     const keys = rawKeys(p);
     const kind = series.find((s) => s.jobId === p.jobId).kind;
-    return `<div class="pname">${icon(p.platform)} ${esc(series.find((s) => s.jobId === p.jobId).name)}${p.url ? ` <a class="link" href="${esc(p.url)}" target="_blank" rel="noopener" style="font-weight:400">view</a>` : ""}</div>
+    return `<div class="pname">${icon(p.platform)} ${esc(series.find((s) => s.jobId === p.jobId).name)}${anHttp(p.url) ? ` <a class="link" href="${esc(p.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:400">view</a>` : ""}</div>
       ${p.snapshots.length ? `<table><thead><tr><th>Age</th><th>Read</th><th>${kind === "impressions" ? "Impressions" : "Views"}</th>${keys.map((k) => `<th>${esc(k)}</th>`).join("")}</tr></thead>
         <tbody>${p.snapshots.map((s) => `<tr><td>${anAge(s.ageSec)}</td><td>${esc(new Date(s.takenAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }))}</td>
-          <td>${s.views === null ? "–" : anFull(s.views)}</td>${keys.map((k) => `<td>${s.raw[k] === undefined ? "–" : anFull(s.raw[k])}</td>`).join("")}</tr>`).join("")}</tbody></table>`
+          <td>${s.views === null ? "–" : anFull(s.views)}</td>${keys.map((k) => `<td>${typeof s.raw?.[k] === "number" ? anFull(s.raw[k]) : s.raw?.[k] == null ? "–" : esc(String(s.raw[k]))}</td>`).join("")}</tr>`).join("")}</tbody></table>`
         : `<div class="muted">No numbers yet${p.state !== "published" ? ` (${esc(String(p.state).replace("_", " "))})` : ""}.</div>`}`;
   }).join("");
   const l = d.labels;
-  const styles = status.editingStyles.map((s) => [s.id, s.name]);
+  const styles = (status.editingStyles ?? []).map((s) => [s.id, s.name]);
   if (l?.styleId && !styles.some(([id]) => id === l.styleId)) styles.push([l.styleId, l.styleId]);
 
   box.innerHTML = `
@@ -2473,14 +2581,21 @@ async function saveAnLabels() {
     else { body[`${kind}Id`] = null; body[`${kind}Text`] = null; }
   }
   const postId = anOpen;
-  $("anSave").disabled = true;
-  const res = await fetch(`/api/analytics/labels/${postId}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-  const out = await res.json().catch(() => ({}));
-  if (anOpen !== postId) return;
-  $("anSave").disabled = false;
-  if (!res.ok) { $("anSaveNote").innerHTML = `<span style="color:var(--bad)">${esc(out.error ?? "Couldn't save")}</span>`; return; }
-  await Promise.all([loadAnalytics(), loadAnDetail(postId)]);
-  $("anSaveNote").innerHTML = `<span style="color:var(--ok)">Saved</span>`;
+  const button = $("anSave");
+  const note = (color, text) => { if (anOpen === postId && $("anSaveNote")) $("anSaveNote").innerHTML = `<span style="color:var(--${color})">${esc(text)}</span>`; };
+  button.disabled = true;
+  try {
+    const res = await fetch(`/api/analytics/labels/${postId}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const out = await res.json().catch(() => ({}));
+    if (anOpen !== postId) return;
+    if (!res.ok) { note("bad", out.error ?? "Couldn't save"); return; }
+    await Promise.all([loadAnalytics(), loadAnDetail(postId)]);
+    note("ok", "Saved");
+  } catch {
+    note("bad", "Couldn't reach FreePoster, so the labels weren't saved. Try again.");
+  } finally {
+    button.disabled = false; // the detail may have been redrawn with a new button; this one is re-enabled either way
+  }
 }
 
 for (const id of ["anAccount", "anDays", "anSource", "anCampaign", "anAge"]) $(id).addEventListener("change", loadAnalytics);
@@ -2508,6 +2623,544 @@ let anResize;
 window.addEventListener("resize", () => { clearTimeout(anResize); anResize = setTimeout(anDrawCharts, 150); });
 // Numbers arrive as the poller reads them; the list keeps up while it's showing (the open detail isn't redrawn under an edit).
 setInterval(() => { if (!$("analytics").hidden) loadAnalytics(); }, 60000);
+
+// ---- Campaigns tab: weekly campaigns in the user's words, the library they draw on, Autorun, and the kill switch ----
+
+/**
+ * Re-renders without losing the keyboard focus or the caret: the focused element is found again by its id or its
+ * data-focus key (both stay the same across renders).
+ */
+function keepFocus(render) {
+  const a = document.activeElement;
+  const key = a && a !== document.body ? a.id || a.dataset?.focus : null;
+  let sel = null;
+  try { sel = a && typeof a.selectionStart === "number" ? [a.selectionStart, a.selectionEnd] : null; } catch { /* not a text field */ }
+  render();
+  if (!key) return;
+  const b = document.getElementById(key) ?? document.querySelector(`[data-focus="${CSS.escape(key)}"]`);
+  if (!b || b === a) return;
+  b.focus({ preventScroll: true });
+  try { if (sel) b.setSelectionRange(sel[0], sel[1]); } catch { /* not a text field */ }
+}
+
+const CP_DAYS = [["sun", "Sun"], ["mon", "Mon"], ["tue", "Tue"], ["wed", "Wed"], ["thu", "Thu"], ["fri", "Fri"], ["sat", "Sat"]];
+const CP_COUNTS = [["making", ["queued", "scripting", "rendering", "editing"]], ["waiting for approval", ["reviewing"]], ["scheduled", ["scheduled"]],
+  ["posted", ["posted"]], ["kept", ["kept"]], ["missed", ["missed"]], ["failed", ["failed"]]];
+const CP_STATE_WORD = { queued: "waiting to start", scripting: "writing the script", rendering: "making the video", editing: "editing",
+  reviewing: "waiting for approval", scheduled: "scheduled", posted: "posted", kept: "kept in the library", missed: "missed", failed: "failed" };
+const CP_LIB = [["hook", "Hooks"], ["angle", "Angles"], ["cta", "CTAs"], ["type", "Types"]];
+const CP_KIND_WORD = { hook: "hook", angle: "angle", cta: "CTA" };
+const CP_AUTOPOST_WARNING = "Videos with only these types will post without asking you.";
+let cp = null; // the last /api/campaigns answer
+let cpLib = { entries: [], types: [] };
+let cpAi = null; // today's AI use with its ceiling (from /api/analytics)
+let cpLibKind = "hook";
+let cpLibEdit = null; // the library entry whose edit form is open
+let cpLibNote = null; // { kind: "ok" | "err", text }
+let cpSeq = 0; // answers to older loads are dropped
+let cpArFor = null; // the campaign the Autorun dialog is asking about
+const cpPreviews = {}; // campaign id -> the last Preview: { compiled, couldNotUnderstand, textSha, text }
+const cpDrafts = {}; // campaign id -> its text box, as typed (kept across re-renders)
+const cpNotes = {}; // campaign id -> { kind, text, problems? } under the card's buttons
+const cpToday = {}; // campaign id -> { tasks } | { error }
+const cpHistory = {}; // campaign id -> { date, tasks? , error? }
+const cpChanges = {}; // campaign id -> { changes? , error? }
+const cpChangeNotes = {}; // change id -> why its Undo didn't work
+const cpOpen = new Set(); // "<id>:history" / "<id>:changes" drawers that are open
+const cpReading = {}; // campaign id -> the number of its Preview still being read (its Confirm waits; only the newest answer counts)
+let cpReadSeq = 0;
+
+/** One call to the app: never throws; a network failure comes back as an error a person can read. */
+async function cpCall(method, url, body) {
+  try {
+    const res = await fetch(url, method === "GET" ? undefined : { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}) });
+    const out = await res.json().catch(() => ({}));
+    return res.ok ? { ok: true, status: res.status, body: out } : { ok: false, status: res.status, error: out.error ?? `FreePoster answered ${res.status}`, problems: out.problems };
+  } catch {
+    return { ok: false, status: 0, error: "Couldn't reach FreePoster. Is it still running?" };
+  }
+}
+
+/** Runs an action with its button disabled; the button is enabled again however it ends. */
+async function cpBusy(button, fn) {
+  if (button) button.disabled = true;
+  try { return await fn(); } finally { if (button) button.disabled = false; }
+}
+
+const cpLocalDate = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const cpEntry = (id) => cpLib.entries.find((e) => e.id === id);
+const cpCampaign = (id) => cp?.campaigns.find((c) => c.id === id);
+const cpTypeName = (id) => { const t = cpLib.types.find((x) => x.id === id); return t ? `<span class="cp-swatch" style="background:${esc(t.color)}"></span>${esc(t.name)}` : `type #${id}`; };
+const cpTypes = (ids) => (ids?.length ? `${ids.length === 1 ? "type" : "types"} ${ids.map(cpTypeName).join(", ")}` : "");
+const cpHttp = (u) => { try { const x = new URL(u); return x.protocol === "http:" || x.protocol === "https:"; } catch { return false; } };
+
+async function loadCampaigns() {
+  const seq = ++cpSeq;
+  const [camps, lib, types, ana] = await Promise.all([cpCall("GET", "/api/campaigns"), cpCall("GET", "/api/library"), cpCall("GET", "/api/types"), cpCall("GET", "/api/analytics?days=7")]);
+  if (seq !== cpSeq) return;
+  if (!camps.ok) { banner("err", `Couldn't load the campaigns: ${camps.error}`); return; }
+  cp = camps.body;
+  if (lib.ok) cpLib.entries = lib.body.entries;
+  if (types.ok) cpLib.types = types.body.types;
+  cpAi = ana.ok ? ana.body.ai : cp.ai ? { ...cp.ai, max: null } : null;
+  const today = cpLocalDate();
+  await Promise.all(cp.campaigns.map(async (c) => {
+    const r = await cpCall("GET", `/api/campaigns/${c.id}/tasks?date=${today}`);
+    cpToday[c.id] = r.ok ? { tasks: r.body.tasks } : { error: r.error };
+  }));
+  if (seq !== cpSeq) return;
+  keepFocus(renderCampaigns);
+}
+
+function renderCampaigns() {
+  if (!cp) return;
+  if (cpAi) {
+    const { budgeted, all, max } = cpAi;
+    $("cpAi").textContent = max
+      ? `AI today · campaigns & labels: ${budgeted.calls} / ${max.calls} calls, ${anNum(budgeted.tokens)} / ${anNum(max.tokens)} tokens · all AI: ${all.calls} calls`
+      : `AI today · campaigns & labels: ${budgeted.calls} calls · all AI: ${all.calls} calls`;
+    $("cpAi").title = "Campaigns and labels stop for the day at either limit; captions and edits aren't counted against it";
+  }
+  $("cpStop").hidden = cp.killed;
+  $("cpKilled").innerHTML = cp.killed ? `<div class="cp-killed" role="status"><span>Campaigns are stopped. Nothing is made or posted for any campaign until you resume.</span>
+    <button type="button" id="cpResume">Resume</button></div>` : "";
+  renderCpLibrary();
+  $("cpList").innerHTML = cp.campaigns.length ? cp.campaigns.map(cpCardHtml).join("")
+    : `<section><h2>No campaigns yet</h2><p class="muted" style="margin:0">Press <strong>New campaign</strong>, then write the week in your own words, for example:
+      “On Sunday make and post 3 Fancy videos with Stop Scrolling hook, Myth Bust angle, and Free Guide call to action. On Monday post 'Gatekeeping_5.30.pm_Basic'.”
+      Add the hooks, angles and CTAs it names to the library above first.</p></section>`;
+}
+
+// ---- the library ----
+
+function renderCpLibrary() {
+  const count = (k) => (k === "type" ? cpLib.types.length : cpLib.entries.filter((e) => e.kind === k).length);
+  const seg = CP_LIB.map(([k, t]) => `<button type="button" data-cp-lib="${k}" aria-pressed="${cpLibKind === k}">${t} (${count(k)})</button>`).join("");
+  const list = cpLibKind === "type" ? cpTypesHtml() : cpEntriesHtml(cpLibKind);
+  const note = cpLibNote ? `<div class="cp-note ${cpLibNote.kind}" role="status">${esc(cpLibNote.text)}</div>` : "";
+  $("cpLibrary").innerHTML = `<div class="section-head"><h2>Library</h2><span class="muted">what campaign text can name</span></div>
+    <div class="cp-seg" role="group" aria-label="Library part">${seg}</div>${list}${note}`;
+}
+
+const cpOwner = (e) => {
+  if (!e.ownerCampaignId) return "";
+  const c = cpCampaign(e.ownerCampaignId);
+  return `<div class="meta">added by Autorun on ${esc(c ? c.name : `campaign ${e.ownerCampaignId}`)} (only that campaign uses it)</div>`;
+};
+
+function cpEntryForm(kind, e) {
+  const p = e ? `cpE${e.id}` : `cpN${kind}`;
+  const v = (x) => esc(x ?? "");
+  const text = { hook: ["Words", "The words the video opens with"], angle: ["Description", "The problem the video claims to solve"], cta: ["Spoken text", "What the video says at the end"] }[kind];
+  return `<div class="cp-form" data-cp-form="${e ? e.id : `new:${kind}`}">
+    <div><label for="${p}name">Name</label><input type="text" id="${p}name" maxlength="100" value="${v(e?.name)}"></div>
+    <div><label for="${p}text">${text[0]}</label><textarea id="${p}text" maxlength="2000" placeholder="${text[1]}">${v(e?.text)}</textarea></div>
+    ${kind === "angle" ? `<div><label for="${p}kw">Keywords</label><input type="text" id="${p}kw" value="${v(e?.keywords?.join(", "))}" placeholder="comma separated: myth, wrong, actually"></div>` : ""}
+    ${kind === "cta" ? `<div><label for="${p}url">Link</label><input type="text" id="${p}url" maxlength="2000" value="${v(e?.url)}" placeholder="https://…" inputmode="url"></div>` : ""}
+    <div class="go">${e ? `<button type="button" data-cp-save="${e.id}">Save</button><button type="button" data-cp-cancel>Cancel</button>`
+      : `<button type="button" data-cp-add="${kind}">Add ${CP_KIND_WORD[kind]}</button>`}</div></div>`;
+}
+
+function cpEntriesHtml(kind) {
+  const entries = cpLib.entries.filter((e) => e.kind === kind);
+  const rows = entries.map((e) => cpLibEdit === e.id ? `<div class="cp-entry">${cpEntryForm(kind, e)}</div>` : `<div class="cp-entry">
+    <div><div class="nm">${esc(e.name)}</div><div class="tx">${esc(e.text)}</div>
+      ${kind === "angle" && e.keywords?.length ? `<div class="meta">keywords: ${esc(e.keywords.join(", "))}</div>` : ""}
+      ${kind === "cta" ? `<div class="meta">link: ${esc(e.url ?? "none")}</div>` : ""}${cpOwner(e)}</div>
+    <div class="acts"><button type="button" data-cp-edit="${e.id}" data-focus="cp-edit-${e.id}">Edit</button><button type="button" data-cp-del="${e.id}" data-focus="cp-del-${e.id}">Delete</button></div></div>`).join("");
+  return `${rows || `<div class="muted">No ${CP_KIND_WORD[kind]}s yet.</div>`}${cpEntryForm(kind, null)}`;
+}
+
+function cpTypesHtml() {
+  const rows = cpLib.types.map((t) => `<div class="cp-entry">
+    <div><div class="nm"><span class="cp-swatch" style="background:${esc(t.color)}"></span>${esc(t.name)}</div>
+      ${t.autoPost ? `<div class="cp-autopost-on">⚠ ${esc(CP_AUTOPOST_WARNING)}</div>` : ""}</div>
+    <label class="cp-switch"><input type="checkbox" data-cp-autopost="${t.id}" data-focus="cp-autopost-${t.id}" ${t.autoPost ? "checked" : ""}> Post without approval</label></div>`).join("");
+  return `${rows || `<div class="muted">No types yet. A type tags a campaign's videos (“make 2 Fancy videos, type Promo…”).</div>`}
+    <div class="cp-form"><div><label for="cpTypeName">Name</label><input type="text" id="cpTypeName" maxlength="50"></div>
+      <div><label for="cpTypeColor">Colour</label><input type="color" id="cpTypeColor" value="#1f5eff"></div>
+      <div class="go"><button type="button" id="cpTypeAdd">Add type</button></div></div>
+    <p class="muted" style="margin:8px 0 0">Every video waits for your approval unless it has at least one type and all its types allow posting without approval.</p>`;
+}
+
+function cpEntryBody(kind, prefix) {
+  const val = (s) => $(`${prefix}${s}`)?.value ?? "";
+  const body = { name: val("name").trim(), text: val("text").trim() };
+  if (kind === "angle") body.keywords = val("kw").split(",").map((k) => k.trim()).filter(Boolean);
+  if (kind === "cta") body.url = val("url").trim();
+  if (!body.name) return { problem: "Give it a name." };
+  if (!body.text) return { problem: kind === "cta" ? "Write what the video says." : kind === "angle" ? "Describe the angle." : "Write the hook's words." };
+  if (kind === "cta" && !cpHttp(body.url)) return { problem: "A CTA needs a link that starts with http:// or https://." };
+  return { body };
+}
+
+async function cpLibraryAction(e) {
+  const t = e.target;
+  const seg = t.closest("[data-cp-lib]");
+  if (seg) { cpLibKind = seg.dataset.cpLib; cpLibEdit = null; cpLibNote = null; renderCpLibrary(); return; }
+  if (t.closest("[data-cp-edit]")) { cpLibEdit = Number(t.closest("[data-cp-edit]").dataset.cpEdit); cpLibNote = null; renderCpLibrary(); $(`cpE${cpLibEdit}name`)?.focus(); return; }
+  if (t.closest("[data-cp-cancel]")) { cpLibEdit = null; renderCpLibrary(); return; }
+  const done = async (r, ok) => {
+    cpLibNote = r.ok ? { kind: "ok", text: ok } : { kind: "err", text: r.error };
+    if (r.ok) await loadCampaigns(); else renderCpLibrary();
+  };
+  const add = t.closest("[data-cp-add]");
+  if (add) {
+    const kind = add.dataset.cpAdd;
+    const { body, problem } = cpEntryBody(kind, `cpN${kind}`);
+    if (problem) { cpLibNote = { kind: "err", text: problem }; renderCpLibrary(); return; }
+    const r = await cpBusy(add, () => cpCall("POST", "/api/library", { kind, ...body }));
+    await done(r, `Added the ${CP_KIND_WORD[kind]} “${body.name}”.`);
+    return;
+  }
+  const save = t.closest("[data-cp-save]");
+  if (save) {
+    const id = Number(save.dataset.cpSave);
+    const { body, problem } = cpEntryBody(cpEntry(id)?.kind, `cpE${id}`);
+    if (problem) { cpLibNote = { kind: "err", text: problem }; renderCpLibrary(); return; }
+    const r = await cpBusy(save, () => cpCall("PUT", `/api/library/${id}`, body));
+    if (r.ok) cpLibEdit = null;
+    await done(r, `Saved “${body.name}”.`);
+    return;
+  }
+  const del = t.closest("[data-cp-del]");
+  if (del) {
+    const entry = cpEntry(Number(del.dataset.cpDel));
+    if (!entry || !confirm(`Delete the ${CP_KIND_WORD[entry.kind]} “${entry.name}” from the library?`)) return;
+    const r = await cpBusy(del, () => cpCall("DELETE", `/api/library/${entry.id}`));
+    if (!r.ok && r.status === 409) r.error = `“${entry.name}” is in use, so it wasn't deleted: ${r.error}`;
+    await done(r, `Deleted “${entry.name}”.`);
+    return;
+  }
+  if (t.id === "cpTypeAdd") {
+    const name = $("cpTypeName").value.trim();
+    if (!name) { cpLibNote = { kind: "err", text: "Give the type a name." }; renderCpLibrary(); return; }
+    const r = await cpBusy(t, () => cpCall("POST", "/api/types", { name, color: $("cpTypeColor").value }));
+    await done(r, `Added the type “${name}”. It waits for approval until you switch on Post without approval.`);
+  }
+}
+
+async function cpAutoPost(box) {
+  const id = Number(box.dataset.cpAutopost);
+  const type = cpLib.types.find((t) => t.id === id);
+  const on = box.checked;
+  if (on && !confirm(`Let videos of type “${type?.name ?? id}” post without approval?\n\n${CP_AUTOPOST_WARNING} A video skips approval only when every one of its types allows it.`)) { box.checked = false; return; }
+  const r = await cpBusy(box, () => cpCall("PUT", `/api/types/${id}/auto-post`, { on }));
+  if (r.ok) cpLib.types = r.body.types;
+  else box.checked = !on;
+  cpLibNote = r.ok ? { kind: on ? "err" : "ok", text: on ? `“${type?.name}” videos now post without asking you.` : `“${type?.name}” videos wait for your approval again.` } : { kind: "err", text: r.error };
+  keepFocus(renderCpLibrary);
+}
+
+// ---- campaign cards ----
+
+function cpChip(c) {
+  if (cp.killed) return `<span class="cp-chip stopped" title="Stop all campaigns is on">Stopped</span>`;
+  if (c.runnable) return `<span class="cp-chip running">Running</span>`;
+  if (!c.enabled) return `<span class="cp-chip off"${c.confirmedForText ? "" : ` title="Its schedule isn't confirmed for the current text either"`}>Off</span>`;
+  return `<span class="cp-chip unconfirmed" title="It runs again once you preview and confirm the schedule for the current text">${c.confirmedAt ? "Not confirmed (text changed)" : "Not confirmed"}</span>`;
+}
+
+/** A hook / angle / CTA pick, with a warning when this campaign's rules have stopped using a named one. */
+function cpPick(kind, p, c) {
+  if (!p) return "–";
+  if (p.pick === "random") return "random";
+  if (p.pick === "best") return "best";
+  if (p.pick === "same_as_rule") return "the rule's";
+  const e = cpEntry(p.id);
+  const stopped = c.excluded?.[kind]?.includes(p.id);
+  const why = `the rule says this ${CP_KIND_WORD[kind]} isn't working; this line still uses it because it names it`;
+  return `${e ? esc(e.name) : `#${esc(p.id)} (not in the library)`}${stopped ? ` <span class="cp-warn" title="${esc(why)}" aria-label="${esc(why)}">⚠ the rule says this isn't working</span>` : ""}`;
+}
+
+function cpInstruction(ins, c) {
+  if (ins.kind === "make") {
+    const post = ins.post === null ? "kept (made, not posted)" : ins.post.at === "default" ? "post at default time" : `post at ${esc(ins.post.at)}`;
+    return [`make ${esc(ins.count)}`, esc(anStyleName(ins.style)), `hook ${cpPick("hook", ins.hook, c)}`, `angle ${cpPick("angle", ins.angle, c)}`,
+      `CTA ${cpPick("cta", ins.cta, c)}`, cpTypes(ins.types), post].filter(Boolean).join(" · ");
+  }
+  return [`post “${esc(ins.name)}” ${ins.at ? `at ${esc(ins.at)}` : "at default time"}`, ins.style ? esc(anStyleName(ins.style)) : "", cpTypes(ins.types)].filter(Boolean).join(" · ");
+}
+
+function cpRule(r) {
+  const w = r.when;
+  const what = { hook: "a hook", angle: "an angle", cta: "a CTA", style: "a style", type: "a type" }[w.label] ?? esc(w.label);
+  const terms = `${w.is === "working" ? "top" : "bottom"} ${esc(w.thresholdPct)}% @${esc(w.age)}, ≥${esc(w.minVideos)} videos, this ${esc(w.scope)}`;
+  const then = r.then.kind === "stop_using" ? "stop using it in random and best picks"
+    : `make ${esc(r.then.count)}${r.then.keep.length ? ` keeping ${esc(r.then.keep.join(", "))}` : ""}${r.then.vary.length ? `, random ${esc(r.then.vary.join(", "))}` : ""}${r.then.post ? ", and post them" : ", and keep them"}`;
+  return `when ${what} is ${w.is === "working" ? "working" : "not working"} (${terms}) → ${then}`;
+}
+
+function cpWeekHtml(compiled, c) {
+  const rows = CP_DAYS.map(([d, label]) => {
+    const list = compiled.days?.[d] ?? [];
+    if (!list.length) return `<div class="cp-row empty"><span class="d">${label}</span><span class="ins">nothing</span><span class="src"></span></div>`;
+    return list.map((ins, i) => `<div class="cp-row"><span class="d">${i ? "" : label}</span><span class="ins">${cpInstruction(ins, c)}</span>
+      <span class="src" title="what you wrote">${esc(ins.source)}</span></div>`).join("");
+  }).join("");
+  const rules = compiled.rules?.length ? compiled.rules.map((r) => `<div class="cp-row"><span class="d">Rule</span><span class="ins">${cpRule(r)}</span>
+    <span class="src" title="what you wrote">${esc(r.source)}</span></div>`).join("") : "";
+  return `<div class="cp-week">${rows}${rules}</div>`;
+}
+
+function cpTaskHtml(t) {
+  const ch = t.choices ?? {};
+  const name = ch.libraryName ? ` ${esc(ch.libraryName)}` : t.kind === "post" ? ` “${esc(ch.instruction?.name ?? "")}”` : t.kind === "rule" ? " (from a rule)" : "";
+  const bits = [ch.hook?.name && `hook ${esc(ch.hook.name)}`, ch.angle?.name && `angle ${esc(ch.angle.name)}`, ch.cta?.name && `CTA ${esc(ch.cta.name)}`,
+    ch.postTime && `at ${esc(ch.postTime)}`].filter(Boolean).join(" · ");
+  const notes = [...(Array.isArray(ch.notes) ? ch.notes : [])];
+  if (t.kind === "post" && ch.sourceTaskId) notes.push("a kept campaign video with this name was used, so a Drive file held under the same name keeps waiting");
+  return `<li><span class="st ${esc(t.state)}">${esc(CP_STATE_WORD[t.state] ?? t.state)}</span> · ${esc(t.kind)}${name}${bits ? ` · ${bits}` : ""}
+    ${t.error ? `<span class="why err">${esc(t.error)}</span>` : ""}${notes.map((n) => `<span class="why">Note: ${esc(n)}</span>`).join("")}</li>`;
+}
+
+function cpTodayHtml(c) {
+  const today = cpToday[c.id];
+  if (!today) return `<div class="muted">Loading…</div>`;
+  if (today.error) return `<div class="cp-note err">Couldn't load today's videos: ${esc(today.error)}</div>`;
+  const counts = CP_COUNTS.map(([word, states]) => {
+    const n = today.tasks.filter((t) => states.includes(t.state)).length;
+    return `<span class="${esc(word.split(" ")[0])} ${n ? "" : "z"}">${n} ${word}</span>`;
+  }).join("");
+  return `<div class="cp-counts">${counts}</div>${today.tasks.length ? `<ul class="cp-tasks">${today.tasks.map(cpTaskHtml).join("")}</ul>` : ""}`;
+}
+
+function cpHistoryHtml(c) {
+  const h = cpHistory[c.id];
+  const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
+  const date = h?.date ?? cpLocalDate(yesterday);
+  const body = !h ? `<div class="muted">Loading…</div>` : h.error ? `<div class="cp-note err">${esc(h.error)}</div>`
+    : h.tasks.length ? `<ul class="cp-tasks">${h.tasks.map(cpTaskHtml).join("")}</ul>` : `<div class="muted">Nothing for this campaign on that day.</div>`;
+  return `<div class="row"><label for="cpHd${c.id}" style="margin:0">Day</label><input type="date" id="cpHd${c.id}" data-cp-hdate="${c.id}" value="${esc(date)}"></div>${body}`;
+}
+
+function cpChangesHtml(c) {
+  const ch = cpChanges[c.id];
+  if (!ch) return `<div class="muted">Loading…</div>`;
+  if (ch.error) return `<div class="cp-note err">${esc(ch.error)}</div>`;
+  if (!ch.changes.length) return `<div class="muted">No Autorun changes yet.</div>`;
+  return [...ch.changes].reverse().map((x) => `<div class="cp-change ${x.undoneAt ? "undone" : ""}">
+    <div><strong>${esc(x.agent)}</strong> · <span class="muted">${esc(new Date(x.atIso ?? x.at).toLocaleString())}</span><div class="rs">${esc(x.reason)}</div>
+      ${cpChangeNotes[x.id] ? `<div class="cp-note err">${esc(cpChangeNotes[x.id])}</div>` : ""}</div>
+    <div>${x.undoneAt ? `<span class="muted">undone</span>` : `<button type="button" data-cp-undo="${x.id}" data-cp-camp="${c.id}" data-focus="cp-undo-${x.id}">Undo</button>`}</div></div>`).join("");
+}
+
+function cpCardHtml(c) {
+  const preview = cpPreviews[c.id];
+  const draft = cpDrafts[c.id] ?? c.text;
+  const sets = status.accountSets ?? [];
+  const setOpts = [`<option value="" ${c.accountSetId === null ? "selected" : ""}>Default set</option>`]
+    .concat(sets.map((s) => `<option value="${s.id}" ${c.accountSetId === s.id ? "selected" : ""}>${esc(s.name)}</option>`));
+  if (c.accountSetId !== null && !sets.some((s) => s.id === c.accountSetId)) setOpts.push(`<option value="${c.accountSetId}" selected>Set ${esc(c.accountSetId)}</option>`);
+  const note = cpNotes[c.id];
+  const noteHtml = note ? `<div class="cp-note ${note.kind}" role="status">${esc(note.text)}${note.problems?.length ? `<ul>${note.problems.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>` : ""}</div>` : "";
+  let week;
+  if (preview) {
+    const stale = draft !== preview.text;
+    week = `<h3>Preview <span class="cp-preview-mark">not confirmed yet: nothing runs until you confirm it${stale ? " · the text box has changed since this preview" : ""}</span></h3>
+      ${cpWeekHtml(preview.compiled, c)}
+      ${preview.couldNotUnderstand.length ? `<div class="cp-unread"><strong>Couldn't understand</strong> (these lines are left out; reword them and preview again):
+        <ul>${preview.couldNotUnderstand.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></div>` : ""}`;
+  } else if (c.compiled) {
+    const stale = !c.confirmedForText;
+    week = `<h3>${stale ? "Last confirmed schedule" : "Schedule"} <span class="muted" style="font-weight:400">confirmed ${esc(new Date(c.confirmedAt).toLocaleString())}${stale ? " for older text; preview the current text and confirm it" : ""}</span></h3>
+      ${cpWeekHtml(c.compiled, c)}`;
+  } else week = `<h3>Schedule</h3><div class="muted">Write the week, then press Preview to see how FreePoster reads it.</div>`;
+  const open = (k) => (cpOpen.has(`${c.id}:${k}`) ? "open" : "");
+  return `<section class="cp-card" data-cp-card="${c.id}">
+    <div class="section-head"><h2 class="cp-name">${esc(c.name)}</h2>${cpChip(c)}</div>
+    <div class="cp-controls">
+      <label class="cp-switch"><input type="checkbox" id="cpEn${c.id}" data-cp-enabled="${c.id}" ${c.enabled ? "checked" : ""}> Enabled</label>
+      <label class="cp-switch cp-autorun ${c.autorun ? "on" : ""}" title="Lets the connected AI agent change this campaign"><input type="checkbox" id="cpAr${c.id}" data-cp-autorun="${c.id}" ${c.autorun ? "checked" : ""}> ⚠ Autorun</label>
+    </div>
+    <div class="cp-settings">
+      <div><label for="cpSet${c.id}">Account set</label><select id="cpSet${c.id}" data-cp-set="${c.id}">${setOpts.join("")}</select></div>
+      <div><label for="cpTimes${c.id}">Default post times</label><input type="text" id="cpTimes${c.id}" data-cp-times="${c.id}" value="${esc(c.defaultPostTimes.join(", "))}" placeholder="09:00, 17:30"></div>
+      <div><label for="cpCap${c.id}">Daily post cap</label><input type="number" id="cpCap${c.id}" data-cp-cap="${c.id}" min="1" max="100" step="1" value="${esc(c.dailyPostCap)}"></div>
+    </div>
+    <label for="cpText${c.id}">The week, in your words</label>
+    <textarea id="cpText${c.id}" data-cp-text="${c.id}" maxlength="20000" placeholder="On Sunday make and post 3 Fancy videos with Stop Scrolling hook, Myth Bust angle, and Free Guide call to action. On Monday post 'Gatekeeping_5.30.pm_Basic'. …">${esc(draft)}</textarea>
+    <div class="cp-buttons"><button type="button" id="cpPrev${c.id}" data-cp-preview="${c.id}" ${cpReading[c.id] ? "disabled" : ""}>${cpReading[c.id] ? "Reading…" : "Preview"}</button>
+      ${preview && !cpReading[c.id] ? `<button type="button" class="go" id="cpConf${c.id}" data-cp-confirm="${c.id}">Confirm this schedule</button>` : ""}</div>
+    ${noteHtml}
+    ${week}
+    <h3>Today</h3>${cpTodayHtml(c)}
+    <details class="cp-drawer" data-cp-drawer="history" data-cp-id="${c.id}" ${open("history")}><summary>History</summary>${open("history") ? cpHistoryHtml(c) : ""}</details>
+    <details class="cp-drawer" data-cp-drawer="changes" data-cp-id="${c.id}" ${open("changes")}><summary>Changes by Autorun</summary>${open("changes") ? cpChangesHtml(c) : ""}</details>
+  </section>`;
+}
+
+/** Applies a setting's answer (the campaign as it is now) and redraws. */
+function cpApply(id, r, okText) {
+  if (r.ok && r.body?.id === id) cp.campaigns = cp.campaigns.map((c) => (c.id === id ? r.body : c));
+  cpNotes[id] = r.ok ? (okText ? { kind: "ok", text: okText } : undefined) : { kind: "err", text: r.error, problems: r.problems };
+  keepFocus(renderCampaigns);
+}
+
+async function cpPreview(id) {
+  const text = $(`cpText${id}`).value;
+  const n = (cpReading[id] = ++cpReadSeq);
+  cpDrafts[id] = text;
+  cpNotes[id] = { kind: "ok", text: "Reading the text… (lines FreePoster can't read itself go to the AI, which can take a little while)" };
+  keepFocus(renderCampaigns);
+  const r = await cpCall("PUT", `/api/campaigns/${id}/text`, { text });
+  if (cpReading[id] !== n) return;
+  delete cpReading[id];
+  if (r.ok) {
+    cpPreviews[id] = { ...r.body, text };
+    const unread = r.body.couldNotUnderstand.length;
+    cpNotes[id] = { kind: unread ? "err" : "ok", text: unread ? `${unread} line${unread === 1 ? "" : "s"} couldn't be understood; see below.` : "Check the table, then confirm it." };
+  } else cpNotes[id] = { kind: "err", text: r.error, problems: r.problems };
+  await loadCampaigns(); // the text is saved now: the campaign pauses until this schedule is confirmed
+}
+
+async function cpConfirm(id, button) {
+  const p = cpPreviews[id];
+  if (!p) return;
+  const r = await cpBusy(button, () => cpCall("POST", `/api/campaigns/${id}/confirm`, { compiled: p.compiled, textSha: p.textSha }));
+  if (r.ok) { delete cpPreviews[id]; cpNotes[id] = { kind: "ok", text: r.body.enabled ? "Confirmed. It runs from now on." : "Confirmed. Switch on Enabled to run it." }; }
+  else if (r.status === 409) cpNotes[id] = { kind: "err", text: "The text changed since this preview — preview again." };
+  else cpNotes[id] = { kind: "err", text: r.error, problems: r.problems };
+  await loadCampaigns();
+}
+
+async function cpLoadDrawer(id, kind) {
+  if (kind === "changes") {
+    const r = await cpCall("GET", `/api/campaigns/${id}/changes`);
+    cpChanges[id] = r.ok ? { changes: r.body.changes } : { error: `Couldn't load the changes: ${r.error}` };
+  } else {
+    const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
+    const date = cpHistory[id]?.date ?? cpLocalDate(yesterday);
+    const r = await cpCall("GET", `/api/campaigns/${id}/tasks?date=${encodeURIComponent(date)}`);
+    cpHistory[id] = r.ok ? { date, tasks: r.body.tasks } : { date, error: `Couldn't load that day: ${r.error}` };
+  }
+  keepFocus(renderCampaigns);
+}
+
+function cpOpenAutorun(c) {
+  cpArFor = c.id;
+  $("cpArName").textContent = c.name;
+  $("autorun-warning").showModal();
+  $("cpArCancel").focus();
+}
+
+$("cpLibrary").addEventListener("click", (e) => { cpLibraryAction(e); });
+$("cpLibrary").addEventListener("change", (e) => { const box = e.target.closest("[data-cp-autopost]"); if (box) cpAutoPost(box); });
+$("cpLibrary").addEventListener("keydown", (e) => {
+  // Enter in a one-line field of a library form presses its Add / Save button
+  if (e.key !== "Enter" || e.target.tagName !== "INPUT" || e.target.type === "checkbox") return;
+  const form = e.target.closest(".cp-form");
+  const go = form?.querySelector("[data-cp-add], [data-cp-save], #cpTypeAdd");
+  if (go) { e.preventDefault(); go.click(); }
+});
+$("cpList").addEventListener("input", (e) => {
+  const t = e.target.closest("[data-cp-text]");
+  if (!t) return;
+  const id = Number(t.dataset.cpText);
+  cpDrafts[id] = t.value;
+});
+$("cpList").addEventListener("click", async (e) => {
+  const prev = e.target.closest("[data-cp-preview]");
+  if (prev) return cpPreview(Number(prev.dataset.cpPreview));
+  const conf = e.target.closest("[data-cp-confirm]");
+  if (conf) return cpConfirm(Number(conf.dataset.cpConfirm), conf);
+  const undo = e.target.closest("[data-cp-undo]");
+  if (undo) {
+    const changeId = Number(undo.dataset.cpUndo), id = Number(undo.dataset.cpCamp);
+    const r = await cpBusy(undo, () => cpCall("POST", `/api/campaigns/changes/${changeId}/undo`));
+    if (r.ok) delete cpChangeNotes[changeId];
+    else cpChangeNotes[changeId] = r.status === 409 ? `Couldn't undo: ${r.error}` : r.error;
+    if (r.ok) { delete cpPreviews[id]; delete cpDrafts[id]; } // the campaign's text and schedule are back to before
+    await cpLoadDrawer(id, "changes");
+    await loadCampaigns();
+  }
+});
+// <details> toggle events don't bubble: listen in the capture phase
+$("cpList").addEventListener("toggle", (e) => {
+  const d = e.target.closest?.("[data-cp-drawer]");
+  if (!d) return;
+  const key = `${d.dataset.cpId}:${d.dataset.cpDrawer}`;
+  if (d.open === cpOpen.has(key)) return; // a re-render, not the user
+  if (d.open) { cpOpen.add(key); cpLoadDrawer(Number(d.dataset.cpId), d.dataset.cpDrawer); }
+  else { cpOpen.delete(key); keepFocus(renderCampaigns); }
+}, true);
+$("cpList").addEventListener("change", async (e) => {
+  const t = e.target;
+  if (t.dataset.cpHdate) {
+    const id = Number(t.dataset.cpHdate);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(t.value)) return;
+    cpHistory[id] = { date: t.value };
+    keepFocus(renderCampaigns);
+    return cpLoadDrawer(id, "history");
+  }
+  if (t.dataset.cpEnabled) {
+    const id = Number(t.dataset.cpEnabled);
+    const r = await cpBusy(t, () => cpCall("PUT", `/api/campaigns/${id}/enabled`, { on: t.checked }));
+    return cpApply(id, r, r.ok ? (t.checked ? (r.body.runnable ? "Enabled: it runs." : "Enabled; it runs once its schedule is confirmed.") : "Off: nothing new is made or posted for it.") : null);
+  }
+  if (t.dataset.cpAutorun) {
+    const id = Number(t.dataset.cpAutorun);
+    if (t.checked) { t.checked = false; return cpOpenAutorun(cpCampaign(id)); } // turned on only from the dialog
+    const r = await cpBusy(t, () => cpCall("PUT", `/api/campaigns/${id}/autorun`, { on: false }));
+    return cpApply(id, r, r.ok ? "Autorun is off: only you change this campaign." : null);
+  }
+  if (t.dataset.cpSet !== undefined && t.matches("select")) {
+    const id = Number(t.dataset.cpSet);
+    const r = await cpBusy(t, () => cpCall("PUT", `/api/campaigns/${id}/account-set`, { accountSetId: t.value === "" ? null : Number(t.value) }));
+    return cpApply(id, r, r.ok ? "Account set saved." : null);
+  }
+  if (t.dataset.cpTimes) {
+    const id = Number(t.dataset.cpTimes);
+    const times = t.value.split(/[\s,]+/).filter(Boolean).map((x) => (/^\d:\d\d$/.test(x) ? `0${x}` : x));
+    const bad = times.filter((x) => !/^([01]\d|2[0-3]):[0-5]\d$/.test(x));
+    if (bad.length) { cpNotes[id] = { kind: "err", text: `Post times are 24-hour HH:MM, like 09:00 or 17:30 (not ${bad.join(", ")}).` }; return keepFocus(renderCampaigns); }
+    const r = await cpBusy(t, () => cpCall("PUT", `/api/campaigns/${id}/post-times`, { times }));
+    return cpApply(id, r, r.ok ? (r.body.defaultPostTimes.length ? `Default post times: ${r.body.defaultPostTimes.join(", ")}.` : "No default post times.") : null);
+  }
+  if (t.dataset.cpCap) {
+    const id = Number(t.dataset.cpCap);
+    const cap = Number(t.value);
+    if (!Number.isInteger(cap) || cap < 1 || cap > 100) { cpNotes[id] = { kind: "err", text: "The daily post cap is a whole number from 1 to 100." }; return keepFocus(renderCampaigns); }
+    const r = await cpBusy(t, () => cpCall("PUT", `/api/campaigns/${id}/cap`, { cap }));
+    return cpApply(id, r, r.ok ? `At most ${cap} post${cap === 1 ? "" : "s"} a day.` : null);
+  }
+});
+$("cpArCancel").addEventListener("click", () => $("autorun-warning").close());
+$("autorun-warning").addEventListener("close", () => { const id = cpArFor; cpArFor = null; if (id !== null) $(`cpAr${id}`)?.focus(); });
+$("cpArOk").addEventListener("click", async (e) => {
+  const id = cpArFor;
+  const r = await cpBusy(e.currentTarget, () => cpCall("PUT", `/api/campaigns/${id}/autorun`, { on: true }));
+  $("autorun-warning").close();
+  cpApply(id, r, r.ok ? "Autorun is on. Its changes are listed under Changes, each with an Undo." : null);
+});
+$("cpStop").addEventListener("click", async (e) => {
+  const r = await cpBusy(e.currentTarget, () => cpCall("POST", "/api/campaigns/stop"));
+  if (!r.ok) return banner("err", `Couldn't stop the campaigns: ${r.error}`);
+  banner("ok", `Campaigns are stopped.${r.body.held ? ` ${r.body.held} post${r.body.held === 1 ? " is" : "s are"} held.` : ""}`);
+  await loadCampaigns();
+});
+$("cpKilled").addEventListener("click", async (e) => {
+  const b = e.target.closest("#cpResume");
+  if (!b || !confirm("Resume all campaigns?\n\nEnabled campaigns start making videos again, and held posts go out: at their own time if it is still ahead, else at the next free post time.")) return;
+  const r = await cpBusy(b, () => cpCall("POST", "/api/campaigns/resume"));
+  if (!r.ok) return banner("err", `Couldn't resume the campaigns: ${r.error}`);
+  banner("ok", `Campaigns resumed.${r.body.released ? ` ${r.body.released} held post${r.body.released === 1 ? "" : "s"} released.` : ""}`);
+  await loadCampaigns();
+});
+$("cpNew").addEventListener("click", async (e) => {
+  const name = prompt("Name the campaign (e.g. Weekday Growth):")?.trim();
+  if (!name) return;
+  const r = await cpBusy(e.currentTarget, () => cpCall("POST", "/api/campaigns", { name }));
+  if (!r.ok) return banner("err", `Couldn't make the campaign: ${r.error}`);
+  await loadCampaigns();
+  $(`cpText${r.body.id}`)?.focus();
+});
+// Today's counts move as videos are made and posted; keep up while the tab shows, but not under someone typing
+// in a field (a redraw would drop a half-typed library entry or cap).
+setInterval(() => {
+  const typing = $("campaigns").contains(document.activeElement) && document.activeElement.matches("input:not([type=checkbox]), textarea, select");
+  if (!$("campaigns").hidden && !$("autorun-warning").open && !typing) loadCampaigns();
+}, 15000);
 
 loadStatus().then(() => {
   updateCounters();

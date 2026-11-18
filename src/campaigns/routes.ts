@@ -62,7 +62,7 @@ function campaignRoutes(app: FastifyInstance, store: Store, worker?: CampaignWor
   /** The campaign as the tab shows it. */
   const view = (c: Campaign) => ({
     id: c.id, name: c.name, text: c.text, textSha: c.textSha, compiled: c.compiled, enabled: c.enabled, autorun: c.autorun,
-    runnable: cs.isRunnable(c), confirmedAt: c.confirmedAt, accountSetId: c.accountSetId, defaultPostTimes: c.defaultPostTimes,
+    runnable: cs.isRunnable(c), confirmedForText: c.compiledSha !== null && c.compiledSha === c.textSha, confirmedAt: c.confirmedAt, accountSetId: c.accountSetId, defaultPostTimes: c.defaultPostTimes,
     dailyPostCap: c.dailyPostCap, excluded: cs.excluded(c.id),
   });
   /** Resolves `:id` to a campaign, or answers 400/404 itself. */
