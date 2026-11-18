@@ -15,6 +15,7 @@ export interface GraphError {
   code?: number;
   error_subcode?: number;
   is_transient?: boolean;
+  message?: string;
 }
 export class FatalError extends Error {
   /** the Meta Graph `error` object, when the response carried one */

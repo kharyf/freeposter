@@ -1,16 +1,17 @@
 import { openAsBlob } from "node:fs";
 import { config } from "../config.ts";
 import { FatalError, requestJson } from "../http.ts";
-import { coverMs, pollUntil, utf16Length, type Publisher } from "./base.ts";
-import { graph, metaAuthorizeUrl, metaPages } from "./meta.ts";
+import { Gone, coverMs, pollUntil, utf16Length, type Publisher } from "./base.ts";
+import { graph, graphInsights, metaAuthorizeUrl, metaPages } from "./meta.ts";
 
 // Docs: https://developers.facebook.com/docs/instagram-platform/content-publishing/resumable-uploads
 // Requires an Instagram Business/Creator account linked to a Facebook Page.
 
+const INSIGHT_METRICS = "reach,views,likes,comments,shares,saved,total_interactions,ig_reels_avg_watch_time";
+
 export const instagram: Publisher = {
   platform: "instagram",
   label: "Instagram Reels",
-  analyticsScopes: [],
   minDurationSec: 3,
   maxDurationSec: () => 900,
 
@@ -28,6 +29,7 @@ export const instagram: Publisher = {
       "pages_show_list",
       "pages_read_engagement",
       "business_management",
+      "instagram_manage_insights",
     ]);
   },
 
@@ -150,6 +152,17 @@ export const instagram: Publisher = {
 
     const m = await requestJson(`${graph()}/${progress.mediaId}?fields=permalink`, { headers: auth });
     return { url: m.permalink };
+  },
+
+  analyticsScopes: ["instagram_manage_insights"],
+
+  async metrics(ctx) {
+    const mediaId = ctx.progress.mediaId;
+    if (!mediaId) throw new Gone("no Instagram media id recorded for this job");
+    const data = await graphInsights(`${graph()}/${mediaId}/insights?metric=${INSIGHT_METRICS}`, ctx.account.accessToken, "Instagram");
+    const raw: Record<string, number> = {};
+    for (const d of data) if (typeof d.value === "number") raw[d.name] = d.value;
+    return { views: raw.views ?? null, viewsKind: "views", raw, retention: null };
   },
 };
 

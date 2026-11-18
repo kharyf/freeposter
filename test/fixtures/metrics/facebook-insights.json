@@ -1,0 +1,9 @@
+{
+  "data": [
+    { "name": "total_video_views", "period": "lifetime", "values": [{ "value": 2300 }], "id": "2/video_insights/total_video_views/lifetime" },
+    { "name": "total_video_avg_time_watched", "period": "lifetime", "values": [{ "value": 5100 }], "id": "2/video_insights/total_video_avg_time_watched/lifetime" },
+    { "name": "total_video_impressions_unique", "period": "lifetime", "values": [{ "value": 1900 }], "id": "2/video_insights/total_video_impressions_unique/lifetime" },
+    { "name": "total_video_reactions_by_type_total", "period": "lifetime", "values": [{ "value": { "like": 40, "love": 10, "wow": 2 } }], "id": "2/video_insights/total_video_reactions_by_type_total/lifetime" },
+    { "name": "total_video_stories_by_action_type", "period": "lifetime", "values": [{ "value": { "share": 6, "comment": 9, "like": 52 } }], "id": "2/video_insights/total_video_stories_by_action_type/lifetime" }
+  ]
+}

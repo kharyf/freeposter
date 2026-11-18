@@ -1,6 +1,7 @@
 import { config, redirectUri } from "../config.ts";
-import { requestJson } from "../http.ts";
+import { FatalError, requestJson } from "../http.ts";
 import type { Platform } from "../types.ts";
+import { Gone, NeedsPermission } from "./base.ts";
 
 // Facebook Login for Business serves both Facebook Pages and the Instagram accounts linked to them.
 // (Instagram's own "Instagram Login" can't take direct byte uploads, only public video URLs.)
@@ -43,4 +44,18 @@ export async function metaPages(platform: Platform, code: string, pageFields: st
     `${graph()}/me/accounts?${new URLSearchParams({ fields: pageFields, limit: "100", access_token: long.access_token })}`,
   );
   return pages.data ?? [];
+}
+
+/** GET a Graph insights edge ({ data: [{ name, values: [{ value }] }] }); maps permission and missing-object errors. */
+export async function graphInsights(url: string, token: string, what: string): Promise<{ name: string; value: unknown }[]> {
+  let r;
+  try {
+    r = await requestJson(url, { headers: { authorization: `OAuth ${token}` } });
+  } catch (err) {
+    const g = err instanceof FatalError ? err.graph : undefined;
+    if (g?.code === 10 || g?.code === 200) throw new NeedsPermission(`reconnect the account to allow ${what} insights`);
+    if (g?.code === 100 && (g.error_subcode === 33 || /does not exist/i.test(g.message ?? ""))) throw new Gone(`${what} no longer exists`);
+    throw err;
+  }
+  return ((r.data ?? []) as any[]).map((d) => ({ name: String(d.name), value: d.values?.[0]?.value }));
 }

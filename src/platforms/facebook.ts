@@ -1,8 +1,8 @@
 import { openAsBlob } from "node:fs";
 import { config } from "../config.ts";
 import { FatalError, requestJson } from "../http.ts";
-import { pollUntil, type Publisher } from "./base.ts";
-import { graph, metaAuthorizeUrl, metaPages } from "./meta.ts";
+import { Gone, pollUntil, type Publisher } from "./base.ts";
+import { graph, graphInsights, metaAuthorizeUrl, metaPages } from "./meta.ts";
 
 // Docs: https://developers.facebook.com/docs/video-api/guides/reels-publishing
 // Facebook only allows API publishing to Pages; personal profiles are not reachable.
@@ -10,10 +10,14 @@ import { graph, metaAuthorizeUrl, metaPages } from "./meta.ts";
 /** how long a just-finished reel may be reported as nonexistent before we believe it */
 const NOT_FOUND_GRACE_MS = 5 * 60_000;
 
+const INSIGHT_METRICS = [
+  "total_video_views", "total_video_plays", "total_video_avg_time_watched", "total_video_impressions_unique",
+  "total_video_reactions_by_type_total", "total_video_stories_by_action_type",
+].join(",");
+
 export const facebook: Publisher = {
   platform: "facebook",
   label: "Facebook Page Reels",
-  analyticsScopes: [],
   minDurationSec: 3,
   maxDurationSec: () => 90,
 
@@ -22,7 +26,7 @@ export const facebook: Publisher = {
   },
 
   authorizeUrl(state) {
-    return metaAuthorizeUrl("facebook", state, ["pages_show_list", "pages_read_engagement", "pages_manage_posts", "business_management"]);
+    return metaAuthorizeUrl("facebook", state, ["pages_show_list", "pages_read_engagement", "pages_manage_posts", "business_management", "read_insights"]);
   },
 
   async exchangeCode(code) {
@@ -117,4 +121,25 @@ export const facebook: Publisher = {
     const link: string = v.permalink_url ?? `/reel/${progress.videoId}`;
     return { url: link.startsWith("http") ? link : `https://www.facebook.com${link}` };
   },
+
+  analyticsScopes: ["read_insights"],
+
+  async metrics(ctx) {
+    const videoId = ctx.progress.videoId;
+    if (!videoId) throw new Gone("no Facebook video id recorded for this job");
+    const data = await graphInsights(`${graph()}/${videoId}/video_insights?metric=${INSIGHT_METRICS}`, ctx.account.accessToken, "Facebook");
+    const raw: Record<string, number> = {};
+    for (const d of data) {
+      if (typeof d.value === "number") raw[d.name] = d.value;
+      else if (d.name === "total_video_reactions_by_type_total") raw.reactions = sum(d.value);
+      else if (d.name === "total_video_stories_by_action_type") {
+        const by = (d.value ?? {}) as Record<string, number>;
+        if (typeof by.share === "number") raw.shares = by.share;
+        if (typeof by.comment === "number") raw.comments = by.comment;
+      }
+    }
+    return { views: raw.total_video_views ?? raw.total_video_plays ?? null, viewsKind: "views", raw, retention: null };
+  },
 };
+
+const sum = (v: unknown) => Object.values((v ?? {}) as Record<string, unknown>).reduce<number>((a, n) => a + (typeof n === "number" ? n : 0), 0);

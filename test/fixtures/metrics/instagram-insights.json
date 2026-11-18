@@ -1,0 +1,12 @@
+{
+  "data": [
+    { "name": "reach", "period": "lifetime", "values": [{ "value": 800 }], "title": "Accounts reached", "id": "1/insights/reach/lifetime" },
+    { "name": "views", "period": "lifetime", "values": [{ "value": 1500 }], "id": "1/insights/views/lifetime" },
+    { "name": "likes", "period": "lifetime", "values": [{ "value": 90 }], "id": "1/insights/likes/lifetime" },
+    { "name": "comments", "period": "lifetime", "values": [{ "value": 7 }], "id": "1/insights/comments/lifetime" },
+    { "name": "shares", "period": "lifetime", "values": [{ "value": 12 }], "id": "1/insights/shares/lifetime" },
+    { "name": "saved", "period": "lifetime", "values": [{ "value": 20 }], "id": "1/insights/saved/lifetime" },
+    { "name": "total_interactions", "period": "lifetime", "values": [{ "value": 129 }], "id": "1/insights/total_interactions/lifetime" },
+    { "name": "ig_reels_avg_watch_time", "period": "lifetime", "values": [{ "value": 4210.5 }], "id": "1/insights/ig_reels_avg_watch_time/lifetime" }
+  ]
+}

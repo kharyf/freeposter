@@ -1,0 +1,6 @@
+{
+  "data": [
+    { "name": "total_video_plays", "period": "lifetime", "values": [{ "value": 640 }] },
+    { "name": "total_video_impressions_unique", "period": "lifetime", "values": [{ "value": 500 }] }
+  ]
+}
