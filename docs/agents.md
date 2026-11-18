@@ -1,6 +1,6 @@
 # Using FreePoster from any AI agent
 
-FreePoster works with whichever agent you prefer: Claude Code, Codex, Cursor, Claude Desktop, Hermes Agent, or anything else that speaks MCP. You ask your agent for a video, it makes it with FreePoster (an edit or a production), and asks FreePoster to send it to you for review. Only your tap on **Approve**, on Telegram or in the FreePoster window, posts it. No agent can, and telling an agent "yes" doesn't.
+FreePoster works with whichever agent you prefer: Claude Code, Codex, Cursor, Claude Desktop, Hermes Agent, or anything else that speaks MCP. You ask your agent for a video, it makes it with FreePoster (an edit or a production), and asks FreePoster to send it to you for review. Everything waits for your approval: your tap on **Approve**, on Telegram or in the FreePoster window, posts it. An agent can't post a video on its own unless you've let that type post without approval, and telling an agent "yes" still doesn't count.
 
 Every agent gets the same three things, and none of them is tied to one agent:
 
