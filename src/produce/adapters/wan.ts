@@ -28,6 +28,7 @@ export const wanCommand = (dir: () => string) => (args: string[]) => ({ bin: wan
 
 /** The user's own tuned settings for a model (WanGP's settings/<model>_settings.json), else {}. */
 export function ownSettings(dir: string, model: string): Record<string, unknown> {
+  if (!dir) return {};
   const own = join(dir, "settings", `${model}_settings.json`);
   if (existsSync(own)) try { return JSON.parse(readFileSync(own, "utf8")); } catch {}
   return {};

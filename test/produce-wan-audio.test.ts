@@ -133,9 +133,10 @@ test("parseSpec refuses the internal-only model, audio_guide and audio.music fro
   assert.throws(() => parseSpec({ shots: [wan], audio: { music: "C:/m.wav" } }, ctx), (e: SpecError) => e.problems.some((p) => /unknown field "music"/.test(p)));
 });
 
-/** Mean loudness of a file's sound, in dB (−91 is silence). */
-function meanVolume(path: string): number {
-  const r = spawnSync("ffmpeg", ["-hide_banner", "-i", path, "-af", "volumedetect", "-f", "null", "-"], { encoding: "utf8" });
+/** Mean loudness of a file's sound, or of just the band around `hz`, in dB (−91 is silence). */
+function meanVolume(path: string, hz?: number): number {
+  const band = hz ? `bandpass=f=${hz}:width_type=q:w=20,` : "";
+  const r = spawnSync("ffmpeg", ["-hide_banner", "-i", path, "-af", `${band}volumedetect`, "-f", "null", "-"], { encoding: "utf8" });
   return Number(/mean_volume: (-?[\d.]+) dB/.exec(r.stderr)?.[1] ?? -91);
 }
 
@@ -148,13 +149,16 @@ test("assemble mixes the music under the voiceover; music alone still gives the 
   const r = await assemble([{ path: silent, durationSec: 2 }], spec, o, { sfxPath: () => "" });
   assert.ok(Math.abs(r.durationSec - 2) < 0.15, `got ${r.durationSec}`);
   assert.ok((await probe(o.final)).hasAudio);
-  assert.ok(meanVolume(o.final) > -40, `music should be heard, got ${meanVolume(o.final)} dB`);
+  // The music file is about −21 dB; after −18 dB it would be about −39, but the loudness pass evens it back out.
+  assert.ok(meanVolume(o.final) > -25, `music alone should be evened out, got ${meanVolume(o.final)} dB`);
 
-  // Under a voiceover the music sits 18 dB down: the mix stays the voiceover's level, not the sum of both.
-  const vo = makeVideo(d, "vo.wav", ["-f", "lavfi", "-i", "sine=frequency=440", "-t", "5"]);
+  // Under a voiceover the music sits 18 dB down. Voiceover and music are equally loud sines at different pitches,
+  // so each one's level in the mix can be read separately.
+  const vo = makeVideo(d, "vo.wav", ["-f", "lavfi", "-i", "sine=frequency=880", "-t", "5"]);
   const o2 = { final: join(d, "final2.mp4"), preview: join(d, "preview2.mp4"), thumb: join(d, "thumb2.jpg") };
   await assemble([{ path: silent, durationSec: 2 }], { ...spec, audio: { voiceover: vo, music } }, o2, { sfxPath: () => "" });
-  assert.ok((await probe(o2.final)).hasAudio);
+  const under = meanVolume(o2.final, 880) - meanVolume(o2.final, 220);
+  assert.ok(Math.abs(under - 18) < 3, `music should sit 18 dB under the voiceover, got ${under.toFixed(1)} dB`);
 });
 
 test("wangpModels sorts a WanGP install's models into video, speech, audio and presenter; image and 3D models aren't video", () => {
@@ -180,4 +184,27 @@ test("wangpModels sorts a WanGP install's models into video, speech, audio and p
     presenter: ["infinitetalk"],
   });
   assert.deepEqual(wangpModels(tmp()), { video: [], speech: [], audio: [], presenter: [] });
+});
+
+test("a leftover speech.wav from an earlier run is never handed back as the new voiceover", async () => {
+  const dir = wangp({ chatterbox: { name: "TTS Chatterbox", architecture: "chatterbox" } });
+  const out = tmp();
+  writeFileSync(join(out, "speech.wav"), "the old take");
+  process.env.FAKE_MODE = "silent"; // WanGP exits 0 but writes nothing
+  try {
+    await assert.rejects(generateSpeech("hi", out, { dir: () => dir, model: () => "chatterbox", command: fakeAudio }), (e: Error) => e instanceof Fatal && /wrote no audio/.test(e.message));
+  } finally {
+    delete process.env.FAKE_MODE;
+  }
+});
+
+test("wangpModels with no WanGP folder lists nothing, even where the current folder has a defaults/", () => {
+  const cwd = process.cwd();
+  const here = wangp({ t2v: { name: "Wan", architecture: "t2v" } });
+  process.chdir(here);
+  try {
+    assert.deepEqual(wangpModels(""), { video: [], speech: [], audio: [], presenter: [] });
+  } finally {
+    process.chdir(cwd);
+  }
 });

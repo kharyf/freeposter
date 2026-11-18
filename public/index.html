@@ -829,9 +829,14 @@ function wangpPicker(key, group, label, hint) {
 async function loadWangpModels() {
   const pickers = $("stepBody").querySelectorAll("select[data-wangp]");
   if (!pickers.length) return;
-  const res = await fetch("/api/produce/wangp-models");
-  if (!res.ok) return;
-  const models = await res.json();
+  let models;
+  try {
+    const res = await fetch("/api/produce/wangp-models");
+    if (!res.ok) return;
+    models = await res.json();
+  } catch {
+    return; // the pickers keep the saved choice; saving the step still works
+  }
   for (const select of pickers) {
     const current = select.value;
     // The saved choice stays listed even when this install doesn't have it, so saving the step doesn't drop it.

@@ -132,7 +132,14 @@ export class ProductionWorker {
 
   /** Checks the spec, copies its input files in (by content, so a later change to the original doesn't matter), and plans its shots. */
   async prepare(raw: unknown): Promise<{ spec: ProductionSpec; plan: ShotPlan[] }> {
-    const spec = parseSpec(raw, this.context());
+    return this.stage(parseSpec(raw, this.context()));
+  }
+
+  /**
+   * Copies a checked spec's input files in by content and plans its shots. Also takes specs FreePoster builds itself,
+   * whose internal fields (a presenter shot's audio_guide, audio.music) are files too and are copied the same way.
+   */
+  async stage(spec: ProductionSpec): Promise<{ spec: ProductionSpec; plan: ShotPlan[] }> {
     const inputs = join(this.dir, "inputs");
     mkdirSync(inputs, { recursive: true });
     const copy = async (path: string) => {
@@ -145,10 +152,12 @@ export class ProductionWorker {
     for (const s of spec.shots) {
       if (s.kind === "file" || s.kind === "edit") s.path = await copy(s.path);
       if (s.kind === "wan" && s.image) s.image = await copy(s.image);
+      if (s.kind === "wan" && s.audio_guide) s.audio_guide = await copy(s.audio_guide);
       // Copied by content like the rest, but keeping each one's name: the HTML or component asks for it by that name.
       if (s.kind === "hyperframes" || s.kind === "remotion") s.assets = await Promise.all(s.assets.map(async (a) => ({ name: a.name, path: await copy(a.path) })));
     }
     if (spec.audio.voiceover) spec.audio.voiceover = await copy(spec.audio.voiceover);
+    if (spec.audio.music) spec.audio.music = await copy(spec.audio.music);
     const plan = spec.shots.map((s): ShotPlan => {
       const adapter = this.adapters[s.kind];
       const { id: _id, ...content } = s;

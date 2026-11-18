@@ -2,6 +2,8 @@
 // runner as the video shots (adapters/wan.ts): one settings file, `wgp.py --process` checked with --dry-run, then run.
 // WanGP saves an audio-only model's result as <output_filename>.<codec> in --output-dir; the codec is the user's
 // "audio_stand_alone_output_codec" (wav unless they chose flac or mp3; wgp.py and shared/utils/audio_video.py).
+import { readdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { newestFile, ownSettings, runWanGP, wanCommand } from "./adapters/wan.ts";
 import { Fatal } from "./adapters/errors.ts";
 import { wangpArchitecture, wangpAudioModel, wangpDir, wangpSpeechModel } from "./tools.ts";
@@ -24,11 +26,14 @@ const AUDIO_FILE = /\.(wav|flac|mp3)$/i;
 
 async function run(kind: "speech" | "music", settings: Record<string, unknown>, outDir: string, opts: WanAudioOptions & { dir: () => string }) {
   const d = opts.dir();
+  const output = new RegExp(`^${kind}.*${AUDIO_FILE.source}`, "i");
+  // An earlier run's file would pass for this one's (and WanGP would name the new one speech(1).wav beside it).
+  for (const f of readdirSync(outDir)) if (output.test(f)) rmSync(join(outDir, f), { force: true });
   const tail = await runWanGP({
     dir: d, command: opts.command ?? wanCommand(opts.dir), settings, workDir: outDir, settingsName: `wan-${kind}-settings.json`,
     label: kind, signal: opts.signal ?? new AbortController().signal, onProgress: opts.onProgress,
   });
-  const file = newestFile(outDir, new RegExp(`^${kind}.*${AUDIO_FILE.source}`, "i"));
+  const file = newestFile(outDir, output);
   if (!file) throw new Fatal(`${kind}: WanGP finished but wrote no audio:\n${tail}`);
   return file;
 }

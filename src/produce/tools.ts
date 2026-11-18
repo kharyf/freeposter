@@ -78,6 +78,7 @@ function wangpGroup(model: { architecture?: unknown; name?: unknown; image_outpu
 
 /** A WanGP model's definition (finetunes/ wins over defaults/), or null. */
 function wangpDefinition(dir: string, id: string): { architecture?: unknown; name?: unknown; image_outputs?: unknown } | null {
+  if (!dir) return null;
   for (const folder of ["finetunes", "defaults"]) {
     try {
       const model = JSON.parse(readFileSync(join(dir, folder, `${id}.json`), "utf8"))?.model;
@@ -93,6 +94,8 @@ export const wangpArchitecture = (dir: string, id: string) => String(wangpDefini
 /** Every model the WanGP install at `dir` has, by what it makes, each list sorted. Reads files only when called. */
 export function wangpModels(dir: string): Record<WanGPGroup, string[]> {
   const groups: Record<WanGPGroup, string[]> = { video: [], speech: [], audio: [], presenter: [] };
+  // No WanGP found: nothing, rather than whatever defaults/ the current folder happens to have.
+  if (!dir) return groups;
   const ids = new Set<string>();
   for (const folder of ["defaults", "finetunes"]) {
     try {

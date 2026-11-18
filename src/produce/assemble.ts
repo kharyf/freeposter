@@ -79,6 +79,7 @@ export async function assemble(
     next++;
   }
   // A soundtrack sits 18 dB under the voiceover; on its own it is still the video's sound.
+  // Alone, the −18 dB is undone by the loudness pass below (loudnorm to −14 LUFS), so music-only videos aren't quiet.
   if (spec.audio.music) {
     inputs.push("-i", spec.audio.music);
     parts.push(`[${next}:a:0]atrim=0:${total.toFixed(3)},asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo,volume=-18dB[music]`);

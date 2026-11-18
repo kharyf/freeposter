@@ -1,10 +1,11 @@
 import "./isolated-home.ts";
 import assert from "node:assert/strict";
-import { copyFileSync, existsSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { before, test } from "node:test";
 import { config } from "../src/config.ts";
 import { Fatal, Retryable, type Adapters, type ShotAdapter } from "../src/produce/adapters/index.ts";
+import type { ProductionSpec, WanShot } from "../src/produce/spec.ts";
 import { ProductionWorker } from "../src/produce/worker.ts";
 import { makeVideo, newStore, tmp } from "./helpers.ts";
 
@@ -208,4 +209,27 @@ test("a revise that changes no shots still re-assembles", async () => {
   assert.equal(done.state, "ready");
   assert.equal(done.revision, 2);
   assert.deepEqual(stats.renders, []);
+});
+
+test("a presenter shot's voiceover and the music are copied by content: a new voiceover at the same path renders again", async () => {
+  const w = new ProductionWorker(newStore(), { adapters: fakes().adapters, dir: tmp() });
+  const d = tmp();
+  const vo = join(d, "speech.wav"); // generateSpeech always writes <outDir>/speech.wav
+  const music = join(d, "music.wav");
+  const spec = (): ProductionSpec => ({
+    version: 1, title: "", transitions: { default: { type: "cut", sec: 0 } }, sfx: [], captions: { source: "none" }, post: null,
+    shots: [{ id: "host", kind: "wan", duration_sec: 2, prompt: "a host talking", negative_prompt: "", image: null, seed: 1, model: "infinitetalk", audio_guide: vo }],
+    audio: { voiceover: vo, music },
+  });
+  writeFileSync(vo, "first take");
+  writeFileSync(music, "track");
+  const first = await w.stage(spec());
+  writeFileSync(vo, "second take");
+  const second = await w.stage(spec());
+  assert.notEqual(first.plan[0].inputKey, second.plan[0].inputKey, "an old lip-sync must not be reused for a new voiceover");
+  const shot = second.spec.shots[0] as WanShot;
+  assert.notEqual(shot.audio_guide, vo, "the shot renders from the copied file, not the path generateSpeech overwrites");
+  assert.equal(readFileSync(shot.audio_guide!, "utf8"), "second take");
+  assert.notEqual(second.spec.audio.music, music);
+  assert.equal(readFileSync(second.spec.audio.music!, "utf8"), "track");
 });
