@@ -17,7 +17,8 @@ const DAY_WORDS: Record<Day, string[]> = {
 const DAY_ALT = DAYS.flatMap((d) => DAY_WORDS[d]).sort((a, b) => b.length - a.length).join("|");
 const dayOf = (word: string): Day => DAYS.find((d) => DAY_WORDS[d].includes(word.toLowerCase()))!;
 const DAY_PREFIX = new RegExp(`^(?:on\\s+|every\\s+)?(${DAY_ALT})s?\\.?(?:\\s*[,:-]\\s*|\\s+)`, "i");
-const DAY_ANYWHERE = new RegExp(`\\b(${DAY_ALT})s?\\b`, "i");
+// An unread line's day: one the line starts with, or one after "on"/"every" ("I sat down" names no day).
+const DAY_NAMED = new RegExp(`(?:^|\\b(?:on|every)\\s+)(${DAY_ALT})s?(?![a-z0-9])`, "i");
 
 const NUMBER_WORDS = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen",
   "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty"];
@@ -42,10 +43,13 @@ const labelOf = (s: string): Rule["when"]["label"] => {
 const key = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
 const pad = (n: number) => String(n).padStart(2, "0");
 
-/** "6pm", "5.30.pm", "5:30 pm" (12-hour) or "18:00" (24-hour) as "HH:MM". */
+/**
+ * "6pm", "5.30.pm", "5:30 pm" (12-hour) or "18:00" / "05:30" (24-hour) as "HH:MM". A one-digit hour with no am/pm
+ * ("5:30") could be morning or evening, so it isn't read: never guess.
+ */
 function clock(s: string): string | null {
   const t = s.trim();
-  const h24 = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(t);
+  const h24 = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(t);
   if (h24) return `${pad(Number(h24[1]))}:${h24[2]}`;
   const r = readTime(t);
   return r ? `${pad(r.h)}:${pad(r.m)}` : null;
@@ -157,6 +161,7 @@ function makeClauses(text: string, vocab: Vocabulary): Clauses | null {
   return c;
 }
 
+/** A style written by its token or id (ignoring case and spaces), as the style's id; make and post lines share it. */
 function styleId(name: string, vocab: Vocabulary): string | null {
   const n = key(name).replace(/\s/g, "");
   return vocab.styles.find((st) => st.token.toLowerCase() === n || st.id.toLowerCase().replace(/\s/g, "") === n)?.id ?? null;
@@ -189,8 +194,8 @@ function readPost(rest: string, source: string, vocab: Vocabulary): PostInstruct
       at = clock(part);
       if (!at) return null;
       slot = 1;
-    } else if (slot < 2 && vocab.styles.some((s) => s.token.toLowerCase() === part.toLowerCase())) {
-      style = vocab.styles.find((s) => s.token.toLowerCase() === part.toLowerCase())!.id;
+    } else if (slot < 2 && styleId(part, vocab)) {
+      style = styleId(part, vocab);
       slot = 2;
     } else return null;
   }
@@ -210,7 +215,8 @@ function readRule(sentence: string): Rule | null {
     const m = re.exec(s);
     if (m) { use(m); s = s.slice(0, m.index) + " " + s.slice(m.index + m[0].length); }
   };
-  take(/\b(?:top|bottom)\s+(\d{1,2})\s*(?:%|percent\b)/i, (m) => { when.thresholdPct = Number(m[1]); });
+  let side: string | null = null;
+  take(/\b(top|bottom)\s+(\d{1,2})\s*(?:%|percent\b)/i, (m) => { side = m[1].toLowerCase(); when.thresholdPct = Number(m[2]); });
   take(/\b(?:at|after)\s+(?:(24|72)\s*(?:hours?|h)|(7)\s*(?:days?|d))\b/i, (m) => { when.age = m[2] ? "7d" : m[1] === "24" ? "24h" : "72h"; });
   take(new RegExp(`\\b(?:after|across(?:\\s+at\\s+least)?|at\\s+least)\\s+(${NUM})\\s+videos?\\b`, "i"), (m) => { when.minVideos = readNumber(m[1]); });
   s = s.replace(/\(\s*[,\s]*\)/g, " ").replace(/\s+,/g, ",").replace(/,(\s*,)+/g, ",").replace(/\s+/g, " ").trim();
@@ -221,14 +227,19 @@ function readRule(sentence: string): Rule | null {
   when.label = labelOf(m[1]);
   when.scope = m[2]?.toLowerCase() === "account" ? "account" : "campaign";
   when.is = /^not/i.test(m[3]) ? "not_working" : "working";
+  // "working" is the top of the scores and "not working" the bottom: "not working (top 10%)" contradicts itself.
+  if (side !== null && side !== (when.is === "working" ? "top" : "bottom")) return null;
   const action = m[4];
   const stop = new RegExp(`^stop\\s+using\\s+(?:it|them|that\\s+(${RULE_LABEL}))$`, "i").exec(action);
   if (stop) {
-    if (stop[1] && labelOf(stop[1]) !== when.label) return null;
+    // Only a value that isn't working is dropped from the pools.
+    if (when.is !== "not_working" || (stop[1] && labelOf(stop[1]) !== when.label)) return null;
     return { when, then: { kind: "stop_using" }, source: sentence };
   }
   const make = new RegExp(`^(?:create|make)\\s+(${NUM})\\s+(?:more\\s+)?variants?(?:\\s+videos?)?\\s+that\\s+(?:all\\s+)?use\\s+(?:that|the\\s+same)\\s+(${RULE_LABEL})$`, "i").exec(action);
   if (!make || labelOf(make[2]) !== when.label) return null;
+  // Keep the matched label and vary the other spoken parts. A style or type rule keeps that label and varies all
+  // three of hook/angle/cta.
   const vary = ["hook", "angle", "cta"].filter((l) => l !== when.label);
   return { when, then: { kind: "make", count: readNumber(make[1]), keep: [when.label], vary, post: true }, source: sentence };
 }
@@ -280,6 +291,6 @@ function build(items: Item[]): CompiledCampaign {
 }
 
 function dayNamed(line: string): Day | null {
-  const m = DAY_ANYWHERE.exec(line);
+  const m = DAY_NAMED.exec(line);
   return m ? dayOf(m[1]) : null;
 }

@@ -156,3 +156,40 @@ test("readTime reads 12-hour filename times", () => {
   assert.equal(readTime("13pm"), null);
   assert.equal(readTime("5.30"), null);
 });
+
+test("an ambiguous colon time with no am/pm is unread; two-digit or 13+ hours read as 24-hour", () => {
+  const { compiled, unread } = parse([
+    "On Monday make 1 Basic video with Free Guide cta, post at 5:30",
+    "On Tuesday make 1 Basic video with Free Guide cta, post at 18:00",
+    "On Wednesday make 1 Basic video with Free Guide cta, post at 05:30",
+  ].join("\n"));
+  assert.deepEqual(unread, [{ line: "On Monday make 1 Basic video with Free Guide cta, post at 5:30", day: "mon" }]);
+  assert.deepEqual((compiled.days.tue[0] as MakeInstruction).post, { at: "18:00" });
+  assert.deepEqual((compiled.days.wed[0] as MakeInstruction).post, { at: "05:30" });
+});
+
+test("top with not working, or bottom with working, is unread; the matching pair reads", () => {
+  const cond = (is: string, mod: string) => `When analytics show that a cta on this campaign is ${is} (${mod}), stop using it`;
+  const { compiled, unread } = parse([cond("not working", "top 10%"), cond("working", "bottom 10%"), cond("not working", "bottom 10%")].join("\n"));
+  assert.deepEqual(unread.map((u) => u.line), [cond("not working", "top 10%"), cond("working", "bottom 10%")]);
+  assert.deepEqual(compiled.rules.map((r) => [r.when.is, r.when.thresholdPct]), [["not_working", 10]]);
+  const top = parse("On Monday make 1 Basic video with Free Guide cta\nWhen analytics show that a hook on this campaign is working (top 10%), create 2 variant videos that all use that hook");
+  assert.deepEqual(top.unread, []);
+  assert.equal(top.compiled.rules[0].when.thresholdPct, 10);
+});
+
+test("stop using it only follows a not-working condition", () => {
+  const line = "When analytics show that a hook on this campaign is working, stop using it";
+  assert.deepEqual(parse(line).unread, [{ line, day: null }]);
+});
+
+test("an unread line's day is only a day in prefix form or after on/every", () => {
+  assert.deepEqual(parse("I sat down to plan").unread, [{ line: "I sat down to plan", day: null }]);
+  assert.deepEqual(parse("Make a video every Thursday please").unread[0].day, "thu");
+});
+
+test("'on this account' gives account scope", () => {
+  const { compiled, unread } = parse("When analytics show that a hook on this account is not working, stop using it");
+  assert.deepEqual(unread, []);
+  assert.equal(compiled.rules[0].when.scope, "account");
+});
