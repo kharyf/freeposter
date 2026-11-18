@@ -6,7 +6,7 @@ import { parseCampaignText } from "./parse.ts";
 import { DAYS, parseCompiled, type CompiledCampaign, type Day, type MakeInstruction, type PostInstruction, type Rule, type Vocabulary } from "./spec.ts";
 
 type Instruction = MakeInstruction | PostInstruction;
-interface Item { line: string; day: Day | null; instruction: Instruction | null; rule: Rule | null }
+interface Part { at: number; day?: Day; instruction?: Instruction; rule?: Rule }
 
 const PICK = {
   oneOf: [
@@ -113,49 +113,52 @@ export async function translateCampaign(
     return allLost();
   }
 
-  // One item per answered line (the first answer for an index wins); malformed entries simply don't become items.
-  const items: Item[] = [];
-  const seen = new Set<number>();
+  // One part per proposed instruction or rule, built in unread order. An instruction needs a day the user's own line
+  // named (a day from the AI would be a guess); a rule needs none. Malformed entries simply don't become parts.
+  const byIndex = new Map<number, Record<string, unknown>>();
   for (const e of Array.isArray(answer?.lines) ? answer.lines : []) {
-    if (!isObj(e) || typeof e.index !== "number" || !Number.isInteger(e.index) || e.index < 0 || e.index >= unread.length || seen.has(e.index)) continue;
-    seen.add(e.index);
-    const u = unread[e.index];
-    const day = u.day ?? (DAYS.includes(e.day as Day) ? (e.day as Day) : null);
-    const instruction = isObj(e.instruction) && day ? ({ ...e.instruction, source: u.line } as unknown as Instruction) : null;
-    const rule = isObj(e.rule) ? ({ ...e.rule, source: u.line } as unknown as Rule) : null;
-    if (instruction || rule) items.push({ line: u.line, day, instruction, rule });
+    if (isObj(e) && typeof e.index === "number" && !byIndex.has(e.index)) byIndex.set(e.index, e);
   }
+  const parts: Part[] = [];
+  unread.forEach((u, i) => {
+    const e = byIndex.get(i);
+    if (!e) return;
+    if (u.day && isObj(e.instruction)) parts.push({ at: i, day: u.day, instruction: { ...e.instruction, source: u.line } as unknown as Instruction });
+    if (isObj(e.rule)) parts.push({ at: i, rule: { ...e.rule, source: u.line } as unknown as Rule });
+  });
 
-  // Merge, validate, and drop exactly the AI items the strict parser points at until the whole thing checks.
+  // Merge, validate, and drop exactly the AI parts the strict parser points at until the whole thing checks.
   const build = () => {
     const days = Object.fromEntries(DAYS.map((d) => [d, [...compiled.days[d]] as unknown[]])) as Record<Day, unknown[]>;
     const rules: unknown[] = [...compiled.rules];
-    const instrAt = new Map<string, Item>(), ruleAt = new Map<number, Item>();
-    for (const it of items) {
-      if (it.instruction && it.day) { instrAt.set(`${it.day}[${days[it.day].length}]`, it); days[it.day].push(it.instruction); }
-      if (it.rule) { ruleAt.set(rules.length, it); rules.push(it.rule); }
+    const instrAt = new Map<string, Part>(), ruleAt = new Map<number, Part>();
+    for (const p of parts) {
+      if (p.instruction && p.day) { instrAt.set(`${p.day}[${days[p.day].length}]`, p); days[p.day].push(p.instruction); }
+      if (p.rule) { ruleAt.set(rules.length, p); rules.push(p.rule); }
     }
     return { raw: { version: 1, days, rules }, instrAt, ruleAt };
   };
   let final: CompiledCampaign = compiled;
-  while (items.length) {
+  while (parts.length) {
     const { raw, instrAt, ruleAt } = build();
     const r = parseCompiled(raw, vocab);
     if (r.ok) { final = r.value; break; }
-    const bad = new Set<Item>();
+    const bad = new Set<Part>();
     for (const p of r.problems) {
       const d = /^days\.(\w+)(\[\d+\])/.exec(p), q = /^rules\[(\d+)\]/.exec(p);
-      const it = d ? instrAt.get(d[1] + d[2]) : q ? ruleAt.get(Number(q[1])) : undefined;
-      if (it) bad.add(it);
+      const part = d ? instrAt.get(d[1] + d[2]) : q ? ruleAt.get(Number(q[1])) : undefined;
+      if (part) bad.add(part);
     }
     if (!bad.size) {
-      // a problem about the whole campaign (a make rule with no named CTA): the AI's rules caused it, else drop all AI items
-      const rule = items.find((it) => it.rule);
-      if (rule) bad.add(rule); else for (const it of items) bad.add(it);
+      // a problem about the whole campaign (a make rule with no named CTA): drop the AI make rules, else the AI
+      // instructions that named a CTA, and only then everything the AI added
+      for (const p of parts) if (p.rule?.then.kind === "make") bad.add(p);
+      if (!bad.size) for (const p of parts) if (p.instruction?.kind === "make" && p.instruction.cta?.pick === "named") bad.add(p);
+      if (!bad.size) for (const p of parts) bad.add(p);
     }
-    for (const it of bad) items.splice(items.indexOf(it), 1);
+    for (const p of bad) parts.splice(parts.indexOf(p), 1);
   }
 
-  const kept = new Set(items.map((i) => i.line));
-  return { compiled: final, couldNotUnderstand: unread.map((u) => u.line).filter((l) => !kept.has(l)) };
+  const kept = new Set(parts.map((p) => p.at));
+  return { compiled: final, couldNotUnderstand: unread.filter((_, i) => !kept.has(i)).map((u) => u.line) };
 }

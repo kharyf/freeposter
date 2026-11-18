@@ -67,3 +67,56 @@ test("OverBudget, a failure, or no AI reports every unread line", async () => {
     assert.equal(r.compiled.days.sun.length, 1);
   }
 });
+
+const stopRule = { when: { label: "hook", is: "not_working", thresholdPct: 20, minVideos: 3, age: "72h", scope: "campaign" }, then: { kind: "stop_using" } };
+const makeRule = { when: { label: "hook", is: "working", thresholdPct: 70, minVideos: 3, age: "72h", scope: "campaign" }, then: { kind: "make", count: 2, keep: ["hook"], vary: ["angle"], post: false } };
+
+test("an AI rule is accepted", async () => {
+  const f = fake({ lines: [{ index: 0, day: null, instruction: null, rule: stopRule }] });
+  const r = await translateCampaign({ ai: f.ai }, "Cut the losers alpha.", vocab);
+  assert.equal(r.compiled.rules.length, 1);
+  assert.equal(r.compiled.rules[0].source, "Cut the losers alpha");
+  assert.deepEqual(r.couldNotUnderstand, []);
+});
+
+test("a make rule with no named CTA drops only the make rule, not an unrelated stop_using rule", async () => {
+  const f = fake({ lines: [{ index: 0, day: null, instruction: null, rule: stopRule }, { index: 1, day: null, instruction: null, rule: makeRule }] });
+  const r = await translateCampaign({ ai: f.ai }, "Cut the losers alpha. Clone winners beta.", vocab);
+  assert.equal(r.compiled.rules.length, 1);
+  assert.equal(r.compiled.rules[0].then.kind, "stop_using");
+  assert.deepEqual(r.couldNotUnderstand, ["Clone winners beta"]);
+});
+
+test("a day the line didn't name is never taken from the AI", async () => {
+  const f = fake({ lines: [{ index: 0, day: "wed", instruction: make(), rule: null }] });
+  const r = await translateCampaign({ ai: f.ai }, "Do the thing alpha.", vocab);
+  assert.equal(r.compiled.days.wed.length, 0);
+  assert.deepEqual(r.couldNotUnderstand, ["Do the thing alpha"]);
+});
+
+test("a bad instruction doesn't drop the good rule on the same line", async () => {
+  const f = fake({ lines: [{ index: 0, day: null, instruction: make({ style: "nope" }), rule: stopRule }] });
+  const r = await translateCampaign({ ai: f.ai }, "Monday: mixed alpha.", vocab);
+  assert.equal(r.compiled.days.mon.length, 0);
+  assert.equal(r.compiled.rules.length, 1);
+  assert.deepEqual(r.couldNotUnderstand, []);
+});
+
+test("malformed or empty answers report every unread line", async () => {
+  for (const answer of [{ lines: [] }, { lines: "x" }, {}, null, { lines: [null, { index: 9 }, { index: "0" }] }]) {
+    const r = await translateCampaign({ ai: fake(answer).ai }, "Monday: alpha. Tuesday: beta.", vocab);
+    assert.deepEqual(r.couldNotUnderstand, ["Monday: alpha", "Tuesday: beta"]);
+  }
+});
+
+test("out-of-order answers merge in unread order, over several drop passes", async () => {
+  const f = fake({ lines: [
+    { index: 3, day: null, instruction: make({ count: 4 }), rule: null },
+    { index: 1, day: null, instruction: make({ cta: { pick: "named", id: 999 } }), rule: null },
+    { index: 0, day: null, instruction: make({ count: 1 }), rule: null },
+    { index: 2, day: null, instruction: make({ style: "nope" }), rule: null },
+  ] });
+  const r = await translateCampaign({ ai: f.ai }, "Monday: a1. Monday: b2. Monday: c3. Monday: d4.", vocab);
+  assert.deepEqual(r.compiled.days.mon.map((i) => i.source), ["Monday: a1", "Monday: d4"]);
+  assert.deepEqual(r.couldNotUnderstand, ["Monday: b2", "Monday: c3"]);
+});
