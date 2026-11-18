@@ -391,6 +391,23 @@ export class CampaignStore {
     return changes > 0;
   }
 
+  /**
+   * The hooks, angles and CTAs a "stop using" rule took out of this campaign's random and best picks (pref
+   * `campaign.<id>.excluded`). Named lines still use them; the week table warns next to those.
+   */
+  excluded(campaignId: number): Record<LibraryKind, number[]> {
+    const raw = this.store.pref<Partial<Record<LibraryKind, number[]>>>(`campaign.${campaignId}.excluded`) ?? {};
+    return { hook: [...(raw.hook ?? [])], angle: [...(raw.angle ?? [])], cta: [...(raw.cta ?? [])] };
+  }
+
+  /** A rule stopped using this value: random and best skip it from now on. */
+  exclude(campaignId: number, kind: LibraryKind, id: number) {
+    const x = this.excluded(campaignId);
+    if (x[kind].includes(id)) return;
+    x[kind].push(id);
+    this.store.setPref(`campaign.${campaignId}.excluded`, x);
+  }
+
   // ---- Autorun audit log ----
 
   logChange(c: { campaignId: number; agent: string; before: unknown; after: unknown; reason: string }): number {

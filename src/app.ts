@@ -13,6 +13,7 @@ import { EditWorker } from "./edit/worker.ts";
 import { sampleFrames } from "./media.ts";
 import { MetricsPoller } from "./analytics/poller.ts";
 import { labelOnPublish } from "./analytics/labels.ts";
+import { evaluateRules } from "./campaigns/rules.ts";
 import { CampaignWorker } from "./campaigns/worker.ts";
 import { Notifier } from "./notify.ts";
 import { publishers } from "./platforms/index.ts";
@@ -100,6 +101,14 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
   });
   // Campaigns: today's instructions become tasks, made by plain code and sent for review like everything else.
   const campaigns = new CampaignWorker({ store, productions: producer, reviews, ai });
+  // After each analytics refresh, campaign rules are checked against the new scores (plain code, no AI).
+  poller.onRefresh = () => {
+    try {
+      evaluateRules({ store, analytics: campaigns.analytics, campaigns: campaigns.campaigns, worker: campaigns, now: Date.now() });
+    } catch (err) {
+      console.error(`campaign rules: ${(err as Error).message}`);
+    }
+  };
   const telegram = new TelegramReview(store, reviews);
   const app = buildServer(store, runner, publishers, options, { intake, poll: () => watcher.poll(), sync: () => watcher.sync() }, ai, producer, { service: reviews, telegram });
 

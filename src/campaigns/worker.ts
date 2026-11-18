@@ -19,7 +19,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { defaultSetId, defaultTikTok, setAccounts } from "../accounts.ts";
 import type { AiService } from "../ai/router.ts";
-import { compareLabels, scoreVideos, type ScoredJob } from "../analytics/score.ts";
+import { compareLabels, scoreVideos } from "../analytics/score.ts";
 import { AnalyticsStore } from "../analytics/store.ts";
 import { dataDir } from "../config.ts";
 import type { Store } from "../db.ts";
@@ -80,6 +80,10 @@ export interface TaskChoices {
   sourceTaskId?: number;
   /** a post line: the held Drive file it posts (recorded footage) */
   driveId?: string;
+  /** a rule's video: the rule and the value it matched */
+  rule?: { index: number; label: string; key: string };
+  /** what the picker had to fall back on (every value stopped by a rule, say) */
+  notes?: string[];
 }
 
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -94,6 +98,8 @@ const MAX_DAYS_AHEAD = 60;
 const KEPT_WINDOW_DAYS = 7;
 /** The score age "best" ranks by: the "working" default's. */
 const BEST_AGE = "72h";
+/** A rule's tasks number their instructions from here (1000 + the rule's index), apart from the day's own lines. */
+export const RULE_INSTRUCTION_BASE = 1000;
 
 const pad = (n: number) => String(n).padStart(2, "0");
 /** The local calendar day of a time, YYYY-MM-DD. */
@@ -127,23 +133,38 @@ export interface PickContext {
   random: () => number;
   /** library ids ranked best first, only those with enough videos */
   best: (kind: LibraryKind) => number[];
+  /** values a "stop using" rule took out of the campaign's random and best picks */
+  excluded?: Record<LibraryKind, Set<number>>;
+  /** a rule's video: the value it matched, for same_as_rule */
+  fixed?: Partial<Record<LibraryKind, number>>;
+  /** what the picker had to fall back on, for the task to say */
+  notes?: string[];
 }
 
 /**
  * The hook, angle or CTA for one copy. random: uniform among the values the day's batch hasn't had yet (repeating
  * only once the library runs out); best: the highest median score with enough videos, random until one has;
- * named: that entry. Null when there is nothing to pick. (Values a rule stopped using are a later task's filter.)
+ * named: that entry; same_as_rule: the value the rule matched. Random and best skip values a rule stopped using
+ * (when every value is stopped, they pick from all of them and say so in ctx.notes); named never does. Null when
+ * there is nothing to pick.
  */
 export function pickValue(kind: LibraryKind, pick: ValuePick, ctx: PickContext): LibraryEntry | null {
   const pool = ctx.pool(kind);
+  const stopped = ctx.excluded?.[kind];
+  let open = stopped?.size ? pool.filter((e) => !stopped.has(e.id)) : pool;
+  if ((pick.pick === "random" || pick.pick === "best") && pool.length && !open.length) {
+    open = pool;
+    ctx.notes?.push(`every ${kind} in the library was stopped by a rule, so it picked from all of them`);
+  }
   const random = () => {
-    const fresh = pool.filter((e) => !ctx.used[kind].has(e.id));
-    const from = fresh.length ? fresh : pool;
+    const fresh = open.filter((e) => !ctx.used[kind].has(e.id));
+    const from = fresh.length ? fresh : open;
     return from.length ? from[Math.min(Math.floor(ctx.random() * from.length), from.length - 1)] : null;
   };
   let chosen: LibraryEntry | null = null;
   if (pick.pick === "named") chosen = pool.find((e) => e.id === pick.id) ?? null;
-  else if (pick.pick === "best") chosen = ctx.best(kind).map((id) => pool.find((e) => e.id === id)).find((e) => e !== undefined) ?? random();
+  else if (pick.pick === "same_as_rule") chosen = pool.find((e) => e.id === ctx.fixed?.[kind]) ?? null;
+  else if (pick.pick === "best") chosen = ctx.best(kind).map((id) => open.find((e) => e.id === id)).find((e) => e !== undefined) ?? random();
   else if (pick.pick === "random") chosen = random();
   if (chosen) ctx.used[kind].add(chosen.id);
   return chosen;
@@ -226,20 +247,7 @@ export class CampaignWorker {
     if (!instructions.length) return 0;
     const existing = this.campaigns.tasksOn(c.id, key);
     const have = new Set(existing.map((t) => `${t.instructionIndex}:${t.copy}`));
-    const used: Record<LibraryKind, Set<number>> = { hook: new Set(), angle: new Set(), cta: new Set() };
-    for (const t of existing) {
-      for (const kind of ["hook", "angle", "cta"] as LibraryKind[]) {
-        const e = t.choices[kind] as LibraryEntry | undefined;
-        if (e) used[kind].add(e.id);
-      }
-    }
-    const pools = new Map<LibraryKind, LibraryEntry[]>();
-    const ctx: PickContext = {
-      pool: (kind) => { if (!pools.has(kind)) pools.set(kind, this.campaigns.entries(kind)); return pools.get(kind)!; },
-      used,
-      random: this.random,
-      best: (kind) => { if (!best.has(kind)) best.set(kind, this.bestRanking(kind)); return best.get(kind)!; },
-    };
+    const ctx = this.pickContext(c, existing, best);
     // Kept videos are numbered across the whole day (instruction, then copy order), so every name is the day's own.
     const keepNo = new Map<string, number>();
     instructions.forEach((ins, index) => {
@@ -263,6 +271,59 @@ export class CampaignWorker {
     return made;
   }
 
+  /** The picker's view of one campaign's day: the values its tasks that day already have, and what rules stopped. */
+  private pickContext(c: Campaign, existing: CampaignTask[], best: Map<LibraryKind, number[]>): PickContext {
+    const used: Record<LibraryKind, Set<number>> = { hook: new Set(), angle: new Set(), cta: new Set() };
+    for (const t of existing) {
+      for (const kind of ["hook", "angle", "cta"] as LibraryKind[]) {
+        const e = t.choices[kind] as LibraryEntry | undefined;
+        if (e) used[kind].add(e.id);
+      }
+    }
+    const stopped = this.campaigns.excluded(c.id);
+    const pools = new Map<LibraryKind, LibraryEntry[]>();
+    return {
+      pool: (kind) => { if (!pools.has(kind)) pools.set(kind, this.campaigns.entries(kind)); return pools.get(kind)!; },
+      used,
+      random: this.random,
+      best: (kind) => { if (!best.has(kind)) best.set(kind, this.bestRanking(kind)); return best.get(kind)!; },
+      excluded: { hook: new Set(stopped.hook), angle: new Set(stopped.angle), cta: new Set(stopped.cta) },
+    };
+  }
+
+  /**
+   * A rule's videos, dated today: count copies of a make instruction the rule built, picked by the same picker
+   * (same_as_rule takes `fixed`) and made by the same pipeline as any make task. Their instruction index is
+   * 1000 + the rule's index, each firing taking the next copy numbers, so they never meet the day's own tasks.
+   * Returns the new tasks' ids (a copy that can't be made is a failed task, told like any other).
+   */
+  addRuleTasks(c: Campaign, ruleIndex: number, ins: MakeInstruction, fixed: Partial<Record<LibraryKind, number>>, rule: NonNullable<TaskChoices["rule"]>, now = this.now()): number[] {
+    const key = dayKey(now);
+    const dayIndex = new Date(now).getDay();
+    const existing = this.campaigns.tasksOn(c.id, key);
+    const ctx = this.pickContext(c, existing, new Map());
+    ctx.fixed = fixed;
+    const instructionIndex = RULE_INSTRUCTION_BASE + ruleIndex;
+    let copy = Math.max(-1, ...existing.filter((t) => t.instructionIndex === instructionIndex).map((t) => t.copy)) + 1;
+    // Kept names go on after the day's own: those already made and those the day's lines will make.
+    const dayKeeps = (c.compiled?.days[DAYS[dayIndex]] ?? []).reduce((n, i) => n + (i.kind === "make" && i.post === null ? i.count : 0), 0);
+    const keptNo = (t: CampaignTask) => Number(/-(\d+)$/.exec(String((t.choices as unknown as TaskChoices).libraryName ?? ""))?.[1] ?? 0);
+    let keepNo = Math.max(dayKeeps, ...existing.map(keptNo));
+    const ids: number[] = [];
+    for (let i = 0; i < ins.count; i++, copy++) {
+      const { choices, error } = this.resolve(c, ins, copy, DAY_LABELS[dayIndex], ctx, ins.post === null ? ++keepNo : copy + 1);
+      choices.rule = rule;
+      const id = this.campaigns.addTask({
+        campaignId: c.id, date: key, dayIndex, instructionIndex, copy, kind: "rule", choices: choices as unknown as Record<string, unknown>,
+        state: error ? "failed" : "queued", error,
+      });
+      if (id === null) continue;
+      ids.push(id);
+      if (error) this.tell(this.campaigns.task(id)!, "campaign.failed", error);
+    }
+    return ids;
+  }
+
   /** One copy's choices; an error when it can't be made at all. */
   private resolve(c: Campaign, ins: MakeInstruction | PostInstruction, copy: number, day: string, ctx: PickContext, keepNo: number): { choices: TaskChoices; error: string | null } {
     const defaults = c.defaultPostTimes;
@@ -271,11 +332,14 @@ export class CampaignWorker {
     };
     const problems: string[] = [];
     if (ins.kind === "make") {
+      const notes: string[] = [];
+      ctx.notes = notes;
       for (const kind of ["hook", "angle", "cta"] as LibraryKind[]) {
         const entry = pickValue(kind, ins[kind], ctx);
         if (entry) choices[kind] = entry;
-        else problems.push(ins[kind].pick === "named" ? `its ${kind} is no longer in the library` : `the library has no ${kind} to pick`);
+        else problems.push(ins[kind].pick === "named" || ins[kind].pick === "same_as_rule" ? `its ${kind} is no longer in the library` : `the library has no ${kind} to pick`);
       }
+      if (notes.length) choices.notes = notes;
       if (ins.post === null) choices.libraryName = `${c.name.replace(/\s+/g, "")}-${day}-${keepNo}`;
       else if (ins.post.at !== "default") choices.postTime = ins.post.at;
       else if (defaults.length) choices.postTime = defaults[copy % defaults.length];
@@ -291,8 +355,7 @@ export class CampaignWorker {
   private bestRanking(kind: LibraryKind): number[] {
     const labels = this.analytics.allLabels();
     if (!labels.length) return [];
-    const rows = this.store.db.prepare("SELECT id, published_at FROM jobs WHERE published_at IS NOT NULL").all() as { id: number; published_at: number }[];
-    const jobs: ScoredJob[] = rows.map((r) => ({ ...this.store.job(r.id)!, publishedAt: r.published_at }));
+    const jobs = this.analytics.scoredJobs();
     const snapshotsByJob = new Map(jobs.map((j) => [j.id, this.analytics.snapshots(j.id)]));
     const scores = scoreVideos({ labels, snapshotsByJob, jobs, now: this.now() });
     return compareLabels(scores, labels, kind, BEST_AGE).filter((r) => r.enough).map((r) => Number(r.key)).filter(Number.isInteger);

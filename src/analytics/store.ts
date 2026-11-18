@@ -1,6 +1,7 @@
 // Analytics tables: what each posted video is (labels), what the platforms said about it (append-only snapshots)
 // and when to ask next (poll schedule).
 import type { Store } from "../db.ts";
+import type { ScoredJob } from "./score.ts";
 import type { Snapshot, VideoLabels } from "./types.ts";
 
 const SCHEMA = `
@@ -97,6 +98,12 @@ export class AnalyticsStore {
 
   allLabels(): VideoLabels[] {
     return this.db.prepare("SELECT * FROM video_labels ORDER BY post_id").all().map(toLabels);
+  }
+
+  /** Every job that has published, with its publish time: what scoring reads. */
+  scoredJobs(): ScoredJob[] {
+    const rows = this.db.prepare("SELECT id, published_at FROM jobs WHERE published_at IS NOT NULL ORDER BY id").all() as { id: number; published_at: number }[];
+    return rows.map((r) => ({ ...this.store.job(r.id)!, publishedAt: r.published_at }));
   }
 
   // ---- snapshots (append-only) ----
