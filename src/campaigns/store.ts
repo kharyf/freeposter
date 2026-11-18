@@ -349,6 +349,14 @@ export class CampaignStore {
     this.db.prepare("UPDATE campaigns SET autorun = ?, updated_at = ? WHERE id = ?").run(on ? 1 : 0, Date.now(), id);
   }
 
+  setAccountSet(id: number, accountSetId: number | null) {
+    this.db.prepare("UPDATE campaigns SET account_set_id = ?, updated_at = ? WHERE id = ?").run(accountSetId, Date.now(), id);
+  }
+
+  setDefaultPostTimes(id: number, times: string[]) {
+    this.db.prepare("UPDATE campaigns SET default_post_times = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(times), Date.now(), id);
+  }
+
   setDailyPostCap(id: number, cap: number) {
     this.db.prepare("UPDATE campaigns SET daily_post_cap = ?, updated_at = ? WHERE id = ?").run(cap, Date.now(), id);
   }

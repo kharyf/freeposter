@@ -15,6 +15,8 @@ import { codeDir, config, dataDir, envFile, isConfigured, isLocalUrl, needsRedir
 import { randomToken } from "./crypto.ts";
 import type { SignIn, Store } from "./db.ts";
 import { registerMcp, trustedRequest } from "./mcp.ts";
+import { registerAnalyticsRoutes } from "./analytics/routes.ts";
+import { registerCampaignRoutes } from "./campaigns/routes.ts";
 import type { CampaignWorker } from "./campaigns/worker.ts";
 import { postSigned } from "./notify.ts";
 import { blenderTemplates } from "./produce/adapters/blender.ts";
@@ -997,6 +999,8 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     return { ok: true };
   });
 
+  registerAnalyticsRoutes(app, store);
+  registerCampaignRoutes(app, store, campaigns);
   registerMcp(app, store, runner, publishers, reviews, producer, reviewChannel, campaigns);
 
   return app;

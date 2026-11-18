@@ -2,11 +2,11 @@
 // campaign rules use). get_analytics gives scores and comparisons, never raw snapshots; get_video_metrics gives one
 // post's snapshots.
 import type { Store } from "../db.ts";
-import { CampaignStore } from "../campaigns/store.ts";
 import type { ToolDef } from "../produce/mcp-tools.ts";
-import { compareLabels, SCORE_AGES, scoreVideos, type LabelDimension, type ScoreAge } from "./score.ts";
+import { compareLabels, SCORE_AGES, type LabelDimension, type ScoreAge } from "./score.ts";
 import { AnalyticsStore } from "./store.ts";
 import type { Source } from "./types.ts";
+import { labelNames, selectVideos } from "./view.ts";
 
 type Args = Record<string, unknown>;
 
@@ -51,32 +51,10 @@ export function analyticsTools(opts: { store: Store; fail: (message: string) => 
         const age = (args.age ?? "72h") as ScoreAge;
         if (!SCORE_AGES.includes(age)) throw fail(`age must be one of ${SCORE_AGES.join(", ")}`);
 
-        const a = new AnalyticsStore(store);
-        const allLabels = a.allLabels();
-        const jobs = a.scoredJobs();
         const t = now();
-        const scores = scoreVideos({ labels: allLabels, snapshotsByJob: new Map(jobs.map((j) => [j.id, a.snapshots(j.id)])), jobs, now: t });
-        const jobsOf = new Map<number, typeof jobs>();
-        for (const j of jobs) jobsOf.set(j.postId, [...(jobsOf.get(j.postId) ?? []), j]);
-        const since = days === undefined ? null : t - days * 86_400_000;
-        const labels = allLabels.filter((l) => {
-          const mine = jobsOf.get(l.postId) ?? [];
-          if (!mine.length) return false;
-          if (source !== undefined && l.source !== (source as Source)) return false;
-          if (campaignId !== undefined && l.campaignId !== campaignId) return false;
-          if (accountId !== undefined && !mine.some((j) => j.accountId === accountId)) return false;
-          if (since !== null && Math.min(...mine.map((j) => j.publishedAt ?? 0)) < since) return false;
-          return true;
-        });
-        const kept = new Set(labels.map((l) => l.postId));
-        const shown = scores.filter((s) => kept.has(s.postId));
+        const { labels, shown, jobsOf } = selectVideos(store, { accountId, days, source: source as Source | undefined, campaignId }, t);
         const byPost = new Map(shown.map((s) => [s.postId, s]));
-
-        const cs = new CampaignStore(store);
-        const entryName = new Map(cs.entries().map((e) => [String(e.id), e.name]));
-        const typeName = new Map(cs.types().map((ty) => [String(ty.id), ty.name]));
-        const nameOf = (dim: LabelDimension, key: string) =>
-          dim === "type" ? typeName.get(key) ?? key : dim === "hook" || dim === "angle" || dim === "cta" ? entryName.get(key) ?? key : key;
+        const { entryName, typeName, nameOf } = labelNames(store);
         const value = (id: number | null, text: string | null) => (id !== null ? { id, name: entryName.get(String(id)) ?? null } : text ? { text } : null);
 
         return {

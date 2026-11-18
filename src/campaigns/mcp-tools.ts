@@ -5,13 +5,12 @@ import type { Store } from "../db.ts";
 import type { ToolDef } from "../produce/mcp-tools.ts";
 import { applyAgentChange, campaignVocabulary, REASON_MAX, type AgentChange } from "./autorun.ts";
 import { CampaignStore, type Campaign, type LibraryKind } from "./store.ts";
+import { campaignBrief, iso } from "./view.ts";
 import type { CampaignWorker } from "./worker.ts";
 
 type Args = Record<string, unknown>;
 
 export const CAMPAIGN_INSTRUCTIONS = `Campaigns run the user's weekly posting plans by themselves (list_campaigns, get_campaign), and get_analytics / get_video_metrics show how videos did. Only a campaign the user switched Autorun on for can be changed by you: update_campaign (its text, compiled schedule, or a lower daily post cap) and add_library_entry (new hooks and angles), each with a reason the user sees. Autorun can never change CTAs or use one the campaign doesn't already use, raise the daily post cap, change a type's "post without approval", or turn Autorun or the kill switch on or off. Every change is logged (under the name your MCP client gave, which is advisory) and the user can undo it; hooks and angles you add belong to that campaign. stop_campaigns stops every campaign at once (the user asked you to, or something is clearly wrong); only the user can resume them.`;
-
-const iso = (ms: number | null | undefined) => (ms === null || ms === undefined ? null : new Date(ms).toISOString());
 
 export function campaignTools(opts: {
   store: Store;
@@ -33,10 +32,7 @@ export function campaignTools(opts: {
     if (!c) throw fail(`no campaign ${cid}; list_campaigns lists them`);
     return c;
   };
-  const brief = (c: Campaign) => ({
-    id: c.id, name: c.name, enabled: c.enabled, autorun: c.autorun, runnable: cs().isRunnable(c), daily_post_cap: c.dailyPostCap,
-    confirmed_at: iso(c.confirmedAt),
-  });
+  const brief = (c: Campaign) => campaignBrief(cs(), c);
   const reasonOf = (args: Args) => {
     const r = args.reason;
     if (typeof r !== "string" || !r.trim()) throw fail("reason is required: say in a sentence why you're making this change (the user sees it)");
