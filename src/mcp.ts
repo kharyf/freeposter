@@ -174,7 +174,11 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
       ...v,
       createdAt: iso(v.createdAt),
       scheduledAt: iso(v.scheduledAt),
-      jobs: v.jobs.map((j) => ({ ...j, nextRunAt: j.state === "published" || j.state === "failed" ? null : iso(j.nextRunAt) })),
+      // A held job (a campaign post waiting to be placed, or stopped) has no time yet.
+      jobs: v.jobs.map((j) => {
+        const held = j.nextRunAt === Number.MAX_SAFE_INTEGER;
+        return { ...j, held, nextRunAt: j.state === "published" || j.state === "failed" || held ? null : iso(j.nextRunAt) };
+      }),
     };
   };
   const post = (id: number) => {
@@ -627,7 +631,8 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
         const job = store.job(int(args, "job_id"));
         if (!job) throw new ToolError("no such job");
         if (job.state !== "failed") throw new ToolError(`only failed jobs can be retried; this one is ${job.state}`);
-        store.retryJob(job.id);
+        const refused = store.retryJob(job.id);
+        if (refused) throw new ToolError(refused);
         runner.tick();
         return post(job.postId);
       },

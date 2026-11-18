@@ -378,6 +378,8 @@ export class CampaignWorker {
   private async run() {
     try {
       this.sweepHeld();
+      // A retried campaign job waits held for its task to place it again.
+      if (!this.campaigns.killed()) this.placeHeld();
     } catch (err) {
       console.error(`campaigns: held posts: ${(err as Error).message}`);
     }
@@ -815,6 +817,17 @@ export class CampaignWorker {
    */
   resumeAll(): number {
     this.campaigns.setKilled(false);
+    const released = this.placeHeld();
+    console.log(`campaigns: resumed; ${released} post${released === 1 ? "" : "s"} released`);
+    void this.tick().catch((err) => console.error(`campaigns: ${(err as Error).message}`));
+    return released;
+  }
+
+  /**
+   * Places again every held post of a "scheduled" task (see resumeAll); a retried campaign job (retryJob) comes back
+   * this way too, so it never goes out by itself. Only while campaigns run. Returns how many were released.
+   */
+  private placeHeld(): number {
     const now = this.now();
     const held = this.campaigns.tasksIn(["scheduled"]).flatMap((t) => {
       const from = t.postId === null ? undefined : this.store.jobsForPost(t.postId).map((j) => j.progress.heldFrom).find((h): h is number => typeof h === "number");
@@ -838,8 +851,6 @@ export class CampaignWorker {
         this.fail(t.id, (err as Error).message);
       }
     }
-    console.log(`campaigns: resumed; ${released} post${released === 1 ? "" : "s"} released`);
-    void this.tick().catch((err) => console.error(`campaigns: ${(err as Error).message}`));
     return released;
   }
 

@@ -926,8 +926,9 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     return { ok: true, cancelled };
   });
 
-  app.post<{ Params: { id: string } }>("/api/jobs/:id/retry", async (req) => {
-    store.retryJob(Number(req.params.id));
+  app.post<{ Params: { id: string } }>("/api/jobs/:id/retry", async (req, reply) => {
+    const refused = store.retryJob(Number(req.params.id));
+    if (refused) return reply.code(409).send({ error: refused });
     runner.tick();
     return { ok: true };
   });

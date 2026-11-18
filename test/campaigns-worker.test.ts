@@ -584,3 +584,64 @@ test("random and best never pick a hook or angle another campaign's Autorun adde
   assert.ok(!pickedBy(a, "angle").includes(bAngle), pickedBy(a, "angle").join(","));
   assert.ok(pickedBy(b, "hook").includes(bHook), "B's random picks use its own hook");
 });
+
+/** A campaign post scheduled on Tuesday whose one upload then failed for good (its task failed with it). */
+async function failedCampaignJob(s: ReturnType<typeof setup>, campaignId: number) {
+  s.worker.materialize();
+  const [t] = s.cs.tasksOn(campaignId, "2026-11-17");
+  await s.toReview(t.id);
+  await s.approve(t.id);
+  await s.tick();
+  const postId = s.cs.task(t.id)!.postId!;
+  const [job] = s.store.jobsForPost(postId);
+  s.store.db.prepare("UPDATE jobs SET state = 'running', attempts = 1 WHERE id = ?").run(job.id);
+  s.store.finishJob(job.id, "failed", { error: "the platform said no" });
+  await s.tick();
+  assert.equal(s.cs.task(t.id)!.state, "failed", s.cs.task(t.id)!.error ?? "");
+  return { t, postId, job };
+}
+
+test("retry_job on a campaign job while campaigns are stopped re-queues it held: it never goes out until resume", async () => {
+  const s = setup();
+  const id = s.campaign({ tue: [s.make(1, { at: "18:00" })] });
+  const { t, job } = await failedCampaignJob(s, id);
+  s.worker.stopAll();
+  assert.equal(s.store.retryJob(job.id), null);
+  const retried = s.store.job(job.id)!;
+  assert.equal(retried.state, "queued");
+  assert.equal(retried.nextRunAt, Number.MAX_SAFE_INTEGER, "held: the kill switch covers a retry too");
+  assert.equal(s.store.claimNextJob(new Set()), undefined, "nothing for the runner to publish");
+  await s.tick();
+  assert.equal(s.store.job(job.id)!.nextRunAt, Number.MAX_SAFE_INTEGER, "still held while stopped");
+  assert.equal(s.cs.task(t.id)!.state, "scheduled", "its task waits to place it again");
+  s.worker.resumeAll();
+  assert.equal(s.store.job(job.id)!.nextRunAt, at(2026, 11, 17, 18), "placed again at its own time");
+});
+
+test("a retried campaign job is placed again like an approval: its day's timing and the daily cap apply", async () => {
+  const s = setup({ cap: 1, defaults: ["09:00"] });
+  const id = s.campaign({ tue: [s.make(1, { at: "18:00" })], wed: [s.make(1, { at: "09:00" })] });
+  const { t, job } = await failedCampaignJob(s, id);
+  // Wednesday morning: Wednesday's own video already takes the day's one slot.
+  s.clock.now = at(2026, 11, 18, 8);
+  s.worker.materialize();
+  const [w] = s.cs.tasksOn(id, "2026-11-18");
+  await s.toReview(w.id);
+  await s.approve(w.id);
+  await s.tick();
+  assert.equal(s.cs.task(w.id)!.state, "scheduled");
+  assert.equal(s.store.retryJob(job.id), null);
+  assert.equal(s.store.job(job.id)!.nextRunAt, Number.MAX_SAFE_INTEGER, "held until the worker places it");
+  await s.tick();
+  assert.equal(s.cs.task(t.id)!.state, "scheduled", s.cs.task(t.id)!.error ?? "");
+  assert.equal(s.store.job(job.id)!.nextRunAt, at(2026, 11, 19, 9), "not now: Wednesday is full, so Thursday's default time");
+});
+
+test("a campaign job whose post no campaign task owns can't be retried", async () => {
+  const s = setup();
+  const id = s.campaign({ tue: [s.make(1, { at: "18:00" })] });
+  const { t, job } = await failedCampaignJob(s, id);
+  s.store.db.prepare("DELETE FROM campaign_tasks WHERE id = ?").run(t.id);
+  assert.match(s.store.retryJob(job.id) ?? "", /no campaign task/);
+  assert.equal(s.store.job(job.id)!.state, "failed");
+});

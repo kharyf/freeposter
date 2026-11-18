@@ -398,3 +398,30 @@ test("get_analytics gives scores and label comparisons; get_video_metrics gives 
   assert.equal((await call("get_video_metrics", { post_id: 9999 })).isError, true);
   await app.close();
 });
+
+test("retry_job (and the window's Retry) re-queue a failed campaign job held while campaigns are stopped", async () => {
+  const { app, call, store, published } = setup({ campaigns: true });
+  const cs = new CampaignStore(store);
+  const acct = store.upsertAccount(account("x"));
+  const now = Date.now();
+  const review = Number(store.db.prepare(
+    "INSERT INTO reviews (subject_kind, source_path, draft, state, expires_at, requested_via, created_at, updated_at) VALUES ('edit', 'v.mp4', '{}', 'approved', ?, 'campaign', ?, ?)",
+  ).run(now + 86_400_000, now, now).lastInsertRowid);
+  const postId = store.createPost({ caption: "c", title: "t", sourcePath: "v.mp4", sha256: "s", tiktok: null, scheduledAt: now + 3_600_000 }, [acct.id]);
+  store.db.prepare("UPDATE posts SET review_id = ? WHERE id = ?").run(review, postId);
+  const campaignId = cs.create({ name: "Growth", text: "", accountSetId: null, defaultPostTimes: ["09:00"] });
+  cs.addTask({ campaignId, date: "2026-11-18", dayIndex: 0, instructionIndex: 0, kind: "make", state: "failed", reviewId: review, postId });
+  const [job] = store.jobsForPost(postId);
+  store.finishJob(job.id, "failed", { error: "no" });
+  cs.setKilled(true);
+  const r = await call("retry_job", { job_id: job.id });
+  assert.ok(!r.isError, r.content[0].text);
+  assert.equal(store.job(job.id)!.state, "queued");
+  assert.equal(store.job(job.id)!.nextRunAt, Number.MAX_SAFE_INTEGER, "held: the kill switch covers retry_job");
+  store.finishJob(job.id, "failed", { error: "no" });
+  const res = await app.inject({ method: "POST", url: `/api/jobs/${job.id}/retry`, headers: HOST });
+  assert.equal(res.statusCode, 200, res.body);
+  assert.equal(store.job(job.id)!.nextRunAt, Number.MAX_SAFE_INTEGER, "and the window's Retry");
+  assert.deepEqual(published, []);
+  await app.close();
+});

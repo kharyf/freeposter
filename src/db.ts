@@ -942,10 +942,40 @@ export class Store {
     return (this.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state IN ('queued', 'running', 'retry', 'waiting_quota')").get() as { n: number }).n;
   }
 
-  retryJob(jobId: number) {
-    this.db
-      .prepare("UPDATE jobs SET state = 'queued', attempts = 0, error = NULL, next_run_at = ?, updated_at = ? WHERE id = ? AND state = 'failed'")
-      .run(Date.now(), Date.now(), jobId);
+  /**
+   * Re-queues a failed job (retry_job, the window's Retry). A campaign post's job goes back held, and the campaign
+   * task that placed the post back to "scheduled", so the campaign worker places it again: the kill switch, the daily
+   * cap and its day's timing all apply again, as for an approval. Returns why it can't be retried, or null.
+   */
+  retryJob(jobId: number): string | null {
+    const postId = this.campaignPostOfJob(jobId);
+    let taskId: number | null = null;
+    if (postId !== null) {
+      // The task whose review made the post (a kept video's post line shares the post, but doesn't own it).
+      const owner = this.db.prepare(
+        "SELECT t.id FROM campaign_tasks t JOIN posts p ON p.id = t.post_id AND p.review_id = t.review_id WHERE p.id = ? ORDER BY t.id LIMIT 1",
+      ).get(postId) as { id: number } | undefined;
+      if (!owner) return "this campaign post has no campaign task to place it any more, so it can't be retried";
+      taskId = owner.id;
+    }
+    // A campaign job is held from the time its post was placed at: placed again, it keeps that time only if it is
+    // still ahead and still fits the cap.
+    const from = postId === null ? Date.now() : this.post(postId)?.scheduledAt ?? Date.now();
+    this.db.exec("BEGIN");
+    try {
+      const { changes } = this.db
+        .prepare("UPDATE jobs SET state = 'queued', attempts = 0, error = NULL, progress = json_remove(progress, '$.heldFrom'), next_run_at = ?, updated_at = ? WHERE id = ? AND state = 'failed'")
+        .run(from, Date.now(), jobId);
+      if (changes && postId !== null && taskId !== null) {
+        this.holdPost(postId);
+        this.db.prepare("UPDATE campaign_tasks SET state = 'scheduled', error = NULL, updated_at = ? WHERE id = ?").run(Date.now(), taskId);
+      }
+      this.db.exec("COMMIT");
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+    return null;
   }
 
   publishedInLast24h(accountId: number): number {
