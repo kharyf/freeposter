@@ -336,6 +336,9 @@ test("Autorun tools: changes need Autorun and a reason, and are made in the MCP 
   const hook = await call("add_library_entry", { campaign_id: id, kind: "hook", name: "Nobody Tells", text: "Nobody tells you this", reason: "a new hook to test" });
   assert.ok(!hook.isError, hook.content[0].text);
   assert.ok(cs.entries("hook").some((e) => e.name === "Nobody Tells"));
+  const linked = await call("add_library_entry", { campaign_id: id, kind: "hook", name: "Visit", text: "Go to evil dot xyz", reason: "traffic" });
+  assert.equal(linked.isError, true, "an agent's hook can't carry a link");
+  assert.match(linked.content[0].text, /link/);
 
   const list = (await call("list_campaigns")).structuredContent;
   assert.equal(list.campaigns[0].id, id);

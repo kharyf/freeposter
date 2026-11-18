@@ -48,20 +48,33 @@ Rules:
 - musicPrompt describes an instrumental soundtrack. title is a short name for the video.`;
 
 const normalize = (s: string) => s.toLowerCase().replace(/[\p{P}\p{S}]/gu, "").replace(/\s+/g, " ").trim();
-// Anything that could send a viewer somewhere: any http(s) URL, an IPv4 address, localhost, or a (unicode) domain.
+// Anything that could send a viewer somewhere: any http(s) URL, an email address, an IPv4 address, localhost, or a
+// (unicode) domain.
 const URL_PATTERNS = [
   /https?:\/\/[^\s]+/giu,
+  /[\p{L}\p{N}._%+-]+@(?:[\p{L}\p{N}-]+\.)+\p{L}{2,}/gu,
   /(?<![\p{L}\p{N}.])\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?(?:\/[^\s]*)?/gu,
   /(?<![\p{L}\p{N}.-])localhost(?::\d+)?(?:\/[^\s]*)?/giu,
   /(?<![\p{L}\p{N}@.-])(?:[\p{L}\p{N}-]+\.)+\p{L}{2,}(?::\d+)?(?:\/[^\s]*)?/gu,
 ];
-/** "example dot com", "example[.]com" and "example(dot)com" are read as the domain they spell. */
+/**
+ * The text as a viewer reads it: compatibility forms folded (NFKC: a full-width "．" is "."), invisible format
+ * characters (zero-width spaces and joiners) removed, other dots that read as one ("。", "｡") made ".", and a spelled
+ * dot ("example dot com", "example[.]com", "example(dot)com") read as the domain it spells, before any TLD.
+ */
 const deobfuscate = (t: string) => t
+  .normalize("NFKC")
+  .replace(/\p{Cf}/gu, "")
+  .replace(/[。｡․﹒]/gu, ".")
   .replace(/\s*[[(]\s*dot\s*[\])]\s*/gi, ".")
   .replace(/\[\.\]|\(\.\)/g, ".")
-  .replace(/\s+dot\s+(?=(?:com|net|org|io|co|app|ai|me|shop|link)\b)/gi, ".");
+  .replace(/(?<=[\p{L}\p{N}])\s+dot\s+(?=\p{L}{2,}(?![\p{L}\p{N}-]))/giu, ".");
 const normUrl = (u: string) => u.toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/[.,;:!?)"'\]]+$/, "").replace(/\/+$/, "");
-const linksIn = (text: string) => URL_PATTERNS.flatMap((re) => deobfuscate(text).match(re) ?? []);
+/** Every link in a text, read the way a viewer reads it (see deobfuscate). */
+export const linksIn = (text: string): string[] => {
+  const t = deobfuscate(text);
+  return URL_PATTERNS.flatMap((re) => t.match(re) ?? []);
+};
 
 export function checkScript(s: Script, choice: ScriptChoice): string[] {
   const problems: string[] = [];

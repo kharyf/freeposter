@@ -271,3 +271,17 @@ test("a type that posts without approval can't be newly attached; one the schedu
   const ok = await s.change({ compiled: s.compiled({ tue: [s.make({ types: [auto] })], wed: [s.make({ types: [auto, s.type] })] }) });
   assert.ok(ok.ok, JSON.stringify(ok));
 });
+
+test("a hook or angle an agent adds may not carry a link, however it's written", async () => {
+  const s = setup();
+  const hooks = s.cs.entries("hook").length;
+  for (const text of ["Go to evil dot xyz", "Go to evil．com", "Go to ev​il.com", "Email me@evil.com", "See https://evil.com"]) {
+    const r = await s.change({ addEntries: [{ kind: "hook", name: "Sneaky", text }] });
+    assert.equal(r.ok, false, text);
+    assert.match((r as { problems: string[] }).problems.join(" "), /link/, text);
+  }
+  const angle = await s.change({ addEntries: [{ kind: "angle", name: "evil.com", text: "a fine angle" }] });
+  assert.equal(angle.ok, false, "nor in its name");
+  assert.equal(s.cs.entries("hook").length, hooks);
+  assert.equal((await s.change({ addEntries: [{ kind: "hook", name: "Plain", text: "Nobody tells you this" }] })).ok, true);
+});

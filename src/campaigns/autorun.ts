@@ -11,6 +11,7 @@ import { allStyles, styleToken } from "../edit/styles.ts";
 import { queueEvent } from "../notify.ts";
 import { DAYS, parseCompiled, type CompiledCampaign, type Vocabulary } from "./spec.ts";
 import { roundTrip } from "./render.ts";
+import { linksIn } from "./script.ts";
 import { translateCampaign } from "./translate.ts";
 import type { Campaign, CampaignStore, LibraryEntry } from "./store.ts";
 
@@ -166,6 +167,11 @@ function precheck(c: Campaign, change: unknown, reason: unknown): string[] {
       if (e.kind !== "hook" && e.kind !== "angle") problems.push(`${at}: only hooks and angles can be added (an agent can't add CTAs)`);
       if (typeof e.name !== "string" || !e.name.trim() || e.name.length > 100) problems.push(`${at}.name must be non-empty, at most 100 characters`);
       if (typeof e.text !== "string" || !e.text.trim() || e.text.length > 2000) problems.push(`${at}.text must be non-empty, at most 2000 characters`);
+      // A hook is spoken word for word: a link (however it's spelled) would reach viewers outside the CTA.
+      for (const field of ["name", "text"] as const) {
+        const links = typeof e[field] === "string" ? linksIn(e[field] as string) : [];
+        if (links.length) problems.push(`${at}.${field} has a link (${links.join(", ")}); only a CTA the user made may carry a link, and an agent can't add CTAs`);
+      }
       if (e.keywords !== undefined && (!Array.isArray(e.keywords) || e.keywords.length > 20 || e.keywords.some((k) => typeof k !== "string" || k.length > 100))) {
         problems.push(`${at}.keywords must be a list of at most 20 short words`);
       }

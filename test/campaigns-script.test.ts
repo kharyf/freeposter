@@ -7,7 +7,7 @@ import type { AiService } from "../src/ai/router.ts";
 import type { Question } from "../src/ai/providers.ts";
 import { config } from "../src/config.ts";
 import type { LibraryEntry } from "../src/campaigns/store.ts";
-import { buildGeneratedProduction, checkScript, writeScript, type Script } from "../src/campaigns/script.ts";
+import { buildGeneratedProduction, checkScript, linksIn, writeScript, type Script } from "../src/campaigns/script.ts";
 import type { Adapters } from "../src/produce/adapters/index.ts";
 import { ProductionWorker } from "../src/produce/worker.ts";
 import { newStore, tmp } from "./helpers.ts";
@@ -157,4 +157,27 @@ test("hook: empty after normalization fails; matching is on word boundaries", ()
   const stop = { ...choice, hook: entry("hook", "Stop") };
   assert.deepEqual(checkScript(good(), stop), []);
   assert.match(problemsWith({ lines: ["Stopwatch time.", "x", "Try it free today"] }).concat(checkScript({ ...good(), lines: ["Stopwatch time.", "Try it free today"] }, stop).join("\n")), /first line must start with the hook/);
+});
+
+test("full-width, ideographic and zero-width dots, any spelled-out dot, and emails are links too", () => {
+  const line = (l: string) => problemsWith({ lines: ["Stop scrolling now.", l, "Try it free today"] });
+  assert.match(line("go to evil．com"), /evil/, "full-width dot");
+  assert.match(line("go to evil。com"), /evil/, "ideographic dot");
+  assert.match(line("go to evil​.com"), /evil/, "zero-width space before the dot");
+  assert.match(line("go to ev‍il.c​om"), /evil/, "zero-width characters inside the domain");
+  assert.match(line("go to evil dot xyz"), /evil/, "a spelled-out dot before any TLD");
+  assert.match(line("go to evil DOT shop dot uk"), /evil/);
+  assert.match(line("write to me@evil.com"), /me@evil\.com/, "an email address");
+  assert.match(problemsWith({ caption: "Plan https://example.com/plan example.com@evil.com" }), /evil\.com/);
+  assert.match(problemsWith({ caption: "Plan https://example.com/plan https://example.com@evil.com/plan" }), /evil\.com/);
+  // The CTA's own link, in full-width or with a zero-width character, is still the CTA's.
+  assert.deepEqual(checkScript({ ...good(), lines: ["Stop scrolling now.", "Try it free today at example．com/plan"] }, choice), []);
+  assert.deepEqual(checkScript({ ...good(), caption: "Plan your week https://exam​ple.com/plan" }, choice), []);
+});
+
+test("linksIn finds the links in a hook or angle an agent adds", () => {
+  assert.deepEqual(linksIn("Stop scrolling right now"), []);
+  assert.ok(linksIn("Go to evil dot xyz").length);
+  assert.ok(linksIn("mail me@evil.com").length);
+  assert.ok(linksIn("evil．com").length);
 });
