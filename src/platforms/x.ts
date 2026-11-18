@@ -1,8 +1,8 @@
 import { config, redirectUri } from "../config.ts";
 import { pkceChallenge } from "../crypto.ts";
-import { FatalError, requestJson } from "../http.ts";
+import { FatalError, httpFailure, requestJson } from "../http.ts";
 import type { Account, TokenSet } from "../types.ts";
-import { expiresIn, pollUntil, readChunk, type Publisher } from "./base.ts";
+import { Gone, NeedsPermission, PlanLimited, expiresIn, pollUntil, readChunk, type Publisher } from "./base.ts";
 
 // Docs: https://docs.x.com/x-api/media/quickstart/media-upload-chunked
 const API = "https://api.x.com/2";
@@ -28,7 +28,6 @@ function toTokens(t: any): TokenSet {
 export const x: Publisher = {
   platform: "x",
   label: "X",
-  analyticsScopes: [],
   minDurationSec: 0.5,
   maxDurationSec: () => config.xMaxVideoSeconds,
 
@@ -137,7 +136,62 @@ export const x: Publisher = {
 
     return { url: `https://x.com/${account.meta.username}/status/${progress.tweetId}` };
   },
+
+  analyticsScopes: ["tweet.read"],
+
+  async metrics(ctx) {
+    const tweetId = ctx.progress.tweetId;
+    if (!tweetId) throw new Gone("no X post id recorded for this job");
+    // non_public_metrics (owner-only) stop being served 30 days after the post.
+    const withPrivate = Date.now() - ctx.publishedAt <= 30 * 86_400_000;
+    let r;
+    try {
+      r = await getTweet(ctx.account, tweetId, withPrivate);
+    } catch (err) {
+      // 401/403 here usually means the plan or token can't read non_public_metrics: retry once without them.
+      const status = httpFailure(err)?.status;
+      if (!withPrivate || (status !== 401 && status !== 403)) throw err;
+      r = await getTweet(ctx.account, tweetId, false);
+    }
+    if (r.title === "UsageCapExceeded") throw new PlanLimited("limited by X's plan");
+    const t = r.data;
+    if (!t) throw new Gone("the X post no longer exists"); // a 200 carrying only errors[] (resource-not-found)
+
+    const raw: Record<string, number> = {};
+    const take = (m: Record<string, unknown> | undefined) => {
+      for (const [k, v] of Object.entries(m ?? {})) if (typeof v === "number" && !(k in raw)) raw[k] = v;
+    };
+    // The video's own view count is on its media object (media.fields=public_metrics.view_count).
+    const mediaKeys: string[] = t.attachments?.media_keys ?? [];
+    const media = (r.includes?.media ?? []).find((m: any) => mediaKeys.includes(m.media_key) && typeof m.public_metrics?.view_count === "number");
+    take(media?.public_metrics);
+    take(t.non_public_metrics);
+    take(t.public_metrics);
+    if (typeof media?.public_metrics?.view_count === "number") return { views: media.public_metrics.view_count, viewsKind: "views", raw, retention: null };
+    return { views: raw.impression_count ?? null, viewsKind: "impressions", raw, retention: null };
+  },
 };
+
+const isNotFound = (e: any) => typeof e?.type === "string" && e.type.endsWith("resource-not-found");
+
+/** 429 and X's usage-cap error both mean the plan won't serve this; the body's title is the structured marker. */
+function usageCap(err: unknown): boolean {
+  const f = httpFailure(err);
+  return f?.status === 429 || f?.body?.title === "UsageCapExceeded";
+}
+
+async function getTweet(account: Account, id: string, withPrivate: boolean) {
+  const fields = withPrivate ? "public_metrics,non_public_metrics" : "public_metrics";
+  const q = `tweet.fields=${fields}&expansions=attachments.media_keys&media.fields=public_metrics`;
+  try {
+    return await requestJson(`${API}/tweets/${encodeURIComponent(id)}?${q}`, { headers: { authorization: `Bearer ${account.accessToken}` } });
+  } catch (err) {
+    const f = httpFailure(err);
+    if (usageCap(err)) throw new PlanLimited("limited by X's plan");
+    if (f?.status === 404 || f?.body?.errors?.some?.(isNotFound)) throw new Gone("the X post no longer exists");
+    throw err;
+  }
+}
 
 /** After a crash mid-request, look for the post we may already have made instead of posting twice. */
 async function findRecentTweet(account: Account, text: string): Promise<string | undefined> {

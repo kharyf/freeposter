@@ -1,7 +1,7 @@
 import { config, redirectUri } from "../config.ts";
-import { FatalError, RetryableError, request, requestJson } from "../http.ts";
+import { FatalError, RetryableError, httpFailure, request, requestJson } from "../http.ts";
 import type { Account, TokenSet } from "../types.ts";
-import { coverMs, expiresIn, pollUntil, readChunk, utf16Length, type Publisher } from "./base.ts";
+import { Gone, NeedsPermission, StillProcessing, coverMs, expiresIn, pollUntil, readChunk, utf16Length, type Publisher } from "./base.ts";
 
 // Docs: https://developers.tiktok.com/doc/content-posting-api-reference-direct-post
 const API = "https://open.tiktokapis.com/v2";
@@ -69,7 +69,6 @@ function toTokens(t: any): TokenSet {
 export const tiktokPublisher: Publisher = {
   platform: "tiktok",
   label: "TikTok",
-  analyticsScopes: [],
   minDurationSec: 3,
   maxDurationSec: (account) => Number(account.meta.maxDurationSec ?? 600),
 
@@ -85,7 +84,7 @@ export const tiktokPublisher: Publisher = {
   authorizeUrl(state) {
     const q = new URLSearchParams({
       client_key: creds().id,
-      scope: "user.info.basic,video.publish",
+      scope: "user.info.basic,video.publish,video.list",
       response_type: "code",
       redirect_uri: redirectUri("tiktok"),
       state,
@@ -209,5 +208,29 @@ export const tiktokPublisher: Publisher = {
           ? "Posted as 'Only me', so TikTok gives no public link."
           : "Published; TikTok has not exposed the public post ID yet (it is usually still in moderation).",
     };
+  },
+
+  analyticsScopes: ["video.list"],
+
+  async metrics(ctx) {
+    const videoId = ctx.job.resultUrl?.match(/\/video\/(\d+)/)?.[1];
+    if (!videoId) throw new StillProcessing("TikTok has not exposed the post id yet");
+    let r: any;
+    try {
+      r = await requestJson(`${API}/video/query/?fields=id,view_count,like_count,comment_count,share_count`, {
+        headers: { authorization: `Bearer ${ctx.account.accessToken}` },
+        json: { filters: { video_ids: [videoId] } },
+      });
+    } catch (err) {
+      const failure = httpFailure(err);
+      if (failure?.body?.error?.code === "scope_not_authorized") throw new NeedsPermission("sign in to TikTok again to allow analytics");
+      throw err;
+    }
+    if (r.error?.code === "scope_not_authorized") throw new NeedsPermission("sign in to TikTok again to allow analytics");
+    const video = r.data?.videos?.find((v: any) => String(v.id) === videoId);
+    if (!video) throw new Gone(`TikTok video ${videoId} no longer exists or is private`);
+    const raw: Record<string, number> = {};
+    for (const [k, v] of Object.entries(video)) if (k !== "id" && typeof v === "number") raw[k] = v;
+    return { views: raw.view_count ?? null, viewsKind: "views", raw, retention: null };
   },
 };

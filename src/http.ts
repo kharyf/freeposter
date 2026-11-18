@@ -76,6 +76,18 @@ export async function requestJson<T = any>(url: string, opts: RequestOptions = {
   return (text ? JSON.parse(text) : {}) as T;
 }
 
+/** The status and parsed JSON body of an error thrown by request() (its message is `host path STATUS: body`); undefined for other errors. */
+export function httpFailure(err: unknown): { status: number; body: any } | undefined {
+  if (!(err instanceof FatalError || err instanceof RetryableError)) return undefined;
+  const m = err.message.match(/^\S+ (\d{3}): ([\s\S]*)$/);
+  if (!m) return undefined;
+  let body: any;
+  try {
+    body = JSON.parse(m[2]);
+  } catch {}
+  return { status: Number(m[1]), body };
+}
+
 function parseGraphError(text: string): GraphError | undefined {
   try {
     return JSON.parse(text)?.error;

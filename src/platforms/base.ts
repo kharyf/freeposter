@@ -17,6 +17,9 @@ export class NeedsPermission extends Error {}
 /** Thrown by metrics() when the video no longer exists or is private. */
 export class Gone extends Error {}
 
+/** Thrown by metrics() when the platform's plan or usage cap withholds the numbers (X). */
+export class PlanLimited extends Error {}
+
 export interface MetricsContext {
   account: Account;
   job: Job;
