@@ -8,8 +8,13 @@
 // skips the edit and the review, and posts as uploaded (still transcribed for its caption). A video with no speech
 // is captioned from its frames, and when that (or the AI) fails it gets the caption #fyp. Every step is saved, so a
 // restart picks up where it stopped.
+// A file whose name a confirmed campaign's "post" line mentions is "held" once its edit is ready (a _RAW one once
+// captioned): it isn't reviewed or scheduled by its filename, the campaign posts it (and its day sets the time, so
+// a filename time already past doesn't make it late). If the campaign stops mentioning it before taking it, it goes
+// on as if it had never been held. A file already reviewing or scheduled when the campaign was confirmed is left be.
 import type { Readable } from "node:stream";
 import { accountSets, defaultSetId, defaultTikTok, setAccounts, setToken } from "../accounts.ts";
+import { driveFileTaken, heldBy } from "../campaigns/store.ts";
 import { captionVideo, transcriptText, type CaptionDeps } from "../caption.ts";
 import type { Store } from "../db.ts";
 import { DEFAULT_EDIT, type EditSettings } from "../edit/settings.ts";
@@ -84,10 +89,14 @@ export class Intake {
     for (const f of this.store.driveFilesIn(["downloading"])) {
       if (!this.busy.has(f.driveId) && this.now() - f.updatedAt > DOWNLOAD_RETRY_MS) void this.advance(f.driveId);
     }
+    const held = heldBy(this.store);
+    for (const f of this.store.driveFilesIn(["held"])) {
+      if (!this.busy.has(f.driveId)) this.release(f, held);
+    }
     for (const f of this.store.driveFilesIn(["processing"])) {
       if (this.busy.has(f.driveId)) continue;
       if (this.isRaw(f)) {
-        if (f.caption !== null) await this.schedule(f);
+        if (f.caption !== null && !this.hold(f, held)) await this.schedule(f);
         continue;
       }
       const edit = f.editId ? this.store.edit(this.follow(f)) : undefined;
@@ -95,11 +104,35 @@ export class Intake {
         this.store.upsertDriveFile(f.driveId, { state: "edit_failed", note: `the edit failed: ${edit?.error ?? "it is missing"}` });
         continue;
       }
-      if (f.caption !== null && edit.state === "ready") await this.requestReview(this.store.driveFile(f.driveId)!);
+      if (f.caption !== null && edit.state === "ready" && !this.hold(f, held)) await this.requestReview(this.store.driveFile(f.driveId)!);
     }
     for (const f of this.store.driveFilesIn(["reviewing"])) {
       if (!this.busy.has(f.driveId)) this.followReview(f);
     }
+  }
+
+  /** A campaign's post line names it: "held" for the campaign, and nothing goes out by its filename. True if held. */
+  private hold(f: DriveFileRecord, held: Map<string, string>): boolean {
+    const campaign = held.get((this.choice(f)?.name ?? "").toLowerCase());
+    if (campaign === undefined) return false;
+    this.store.upsertDriveFile(f.driveId, { state: "held", note: `held by campaign ${campaign}` });
+    log(f, `held by campaign ${campaign}`);
+    return true;
+  }
+
+  /**
+   * A held file no campaign mentions any more, and that none has taken: it carries on as if never held (a file
+   * whose filename time had passed when it arrived is late, as it would have been).
+   */
+  private release(f: DriveFileRecord, held: Map<string, string>) {
+    const choice = this.choice(f);
+    if (held.has((choice?.name ?? "").toLowerCase()) || driveFileTaken(this.store, f.driveId)) return;
+    if (choice && choice.latest < (f.uploadedAt ?? f.createdAt) - GRACE_MS) {
+      this.store.upsertDriveFile(f.driveId, { state: "late", note: "no campaign posts it any more, and its filename's time had already passed when it reached the folder" });
+      return;
+    }
+    this.store.upsertDriveFile(f.driveId, { state: "processing", note: null });
+    log(f, "no longer held by a campaign");
   }
 
   /** The file's edit, moved on to its newest revision (revise_edit, after a redo); returns its id. */
@@ -254,7 +287,9 @@ export class Intake {
           return false;
         }
         const now = this.now();
-        if (parsed.latest < now - GRACE_MS) {
+        // A campaign's post line names it: the campaign's day sets its time, so its filename's can't make it late.
+        const held = heldBy(this.store).has(parsed.name.toLowerCase());
+        if (!held && parsed.latest < now - GRACE_MS) {
           const when = parsed.latest === parsed.at ? `its time (${new Date(parsed.at).toLocaleString()})` : `its date (${new Date(parsed.at).toLocaleDateString()})`;
           this.store.upsertDriveFile(id, { state: "late", choice, scheduledAt: parsed.at, note: `${when} had already passed when it reached the folder` });
           return false;

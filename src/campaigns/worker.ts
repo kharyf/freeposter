@@ -4,7 +4,9 @@
 //    the hook / angle / CTA it was given, so editing the campaign never changes a task already made.
 //  - make: script (AI) → WanGP voiceover and music → production → the editing style's edit → review. Nothing a
 //    campaign makes posts without the user's approval here.
-//  - post: a "post" line waits for a kept campaign video with that name until the local day ends (then "missed").
+//  - post: a "post" line waits for a kept campaign video with that name, else a Drive file intake held for it (its
+//    own edit, or for _RAW the file, goes to a campaign review), until the local day ends (then "missed"). A Drive
+//    file with that name already reviewing or scheduled by its filename is never posted again: the task is missed.
 //  - placing an approved post: the review service makes a campaign's post held; this worker picks its time (the
 //    line's time today, now if that has passed today, the next free default time if approved on a later day), keeps
 //    the daily cap by the day it actually posts, writes its labels, and only then releases it.
@@ -30,7 +32,7 @@ import { hashFile } from "../review/media.ts";
 import type { ReviewService, Subject } from "../review/service.ts";
 import { buildGeneratedProduction, writeScript, type Script } from "./script.ts";
 import { DAYS, type MakeInstruction, type Pick as ValuePick, type PostInstruction } from "./spec.ts";
-import { CampaignStore, campaignTaskFor, type Campaign, type CampaignTask, type LibraryEntry, type LibraryKind, type TaskState } from "./store.ts";
+import { CampaignStore, campaignTaskFor, driveFileTaken, type Campaign, type CampaignTask, type LibraryEntry, type LibraryKind, type TaskState } from "./store.ts";
 
 /** What the worker needs of the production worker (a stand-in in tests). */
 export interface Productions {
@@ -76,6 +78,8 @@ export interface TaskChoices {
   music?: string;
   /** a post line: the kept task whose video it posts */
   sourceTaskId?: number;
+  /** a post line: the held Drive file it posts (recorded footage) */
+  driveId?: string;
 }
 
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -448,15 +452,19 @@ export class CampaignWorker {
   private async requestReview(t: CampaignTask, c: TaskChoices) {
     const accounts = setAccounts(this.store, c.accountSetId ?? defaultSetId(this.store));
     if (!accounts.length) return this.fail(t.id, "the campaign's account set has no accounts to post to");
-    const script = this.scriptOf(t);
-    if (!script) return this.fail(t.id, "its script is missing");
+    // A held Drive file is captioned by intake; a campaign video by its script.
+    const file = c.driveId ? this.store.driveFile(c.driveId) : undefined;
+    if (c.driveId && file?.state !== "held") return this.fail(t.id, `its Drive file is ${file ? file.state : "gone"} now`);
+    const text = file ? { caption: file.caption ?? "", title: file.title ?? "" } : this.scriptOf(t);
+    if (!text) return this.fail(t.id, "its script is missing");
+    const subject: Subject = file?.choice?.raw ? { kind: "file", path: file.sourcePath!, name: file.choice.name } : { kind: "edit", id: t.editId! };
     const keep = t.kind !== "post" && c.libraryName ? c.libraryName : undefined;
     const planned = c.postTime ? localAt(t.date, c.postTime) : null;
     const review = await this.reviews.request({
-      subject: { kind: "edit", id: t.editId! },
+      subject,
       accountIds: accounts.map((a) => a.id),
-      caption: script.caption,
-      title: script.title,
+      caption: text.caption,
+      title: text.title,
       // What the card shows; the campaign places the post itself once it's approved.
       scheduledAt: !keep && planned !== null && planned > this.now() ? planned : null,
       tiktok: accounts.some((a) => a.platform === "tiktok") ? defaultTikTok(this.store) : null,
@@ -467,7 +475,7 @@ export class CampaignWorker {
       ...(keep ? { keep } : {}),
     });
     this.campaigns.updateTask(t.id, { state: "reviewing", reviewId: review.id });
-    log(t, `edit ${t.editId} sent for review (review ${review.id})`);
+    log(t, `${subject.kind === "file" ? `the Drive file ${file!.name}` : `edit ${t.editId}`} sent for review (review ${review.id})`);
   }
 
   private followReview(t: CampaignTask, c: TaskChoices) {
@@ -493,9 +501,9 @@ export class CampaignWorker {
         return this.fail(t.id, "you rejected it in review; nothing was posted", false);
       case "redo":
       case "superseded": {
-        // A redo makes a newer edit (the agent's revise_edit): review that one.
-        const latest = this.store.latestRevision(t.editId!);
-        if (latest !== t.editId) {
+        // A redo makes a newer edit (the agent's revise_edit): review that one. (A _RAW file has no edit to redo.)
+        const latest = t.editId === null ? null : this.store.latestRevision(t.editId);
+        if (latest !== null && latest !== t.editId) {
           this.campaigns.updateTask(t.id, { state: "editing", editId: latest, reviewId: null });
           return;
         }
@@ -515,10 +523,13 @@ export class CampaignWorker {
     if (!campaign) return this.fail(t.id, "its campaign is gone");
     const at = this.postTime(t, c, campaign);
     if (at === null) return this.fail(t.id, `no day in the next ${MAX_DAYS_AHEAD} has room under the daily post cap of ${campaign.dailyPostCap}`);
+    // A held Drive file removed from the folder (or posted another way) since its review: its post is cancelled.
+    const file = c.driveId ? this.store.driveFile(c.driveId) : undefined;
+    if (c.driveId && (file?.state !== "held" || file.postId !== null)) return this.fail(t.id, `its Drive file is ${file ? file.state : "gone"} now; nothing was posted`);
     const src = c.sourceTaskId ? (this.campaigns.task(c.sourceTaskId)?.choices as unknown as TaskChoices | undefined) ?? c : c;
     // Labels first: the post must carry them before it can publish.
     this.analytics.setLabels({
-      postId, source: "generated", styleId: c.style,
+      postId, source: c.driveId ? "recorded" : "generated", styleId: c.style,
       hookId: src.hook?.id ?? null, hookText: src.hook?.text ?? null,
       angleId: src.angle?.id ?? null, angleText: src.angle?.text ?? null,
       ctaId: src.cta?.id ?? null, ctaText: src.cta?.text ?? null,
@@ -528,6 +539,8 @@ export class CampaignWorker {
     this.campaigns.updateTask(t.id, { state: "scheduled", postId });
     // The kept video a post line posted is used: it's never taken again.
     if (c.sourceTaskId) this.campaigns.updateTask(c.sourceTaskId, { state: "posted", postId });
+    // So is a held Drive file: it's scheduled now, by its campaign.
+    if (c.driveId) this.store.linkDrivePost(c.driveId, postId, `posted by campaign ${campaign.name}`);
     log(t, `post ${postId} scheduled for ${new Date(at).toLocaleString()}`);
   }
 
@@ -619,7 +632,14 @@ export class CampaignWorker {
       .filter((k) => String((k.choices as unknown as TaskChoices).libraryName ?? "").toLowerCase() === name && k.date >= from && k.date <= t.date)
       .sort((a, b) => (a.date === b.date ? b.id - a.id : a.date < b.date ? 1 : -1))
       .find((k) => !taken.get(t.id, k.id));
-    if (!kept) return; // looked for again next tick
+    if (!kept) {
+      if (this.takeDriveFile(t, name)) return;
+      if (this.scheduledByFilename(t, name)) {
+        this.campaigns.updateTask(t.id, { state: "missed", error: "already scheduled by its filename" });
+        this.tell(this.campaigns.task(t.id)!, "campaign.missed", `the Drive file ${ins.name} was already scheduled by its filename, so it isn't posted again`);
+      }
+      return; // looked for again next tick
+    }
     const keptChoices = kept.choices as unknown as TaskChoices;
     const style = ins.style ?? keptChoices.style;
     this.setChoices(t.id, { sourceTaskId: kept.id, style });
@@ -634,12 +654,50 @@ export class CampaignWorker {
     await this.startEdit(t.id, video, style);
   }
 
+  /**
+   * A post line's held Drive file (the newest uploaded that no task has taken; taking it is recorded at once, as
+   * this task's driveId): its own edit goes to review (the line's style can't pick another: intake makes one edit),
+   * or, for a _RAW file, the file itself. True when one was taken.
+   */
+  private takeDriveFile(t: CampaignTask, name: string): boolean {
+    const f = this.store.driveFilesIn(["held"])
+      .filter((d) => (d.choice?.name ?? "").toLowerCase() === name && !driveFileTaken(this.store, d.driveId))
+      .sort((a, b) => (b.uploadedAt ?? b.createdAt) - (a.uploadedAt ?? a.createdAt))[0];
+    if (!f) return false;
+    this.setChoices(t.id, { driveId: f.driveId, style: f.choice?.styleId ?? null });
+    if (f.choice?.raw) {
+      this.campaigns.updateTask(t.id, { state: "reviewing", reviewId: null });
+      log(t, `posting the Drive file ${f.name} as uploaded (_RAW), after review`);
+    } else if (f.editId === null) {
+      this.fail(t.id, `the Drive file ${f.name} has no edit`);
+    } else {
+      const editId = this.store.latestRevision(f.editId);
+      this.campaigns.updateTask(t.id, { state: "editing", editId });
+      log(t, `posting the Drive file ${f.name} (edit ${editId})`);
+    }
+    return true;
+  }
+
+  /**
+   * A Drive file by this name, uploaded in the week up to the line's day, already going out by its own filename (it
+   * reached review or was scheduled before the campaign held its name). Not one a campaign task posted.
+   */
+  private scheduledByFilename(t: CampaignTask, name: string): boolean {
+    const from = localAt(addDays(t.date, -(KEPT_WINDOW_DAYS - 1)), "00:00");
+    return this.store.driveFilesIn(["reviewing", "scheduled"]).some((d) =>
+      (d.choice?.name ?? "").toLowerCase() === name && (d.uploadedAt ?? d.createdAt) >= from && !driveFileTaken(this.store, d.driveId));
+  }
+
   // ---- failures and notifications ----
 
   fail(id: number, error: string, notify = true) {
     const t = this.campaigns.task(id);
     if (!t) return;
     this.campaigns.updateTask(id, { state: "failed", error });
+    // A held Drive file it took and never posted says why (it isn't taken again, or posted by its filename).
+    const driveId = (t.choices as unknown as TaskChoices).driveId;
+    const file = driveId ? this.store.driveFile(driveId) : undefined;
+    if (file?.state === "held" && file.postId === null) this.store.upsertDriveFile(file.driveId, { state: "failed", note: `its campaign task couldn't post it: ${error}` });
     // An approved post this task never placed is still held: it must never go out on its own.
     const r = t.reviewId === null ? undefined : this.reviews.reviews.get(t.reviewId);
     if (r?.postId && t.state !== "scheduled" && t.state !== "posted") this.cancelHeld(r.postId);

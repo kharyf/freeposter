@@ -32,6 +32,7 @@ const DRIVE_STATUS: Partial<Record<DriveFileRecord["state"], string>> = {
   transcribing: "transcribing",
   processing: "being edited",
   reviewing: "waiting for your review",
+  held: "held for its campaign",
   unreviewed: "review ended undecided",
   edit_failed: "edit failed",
   failed: "failed",

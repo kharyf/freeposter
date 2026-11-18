@@ -72,6 +72,7 @@ export type DriveFileState =
   | "ignored" | "invalid" | "late"
   | "downloading" | "transcribing" | "processing"
   | "reviewing" // the edit waits for the user's decision (a review: Telegram and the window)
+  | "held" // a campaign's "post" line names it: the campaign posts it, never its filename
   | "rejected" // the user rejected the edit; nothing posts
   | "unreviewed" // its review expired or couldn't be made; "Send for review again" asks again
   | "scheduled" | "edit_failed" | "failed"

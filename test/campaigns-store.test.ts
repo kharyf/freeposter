@@ -1,7 +1,7 @@
 import "./isolated-home.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CampaignStore } from "../src/campaigns/store.ts";
+import { CampaignStore, heldNames } from "../src/campaigns/store.ts";
 import { DAYS, type CompiledCampaign } from "../src/campaigns/spec.ts";
 import { newStore } from "./helpers.ts";
 
@@ -98,4 +98,19 @@ test("tasks update and filter by state; changes log and undo; kill switch", () =
   assert.equal(cs.killed(), true);
   cs.setKilled(false);
   assert.equal(cs.killed(), false);
+});
+
+test("heldNames: the lowercased names of post lines in runnable campaigns only", () => {
+  const store = newStore();
+  const cs = new CampaignStore(store);
+  const line = (name: string) => ({ kind: "post" as const, name, at: "20:00", style: null, types: [], source: `post ${name}` });
+  const on = mk(cs);
+  cs.confirm(on, { ...compiled(), days: { ...compiled().days, mon: [line("Gatekeeping")], fri: [line("Launch")] } });
+  const off = mk(cs);
+  cs.confirm(off, { ...compiled(), days: { ...compiled().days, tue: [line("Disabled")] } });
+  cs.setEnabled(off, false);
+  const edited = mk(cs);
+  cs.confirm(edited, { ...compiled(), days: { ...compiled().days, wed: [line("Unconfirmed")] } });
+  cs.setText(edited, "changed");
+  assert.deepEqual([...heldNames(store)].sort(), ["gatekeeping", "launch"]);
 });

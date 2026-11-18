@@ -202,6 +202,34 @@ export function campaignTaskFor(store: Store, kind: "production" | "edit", id: n
   return null;
 }
 
+/**
+ * The Drive names (the `{name}` part, lowercased) the "post" lines of every runnable campaign mention, each with the
+ * first such campaign's name. Drive intake holds a file with one of these names for its campaign, so it's never
+ * also posted by its filename.
+ */
+export function heldBy(store: Store): Map<string, string> {
+  const held = new Map<string, string>();
+  const cs = new CampaignStore(store);
+  for (const c of cs.campaigns()) {
+    if (!cs.isRunnable(c) || !c.compiled) continue;
+    for (const lines of Object.values(c.compiled.days)) {
+      for (const ins of lines ?? []) if (ins.kind === "post" && !held.has(ins.name.toLowerCase())) held.set(ins.name.toLowerCase(), c.name);
+    }
+  }
+  return held;
+}
+
+/** Whether a campaign task has taken this held Drive file to post (in any state since: it's never released). */
+export function driveFileTaken(store: Store, driveId: string): boolean {
+  if (!ready.has(store)) { store.db.exec(SCHEMA); ready.add(store); }
+  return Boolean(store.db.prepare("SELECT 1 FROM campaign_tasks WHERE json_extract(choices, '$.driveId') = ? LIMIT 1").get(driveId));
+}
+
+/** The lowercased `{name}`s that runnable campaigns' post lines mention (see heldBy). */
+export function heldNames(store: Store): Set<string> {
+  return new Set(heldBy(store).keys());
+}
+
 export class CampaignStore {
   store: Store;
 

@@ -10,6 +10,11 @@ import type { DriveFile } from "../src/drive/client.ts";
 import { publishers } from "../src/platforms/index.ts";
 import type { Transcript } from "../src/edit/transcribe.ts";
 import { ReviewService } from "../src/review/service.ts";
+import { AnalyticsStore } from "../src/analytics/store.ts";
+import { DAYS, type CompiledCampaign, type PostInstruction } from "../src/campaigns/spec.ts";
+import { CampaignStore } from "../src/campaigns/store.ts";
+import { CampaignWorker, dayKey, localAt } from "../src/campaigns/worker.ts";
+import { ProductionStore } from "../src/produce/store.ts";
 import { account, newStore, tmp, verticalSilent } from "./helpers.ts";
 
 const MIN = 60_000;
@@ -586,4 +591,200 @@ test("a review that expires undecided can be sent again", async () => {
   // reviewOf ticks again first, which keeps it reviewing.
   await approve();
   assert.equal(store.driveFile("f1")!.state, "scheduled");
+});
+
+// ---- files a campaign's "post" line names are held by the campaign ----
+
+/** A confirmed campaign whose "post" line today names `name` at `time`, and the worker that runs it. */
+function holdBy(s: ReturnType<typeof setup>, name: string, time = "23:59", campaignName = "Launch Week") {
+  const cs = new CampaignStore(s.store);
+  const today = DAYS[new Date(s.clock.now).getDay()];
+  const days = Object.fromEntries(DAYS.map((d) => [d, []])) as unknown as CompiledCampaign["days"];
+  const line: PostInstruction = { kind: "post", name, at: time, style: null, types: [], source: `post ${name}_${time}` };
+  const id = cs.create({ name: campaignName, text: "the text", accountSetId: null, defaultPostTimes: ["09:00"] });
+  cs.confirm(id, { version: 1, days: { ...days, [today]: [line] }, rules: [] });
+  const ps = new ProductionStore(s.store);
+  const worker = new CampaignWorker({
+    store: s.store, reviews: s.reviews, ai: null, now: () => s.clock.now, dir: tmp(),
+    productions: {
+      productions: ps,
+      createStaged: async () => { throw new Error("nothing is made here"); },
+      borrowGpu: async <T>(fn: () => Promise<T>) => ({ value: await fn() }),
+    },
+  });
+  const tick = async () => { await worker.tick(); await worker.idle(); };
+  const task = () => cs.tasksOn(id, dayKey(s.clock.now))[0];
+  return { cs, id, worker, tick, task };
+}
+
+/** Early today, so a post line late today is still ahead. */
+const morning = () => new Date().setHours(8, 0, 0, 0);
+
+test("a file a confirmed campaign posts is held: no review and no post by its filename", async () => {
+  const s = setup();
+  s.clock.now = morning();
+  holdBy(s, "gatekeeping");
+  await s.intake.handle(s.file(driveName("Gatekeeping", s.clock.now + 2 * 60 * MIN)));
+  s.finishEdit("f1");
+  await s.intake.tick();
+  await s.intake.tick();
+  const f = s.store.driveFile("f1")!;
+  assert.equal(f.state, "held", f.note ?? "");
+  assert.equal(f.note, "held by campaign Launch Week");
+  assert.equal(f.reviewId, null);
+  assert.equal(s.reviews.reviews.recent().length, 0, "nothing goes to review by its filename");
+  assert.equal(s.posts(), 0);
+});
+
+test("a held _RAW file isn't posted as uploaded", async () => {
+  const s = setup();
+  s.clock.now = morning();
+  holdBy(s, "Gatekeeping");
+  await s.intake.handle(s.file(driveName("Gatekeeping", s.clock.now + 2 * 60 * MIN).replace(".mp4", "_RAW.mp4")));
+  await s.intake.tick();
+  const f = s.store.driveFile("f1")!;
+  assert.equal(f.state, "held", f.note ?? "");
+  assert.equal(s.posts(), 0);
+});
+
+test("a held file whose filename time has passed isn't refused as late: the campaign's day sets its time", async () => {
+  const s = setup();
+  s.clock.now = morning();
+  holdBy(s, "Gatekeeping");
+  await s.intake.handle(s.file(driveName("Gatekeeping", s.clock.now - 3 * 60 * MIN)));
+  s.finishEdit("f1");
+  await s.intake.tick();
+  assert.equal(s.store.driveFile("f1")!.state, "held", s.store.driveFile("f1")!.note ?? "");
+});
+
+test("a held file whose name the campaign no longer posts goes on as if never held", async () => {
+  const s = setup();
+  s.clock.now = morning();
+  const h = holdBy(s, "Gatekeeping");
+  const at = s.clock.now + 2 * 60 * MIN;
+  await s.intake.handle(s.file(driveName("Gatekeeping", at)));
+  s.finishEdit("f1");
+  await s.intake.tick();
+  assert.equal(s.store.driveFile("f1")!.state, "held");
+  // Edited: until it's confirmed again it posts nothing, so it holds nothing.
+  h.cs.setText(h.id, "new text");
+  const r = await s.approve();
+  const f = s.store.driveFile("f1")!;
+  assert.equal(f.state, "scheduled", f.note ?? "");
+  assert.equal(s.store.post(f.postId!)!.scheduledAt, at, "its filename's time, as if never held");
+  assert.equal(r.requestedVia, "drive");
+  assert.equal(s.posts(), 1);
+});
+
+test("a held file is released when the campaign is confirmed again without its post line", async () => {
+  const s = setup();
+  s.clock.now = morning();
+  const h = holdBy(s, "Gatekeeping");
+  await s.intake.handle(s.file(driveName("Gatekeeping", s.clock.now + 2 * 60 * MIN)));
+  s.finishEdit("f1");
+  await s.intake.tick();
+  assert.equal(s.store.driveFile("f1")!.state, "held");
+  h.cs.setText(h.id, "post Other_9pm");
+  const days = Object.fromEntries(DAYS.map((d) => [d, []])) as unknown as CompiledCampaign["days"];
+  const other: PostInstruction = { kind: "post", name: "Other", at: "21:00", style: null, types: [], source: "post Other_9pm" };
+  h.cs.confirm(h.id, { version: 1, days: { ...days, [DAYS[new Date(s.clock.now).getDay()]]: [other] }, rules: [] });
+  await s.reviewOf();
+});
+
+test("a file already scheduled by its filename keeps that schedule; the campaign's post line says so and posts nothing", async () => {
+  const s = setup();
+  s.clock.now = morning();
+  await s.intake.handle(s.file(driveName("Gatekeeping", s.clock.now + 2 * 60 * MIN)));
+  s.finishEdit("f1");
+  await s.approve();
+  const before = s.store.driveFile("f1")!;
+  assert.equal(before.state, "scheduled");
+  const h = holdBy(s, "Gatekeeping");
+  await s.intake.tick();
+  await h.tick();
+  const t = h.task();
+  assert.equal(t.state, "missed", t.error ?? "");
+  assert.equal(t.error, "already scheduled by its filename");
+  const after = s.store.driveFile("f1")!;
+  assert.equal(after.state, "scheduled");
+  assert.equal(after.postId, before.postId);
+  assert.equal(s.posts(), 1);
+});
+
+test("intake and the campaign worker over one held file make exactly one post, the campaign's", async () => {
+  const s = setup();
+  s.clock.now = morning();
+  const h = holdBy(s, "Gatekeeping");
+  await s.intake.handle(s.file(driveName("Gatekeeping", s.clock.now + 2 * 60 * MIN)));
+  s.finishEdit("f1");
+  const editId = s.store.driveFile("f1")!.editId!;
+  for (let i = 0; i < 3; i++) { await s.intake.tick(); await h.tick(); }
+  const t = h.task();
+  assert.equal(t.state, "reviewing", t.error ?? "");
+  assert.equal(t.editId, editId, "the file's own edit");
+  await s.reviews.tick();
+  const r = s.reviews.reviews.get(t.reviewId!)!;
+  assert.equal(r.state, "pending", r.error ?? "");
+  assert.equal(r.requestedVia, "campaign");
+  assert.equal(r.subjectKind, "edit");
+  assert.equal(r.subjectId, editId);
+  assert.equal(r.draft.caption, "Gatekeeping matters. #gatekeeping", "the caption intake wrote");
+  assert.equal(r.draft.scheduledAt, localAt(dayKey(s.clock.now), "23:59"), "the campaign day's date at the line's time");
+  assert.equal(s.reviews.reviews.recent().length, 1, "only the campaign's review");
+  assert.ok((await s.reviews.approve(r.id, { via: "window" })).ok);
+  for (let i = 0; i < 3; i++) { await s.intake.tick(); await h.tick(); }
+  const done = h.task();
+  assert.equal(done.state, "scheduled", done.error ?? "");
+  const f = s.store.driveFile("f1")!;
+  assert.equal(f.state, "scheduled", "used: it can't be taken twice");
+  assert.equal(f.postId, done.postId);
+  assert.equal(s.store.post(done.postId!)!.scheduledAt, localAt(dayKey(s.clock.now), "23:59"));
+  const labels = new AnalyticsStore(s.store).labels(done.postId!)!;
+  assert.equal(labels.source, "recorded");
+  assert.equal(labels.labelledBy, "campaign");
+  assert.equal(labels.campaignId, h.id);
+  assert.equal(labels.campaignTaskId, done.id);
+  // The campaign is edited afterwards: the used file isn't released to post again by its filename.
+  h.cs.setText(h.id, "new text");
+  for (let i = 0; i < 3; i++) { await s.intake.tick(); await h.tick(); await s.reviews.tick(); }
+  assert.equal(s.posts(), 1);
+  assert.equal(s.reviews.reviews.recent().length, 1);
+});
+
+test("a held file its campaign has taken isn't released when the campaign is edited mid-review", async () => {
+  const s = setup();
+  s.clock.now = morning();
+  const h = holdBy(s, "Gatekeeping");
+  await s.intake.handle(s.file(driveName("Gatekeeping", s.clock.now + 2 * 60 * MIN)));
+  s.finishEdit("f1");
+  await s.intake.tick();
+  await h.tick(); // takes the file
+  await h.tick(); // asks for its review
+  assert.equal(h.task().state, "reviewing", h.task().error ?? "");
+  h.cs.setText(h.id, "new text");
+  for (let i = 0; i < 3; i++) await s.intake.tick();
+  assert.equal(s.store.driveFile("f1")!.state, "held");
+  assert.equal(s.reviews.reviews.recent().length, 1);
+});
+
+test("a held _RAW file goes through the campaign's review, then posts once", async () => {
+  const s = setup();
+  s.clock.now = morning();
+  const h = holdBy(s, "Gatekeeping");
+  await s.intake.handle(s.file(driveName("Gatekeeping", s.clock.now + 2 * 60 * MIN).replace(".mp4", "_RAW.mp4")));
+  await s.intake.tick();
+  await h.tick();
+  await h.tick();
+  const t = h.task();
+  assert.equal(t.state, "reviewing", t.error ?? "");
+  await s.reviews.tick();
+  const r = s.reviews.reviews.get(t.reviewId!)!;
+  assert.equal(r.subjectKind, "file");
+  assert.equal(r.requestedVia, "campaign");
+  assert.equal(r.state, "pending", r.error ?? "");
+  assert.ok((await s.reviews.approve(r.id, { via: "window" })).ok);
+  for (let i = 0; i < 2; i++) { await s.intake.tick(); await h.tick(); }
+  assert.equal(h.task().state, "scheduled", h.task().error ?? "");
+  assert.equal(s.store.driveFile("f1")!.postId, h.task().postId);
+  assert.equal(s.posts(), 1);
 });

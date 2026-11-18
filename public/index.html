@@ -72,7 +72,7 @@
   .dfile .state, .dfile .dwhen { text-align: right; white-space: nowrap; }
   .dfile .dwhen { font-size: 13px; }
   .dfile .state.scheduled, .dfile .state.posting { color: var(--accent); } .dfile .state.posted { color: var(--ok); } .dfile .state.partial { color: var(--warn); } .dfile .state.edit_failed, .dfile .state.failed, .dfile .state.invalid, .dfile .state.late { color: var(--bad); }
-  .dfile .state.needs_caption, .dfile .state.reviewing, .dfile .state.unreviewed { color: var(--warn); } .dfile .state.rejected { color: var(--bad); }
+  .dfile .state.needs_caption, .dfile .state.reviewing, .dfile .state.held, .dfile .state.unreviewed { color: var(--warn); } .dfile .state.rejected { color: var(--bad); }
   .pager { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; border-top: 1px solid var(--line); padding-top: 10px; margin-top: 2px; font-size: 13px; }
   .pager .size { margin-left: auto; display: flex; align-items: center; gap: 6px; font-weight: 400; margin-top: 0; margin-bottom: 0; }
   .pager select { width: auto; padding: 2px 6px; }
@@ -1691,7 +1691,7 @@ $("useOriginal").addEventListener("click", () => { $("doEdit").checked = false; 
 const DRIVE_STATE = {
   queued: "Found", downloading: "Downloading…", transcribing: "Listening…", processing: "Editing…", scheduled: "Scheduled",
   posting: "Posting…", posted: "Posted", partial: "Partially Posted",
-  reviewing: "Waiting for your review", rejected: "Rejected", unreviewed: "Not reviewed",
+  reviewing: "Waiting for your review", held: "Held for its campaign", rejected: "Rejected", unreviewed: "Not reviewed",
   needs_caption: "Needs a caption", edit_failed: "Edit failed", failed: "Not posted", invalid: "Name not understood", late: "Too late", cancelled: "Cancelled",
 };
 let driveView = null;
