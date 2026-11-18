@@ -49,9 +49,71 @@ export function wangpDefaultModel(dir: string): string {
   }
 }
 
+// ---- WanGP's models, grouped by what they make ----
+// A model definition (defaults/ and finetunes/<id>.json) holds `model.architecture` and `model.name`; WanGP's handlers
+// decide the output per architecture, so the groups come from the architecture (plus the "TTS"/"Music" name prefix
+// WanGP gives its speech and music models).
+
+export type WanGPGroup = "video" | "speech" | "audio" | "presenter";
+const SPEECH_ARCHS = new Set(["dramabox_audio", "scenema_audio", "auk", "minimax_h3_tts_ref2va_pruned"]);
+/** Audio-driven talking video (WanGP's multitalk class, fantasy, the avatar models): the voiceover drives the face. */
+const PRESENTER_ARCH = /multitalk|infinitetalk|fantasy|avatar|hunyuan_custom_audio/;
+/**
+ * Not video: image models (models/flux, flux3, qwen, qwen21, z_image, krea2, hidream, ideogram4, ming_image,
+ * moss_image, sensenova_u1; chrono_edit is a Wan image editor, image_outputs in models/wan/wan_handler.py) and
+ * 3D models (models/hunyuan3d, trellis2, triposg, triposplat, recon3d, worldmirror, animate_any_mesh).
+ */
+const NOT_VIDEO_ARCH = /^(flux|pi_flux|qwen_image|z_image|krea2|hidream|ideogram|ming_image|moss_image|sensenova|chrono_edit|hunyuan3d|trellis|tripos|partcrafter|geosam|recon3d|moge|mapanything|da3_points|worldmirror|animate_any_mesh)/;
+
+function wangpGroup(model: { architecture?: unknown; name?: unknown; image_outputs?: unknown }): WanGPGroup | "" {
+  const arch = String(model.architecture ?? "");
+  const name = String(model.name ?? "");
+  if (!arch) return "";
+  if (/^(TTS|Speech)\b/i.test(name) || /_tts(_|$)/.test(arch) || SPEECH_ARCHS.has(arch)) return "speech";
+  if (/^Music\b/i.test(name)) return "audio";
+  if (PRESENTER_ARCH.test(arch)) return "presenter";
+  if (model.image_outputs || NOT_VIDEO_ARCH.test(arch)) return "";
+  return "video";
+}
+
+/** A WanGP model's definition (finetunes/ wins over defaults/), or null. */
+function wangpDefinition(dir: string, id: string): { architecture?: unknown; name?: unknown; image_outputs?: unknown } | null {
+  for (const folder of ["finetunes", "defaults"]) {
+    try {
+      const model = JSON.parse(readFileSync(join(dir, folder, `${id}.json`), "utf8"))?.model;
+      if (model && typeof model === "object") return model;
+    } catch {}
+  }
+  return null;
+}
+
+/** The architecture a WanGP model id is built on ("" when unknown). */
+export const wangpArchitecture = (dir: string, id: string) => String(wangpDefinition(dir, id)?.architecture ?? "");
+
+/** Every model the WanGP install at `dir` has, by what it makes, each list sorted. Reads files only when called. */
+export function wangpModels(dir: string): Record<WanGPGroup, string[]> {
+  const groups: Record<WanGPGroup, string[]> = { video: [], speech: [], audio: [], presenter: [] };
+  const ids = new Set<string>();
+  for (const folder of ["defaults", "finetunes"]) {
+    try {
+      for (const f of readdirSync(join(dir, folder))) if (f.endsWith(".json")) ids.add(f.slice(0, -5));
+    } catch {}
+  }
+  for (const id of [...ids].sort()) {
+    const model = wangpDefinition(dir, id);
+    const group = model && wangpGroup(model);
+    if (group) groups[group].push(id);
+  }
+  return groups;
+}
+
 export const blenderPath = () => config.produce.blenderPath || findBlender();
 export const wangpDir = () => config.produce.wangpDir || findWanGP();
 export const wangpModel = () => config.produce.wangpModel || wangpDefaultModel(wangpDir());
+/** The speech, music and presenter slots have no fallback: blank means "not chosen", never a guess. */
+export const wangpSpeechModel = () => config.produce.wangpSpeechModel;
+export const wangpAudioModel = () => config.produce.wangpAudioModel;
+export const wangpPresenterModel = () => config.produce.wangpPresenterModel;
 
 const hyperframesDir = () => join(dataDir, "tools", "hyperframes");
 const hyperframesScript = () => join(hyperframesDir(), "node_modules", "hyperframes", "bin", "hyperframes.mjs");

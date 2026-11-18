@@ -7,7 +7,7 @@ import { config } from "../../config.ts";
 import { probe } from "../../media.ts";
 import { runTool } from "../proc.ts";
 import type { WanShot } from "../spec.ts";
-import { wangpDir, wangpModel, wangpPython } from "../tools.ts";
+import { wangpArchitecture, wangpDir, wangpModel, wangpPython } from "../tools.ts";
 import { Fatal, Retryable } from "./errors.ts";
 import type { RenderContext, ShotAdapter } from "./index.ts";
 
@@ -23,10 +23,70 @@ export interface WanOptions {
   command?: (args: string[]) => { bin: string; args: string[] };
 }
 
+/** How WanGP runs by default: its own venv Python and wgp.py. */
+export const wanCommand = (dir: () => string) => (args: string[]) => ({ bin: wangpPython(dir()), args: [join(dir(), "wgp.py"), ...args] });
+
+/** The user's own tuned settings for a model (WanGP's settings/<model>_settings.json), else {}. */
+export function ownSettings(dir: string, model: string): Record<string, unknown> {
+  const own = join(dir, "settings", `${model}_settings.json`);
+  if (existsSync(own)) try { return JSON.parse(readFileSync(own, "utf8")); } catch {}
+  return {};
+}
+
+export interface WanGPRun {
+  dir: string;
+  command: (args: string[]) => { bin: string; args: string[] };
+  settings: Record<string, unknown>;
+  /** where the settings file goes and WanGP writes its output */
+  workDir: string;
+  settingsName: string;
+  /** what the error messages name: a shot id, "speech", "music" */
+  label: string;
+  signal: AbortSignal;
+  onProgress?: (fraction: number) => void;
+}
+
+/**
+ * One headless WanGP job: the settings file is written, checked with --dry-run (WanGP validates it the way its UI
+ * would), then rendered into workDir. Out of memory is Retryable; refused settings and failed runs are Fatal.
+ * Returns the run's last lines.
+ */
+export async function runWanGP(job: WanGPRun): Promise<string> {
+  const file = join(job.workDir, job.settingsName);
+  writeFileSync(file, JSON.stringify(job.settings, null, 2));
+  const run = (args: string[], timeoutMs?: number) => {
+    const cmd = job.command(args);
+    return runTool(cmd.bin, cmd.args, {
+      cwd: job.dir || undefined, signal: job.signal, timeoutMs,
+      onLine: (line) => {
+        const step = /\[(\d+)\/(\d+)\]/.exec(line);
+        if (step) job.onProgress?.(Math.min(Number(step[1]) / Number(step[2]), 0.99));
+      },
+    });
+  };
+  const check = await run(["--process", file, "--dry-run"], 10 * 60_000);
+  if (check.code !== 0) {
+    if (OOM.test(check.tail)) throw new Retryable(`${job.label}: WanGP ran out of GPU memory:\n${check.tail}`);
+    throw new Fatal(`${job.label}: WanGP refused the settings:\n${check.tail}`);
+  }
+  const { code, tail } = await run(["--process", file, "--output-dir", job.workDir], config.produce.wangpTimeoutMin * 60_000);
+  if (code !== 0) {
+    if (OOM.test(tail)) throw new Retryable(`${job.label}: WanGP ran out of GPU memory:\n${tail}`);
+    throw new Fatal(`${job.label}: WanGP failed:\n${tail}`);
+  }
+  return tail;
+}
+
+/** The newest file in dir whose name matches, or null. */
+export function newestFile(dir: string, name: RegExp): string | null {
+  const files = readdirSync(dir).filter((f) => name.test(f)).map((f) => join(dir, f));
+  return files.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0] ?? null;
+}
+
 export function wanAdapter(opts: WanOptions = {}): ShotAdapter<WanShot> {
   const dir = opts.dir ?? wangpDir;
   const model = opts.model ?? wangpModel;
-  const command = opts.command ?? ((args: string[]) => ({ bin: wangpPython(dir()), args: [join(dir(), "wgp.py"), ...args] }));
+  const command = opts.command ?? wanCommand(dir);
   return {
     kind: "wan",
     lane: "gpu",
@@ -39,13 +99,10 @@ export function wanAdapter(opts: WanOptions = {}): ShotAdapter<WanShot> {
     },
     async render(shot: WanShot, ctx: RenderContext) {
       const d = dir();
-      const m = model();
+      const m = shot.model || model();
       if (!m) throw new Fatal(`${shot.id}: no WanGP model chosen; set WANGP_MODEL in Setup`);
-      let base: Record<string, unknown> = {};
-      const own = join(d, "settings", `${m}_settings.json`);
-      if (existsSync(own)) try { base = JSON.parse(readFileSync(own, "utf8")); } catch {}
-      const settings = {
-        ...base,
+      const settings: Record<string, unknown> = {
+        ...ownSettings(d, m),
         model_type: m,
         prompt: shot.prompt,
         negative_prompt: shot.negative_prompt,
@@ -58,40 +115,23 @@ export function wanAdapter(opts: WanOptions = {}): ShotAdapter<WanShot> {
         image_start: shot.image ? [shot.image] : null,
         output_filename: "shot",
       };
-      const file = join(ctx.dir, "wan-settings.json");
-      writeFileSync(file, JSON.stringify(settings, null, 2));
-
-      const run = async (args: string[], timeoutMs?: number) => {
-        const cmd = command(args);
-        let frames = 0;
-        return runTool(cmd.bin, cmd.args, {
-          cwd: d || undefined, signal: ctx.signal, timeoutMs,
-          onLine: (line) => {
-            const step = /\[(\d+)\/(\d+)\]/.exec(line);
-            if (step) ctx.onProgress(Math.min(Number(step[1]) / Number(step[2]), 0.99));
-            if (/Video saved/i.test(line)) frames++;
-          },
-        });
-      };
-      const check = await run(["--process", file, "--dry-run"], 10 * 60_000);
-      if (check.code !== 0) {
-        if (OOM.test(check.tail)) throw new Retryable(`${shot.id}: WanGP ran out of GPU memory:\n${check.tail}`);
-        throw new Fatal(`${shot.id}: WanGP refused the settings:\n${check.tail}`);
+      if (shot.audio_guide) {
+        // A presenter shot: the voiceover drives the face (wgp.py needs audio_guide whenever audio_prompt_type has "A").
+        settings.audio_guide = shot.audio_guide;
+        settings.audio_prompt_type = "A";
+        // InfiniteTalk takes the face as a reference image, not a start image: its deepy_tools map image_start to
+        // image_refs (models/wan/wan_handler.py), and WanGP's gen_video_with_speech then sets Text Prompt ("T").
+        if (shot.image && wangpArchitecture(d, m) === "infinitetalk") {
+          settings.image_refs = [shot.image];
+          settings.image_start = null;
+          settings.image_prompt_type = "T";
+        }
       }
-      const { code, tail } = await run(["--process", file, "--output-dir", ctx.dir], config.produce.wangpTimeoutMin * 60_000);
-      if (code !== 0) {
-        if (OOM.test(tail)) throw new Retryable(`${shot.id}: WanGP ran out of GPU memory:\n${tail}`);
-        throw new Fatal(`${shot.id}: WanGP failed:\n${tail}`);
-      }
-      const clip = newestVideo(ctx.dir);
+      const tail = await runWanGP({ dir: d, command, settings, workDir: ctx.dir, settingsName: "wan-settings.json", label: shot.id, signal: ctx.signal, onProgress: ctx.onProgress });
+      const clip = newestFile(ctx.dir, /\.(mp4|mkv|webm|mov)$/i);
       if (!clip) throw new Fatal(`${shot.id}: WanGP finished but wrote no video:\n${tail}`);
       const p = await probe(clip);
       return { path: clip, durationSec: Math.min(p.durationSec, shot.duration_sec) };
     },
   };
-}
-
-function newestVideo(dir: string): string | null {
-  const vids = readdirSync(dir).filter((f) => /\.(mp4|mkv|webm|mov)$/i.test(f)).map((f) => join(dir, f));
-  return vids.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0] ?? null;
 }

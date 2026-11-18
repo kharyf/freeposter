@@ -20,7 +20,7 @@ import { blenderTemplates } from "./produce/adapters/blender.ts";
 import { adapters as productionAdapters } from "./produce/adapters/index.ts";
 import { sfxDir, sfxLibrary } from "./produce/sfx.ts";
 import { SHOT_KINDS } from "./produce/spec.ts";
-import { blenderPath, HYPERFRAMES_VERSION, installHyperframes, installRemotion, REMOTION_VERSION, wangpDir, wangpModel } from "./produce/tools.ts";
+import { blenderPath, HYPERFRAMES_VERSION, installHyperframes, installRemotion, REMOTION_VERSION, wangpDir, wangpModel, wangpModels } from "./produce/tools.ts";
 import type { ProductionWorker } from "./produce/worker.ts";
 import type { Publisher } from "./platforms/base.ts";
 import { creatorInfo } from "./platforms/tiktok.ts";
@@ -475,6 +475,9 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
       review: reviewChannel(),
     };
   });
+
+  // The Setup pickers for the WanGP speech, audio and presenter slots: the models the WanGP install has, by group.
+  app.get("/api/produce/wangp-models", async () => wangpModels(wangpDir()));
 
   app.post("/api/produce/hyperframes/install", async (_req, reply) => {
     try {

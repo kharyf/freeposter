@@ -818,6 +818,29 @@ function field(key, label, hint = "", type = "text") {
     ${hint ? `<div class="hint">${hint}</div>` : ""}</div>`;
 }
 
+/** A WanGP model slot: a list of the models the WanGP install has for that group, filled by loadWangpModels. */
+function wangpPicker(key, group, label, hint) {
+  const current = settings.values[key] ?? "";
+  return `<div class="field"><label for="f_${key}">${label}</label>
+    <select id="f_${key}" data-key="${key}" data-wangp="${group}"><option value="${esc(current)}">${current ? esc(current) : "None chosen"}</option></select>
+    <div class="hint">${hint}</div></div>`;
+}
+
+async function loadWangpModels() {
+  const pickers = $("stepBody").querySelectorAll("select[data-wangp]");
+  if (!pickers.length) return;
+  const res = await fetch("/api/produce/wangp-models");
+  if (!res.ok) return;
+  const models = await res.json();
+  for (const select of pickers) {
+    const current = select.value;
+    // The saved choice stays listed even when this install doesn't have it, so saving the step doesn't drop it.
+    const ids = [...new Set([...(current ? [current] : []), ...(models[select.dataset.wangp] ?? [])])];
+    select.innerHTML = `<option value="">None chosen</option>` + ids.map((id) => `<option value="${esc(id)}">${esc(id)}</option>`).join("");
+    select.value = current;
+  }
+}
+
 const copyBox = (text) => `<div class="copy"><code>${esc(text)}</code><button type="button" data-copy="${esc(text)}">Copy</button></div>`;
 const tool = (name, version) => version
   ? `<span class="check-ok">✓ ${name} found</span> <span class="muted">${esc(version)}</span>`
@@ -890,6 +913,9 @@ function stepHtml(step) {
       <div class="grid2">
         ${field("WANGP_DIR", "WanGP folder", "Blank finds C:\\src\\WanGP. The folder that holds wgp.py.")}
         ${field("WANGP_MODEL", "WanGP model", "Blank uses the model you last used in WanGP.")}
+        ${wangpPicker("WANGP_SPEECH_MODEL", "speech", "WanGP speech model", "Speaks campaign videos' voiceovers. Needed for generated campaign videos.")}
+        ${wangpPicker("WANGP_AUDIO_MODEL", "audio", "WanGP audio model", "Music: makes campaign videos' soundtracks. Needed for generated campaign videos.")}
+        ${wangpPicker("WANGP_PRESENTER_MODEL", "presenter", "WanGP talking presenter model", "Optional: a talking face driven by the voiceover.")}
         ${field("BLENDER_PATH", "Blender", "Blank uses the newest Blender installed; or the full path to blender.exe")}
         ${field("WANGP_TIMEOUT_MIN", "WanGP time limit per shot (minutes)", "default 30", "number")}
       </div>
@@ -960,7 +986,7 @@ function renderSetup() {
       ${skip && !settings.configured[step.id] ? `<button type="button" data-nav="skip">${esc(skip)}</button>` : ""}
       <button type="button" class="primary" data-nav="next">${last ? "Finish" : "Save & continue"}</button>
     </div>`;
-  if (step.id === "production") { void loadProductionHealth(); void loadTelegram(); }
+  if (step.id === "production") { void loadProductionHealth(); void loadWangpModels(); void loadTelegram(); }
 }
 
 async function saveStep() {

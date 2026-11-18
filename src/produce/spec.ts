@@ -22,7 +22,13 @@ export interface FrameSize { width: number; height: number }
 export interface HyperframesShot { id: string; kind: "hyperframes"; duration_sec: number; html: string; assets: Asset[]; size?: FrameSize }
 /** A React component (default export) Remotion renders at 1080x1920, 30 fps; assets are served by name through staticFile(). */
 export interface RemotionShot { id: string; kind: "remotion"; duration_sec: number; tsx: string; props: Record<string, unknown>; assets: Asset[]; size?: FrameSize }
-export interface WanShot { id: string; kind: "wan"; duration_sec: number; prompt: string; negative_prompt: string; image: string | null; seed: number }
+export interface WanShot {
+  id: string; kind: "wan"; duration_sec: number; prompt: string; negative_prompt: string; image: string | null; seed: number;
+  /** Internal, like size: the WanGP model for this shot (campaign videos pick video or presenter). Never parsed from a spec. */
+  model?: string;
+  /** Internal: a presenter shot's voiceover, which drives the talking face (WanGP's audio_guide). Never parsed from a spec. */
+  audio_guide?: string;
+}
 export interface BlenderShot {
   id: string; kind: "blender"; duration_sec: number; template: string; params: Record<string, string | number | boolean>; engine: "eevee" | "cycles";
   size?: FrameSize;
@@ -42,7 +48,8 @@ export interface ProductionSpec {
   shots: ShotSpec[];
   /** "default" plus "<from>-><to>" overrides */
   transitions: { default: Transition } & Record<string, Transition>;
-  audio: { voiceover: string | null };
+  /** music: internal, a WanGP soundtrack mixed under the voiceover (campaign videos). Never parsed from a spec. */
+  audio: { voiceover: string | null; music?: string | null };
   sfx: SfxCue[];
   captions: { source: "voiceover" | "none" };
   /** passed through to approve_production, which checks it like publish_video */

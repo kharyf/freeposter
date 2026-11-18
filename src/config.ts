@@ -86,6 +86,9 @@ export const SETTINGS = {
   HYPERFRAMES_CMD: { secret: false },
   WANGP_DIR: { secret: false },
   WANGP_MODEL: { secret: false },
+  WANGP_SPEECH_MODEL: { secret: false },
+  WANGP_AUDIO_MODEL: { secret: false },
+  WANGP_PRESENTER_MODEL: { secret: false },
   WANGP_TIMEOUT_MIN: { secret: false },
   BLENDER_PATH: { secret: false },
   CPU_LANE_CONCURRENCY: { secret: false },
@@ -151,6 +154,10 @@ function build() {
       /** empty = looked for (tools.ts) */
       wangpDir: setting("WANGP_DIR"),
       wangpModel: setting("WANGP_MODEL"),
+      /** campaign voiceovers (text to speech), soundtracks and talking presenters; blank = not chosen */
+      wangpSpeechModel: setting("WANGP_SPEECH_MODEL"),
+      wangpAudioModel: setting("WANGP_AUDIO_MODEL"),
+      wangpPresenterModel: setting("WANGP_PRESENTER_MODEL"),
       wangpTimeoutMin: positive(setting("WANGP_TIMEOUT_MIN"), 30),
       /** empty = the newest blender.exe under Program Files (tools.ts) */
       blenderPath: setting("BLENDER_PATH"),

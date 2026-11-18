@@ -1,7 +1,9 @@
 import "./isolated-home.ts";
 import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { join } from "node:path";
 import { test } from "node:test";
 import { config } from "../src/config.ts";
 import { signBody } from "../src/notify.ts";
@@ -48,6 +50,30 @@ test("the health route reports each shot kind and the SFX library", async () => 
   assert.ok(body.templates.includes("logo-spin"));
   assert.equal(typeof body.sfxDir, "string");
   await app.close();
+});
+
+test("the WanGP model pickers list the install's models, and the three model slots save like any setting", async () => {
+  const app = setup();
+  const wan = tmp();
+  writeFileSync(join(wan, "wgp.py"), "");
+  mkdirSync(join(wan, "defaults"));
+  writeFileSync(join(wan, "defaults", "chatterbox.json"), JSON.stringify({ model: { name: "TTS Chatterbox", architecture: "chatterbox" } }));
+  writeFileSync(join(wan, "defaults", "t2v.json"), JSON.stringify({ model: { name: "Wan", architecture: "t2v" } }));
+  const put = (values: Record<string, string>) => app.inject({ method: "PUT", url: "/api/settings", headers: HOST, payload: { values } });
+  try {
+    assert.equal((await put({ WANGP_DIR: wan })).statusCode, 200);
+    const res = await app.inject({ method: "GET", url: "/api/produce/wangp-models", headers: HOST });
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(res.json(), { video: ["t2v"], speech: ["chatterbox"], audio: [], presenter: [] });
+    const saved = await put({ WANGP_SPEECH_MODEL: "chatterbox", WANGP_AUDIO_MODEL: "ace_step_v1_5", WANGP_PRESENTER_MODEL: "infinitetalk" });
+    assert.equal(saved.statusCode, 200, saved.body);
+    assert.equal(config.produce.wangpSpeechModel, "chatterbox");
+    assert.equal(config.produce.wangpAudioModel, "ace_step_v1_5");
+    assert.equal(config.produce.wangpPresenterModel, "infinitetalk");
+  } finally {
+    await put({ WANGP_DIR: "", WANGP_SPEECH_MODEL: "", WANGP_AUDIO_MODEL: "", WANGP_PRESENTER_MODEL: "" });
+    await app.close();
+  }
 });
 
 test("a test event is sent to the webhook, signed", async () => {

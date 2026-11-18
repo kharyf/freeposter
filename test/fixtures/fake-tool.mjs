@@ -1,4 +1,4 @@
-// Stands in for HyperFrames, Remotion, WanGP and Blender in tests. Records its arguments, then behaves per FAKE_MODE:
+// Stands in for HyperFrames, Remotion, WanGP (wan: video, wan-audio: speech/music) and Blender in tests. Records its arguments, then behaves per FAKE_MODE:
 //   ok (default)  writes a short test clip where the real tool would
 //   fail          prints a few lines and exits 1
 //   oom           prints a CUDA out-of-memory line and exits 1
@@ -39,6 +39,14 @@ else if (tool === "hyperframes") {
     const out = args[args.indexOf("--output-dir") + 1];
     const settings = JSON.parse(readFileSync(args[args.indexOf("--process") + 1], "utf8"));
     clip(join(out, `${settings.output_filename}.mp4`), 3);
+  }
+} else if (tool === "wan-audio") {
+  // WanGP with a speech or music model: audio-only models save <output_filename>.wav (wgp.py, audio_only branch).
+  console.log("[DRY-RUN] Validation complete. 1/1 task(s) valid.");
+  if (!args.includes("--dry-run")) {
+    const out = args[args.indexOf("--output-dir") + 1];
+    const settings = JSON.parse(readFileSync(args[args.indexOf("--process") + 1], "utf8"));
+    execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=330", "-t", "3", join(out, `${settings.output_filename}.wav`)]);
   }
 } else if (tool === "blender") {
   const params = JSON.parse(readFileSync(args[args.indexOf("--") + 1], "utf8"));

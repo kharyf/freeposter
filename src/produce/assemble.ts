@@ -1,6 +1,7 @@
 // Joins a production's shots into the final video in one ffmpeg pass: every shot normalized to 1080x1920 30 fps
 // with a stereo 48 kHz track (silence when it has none), cuts or crossfades between them, the voiceover and SFX
-// cues mixed in, captions burned from the voiceover, loudness evened out. Then a small preview and a thumbnail.
+// cues (and a soundtrack, under the voiceover) mixed in, captions burned from the voiceover, loudness evened out.
+// Then a small preview and a thumbnail.
 import { renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { config } from "../config.ts";
 import { buildAss } from "../edit/captions.ts";
@@ -75,6 +76,13 @@ export async function assemble(
     inputs.push("-i", spec.audio.voiceover);
     parts.push(`[${next}:a:0]atrim=0:${total.toFixed(3)},asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo[vo]`);
     mix.push("[vo]");
+    next++;
+  }
+  // A soundtrack sits 18 dB under the voiceover; on its own it is still the video's sound.
+  if (spec.audio.music) {
+    inputs.push("-i", spec.audio.music);
+    parts.push(`[${next}:a:0]atrim=0:${total.toFixed(3)},asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo,volume=-18dB[music]`);
+    mix.push("[music]");
     next++;
   }
   spec.sfx.forEach((cue, k) => {
