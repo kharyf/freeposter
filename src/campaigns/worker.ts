@@ -29,10 +29,10 @@ import type { ProductionSpec } from "../produce/spec.ts";
 import type { Production, ProductionStore } from "../produce/store.ts";
 import { generateMusic, generateSpeech } from "../produce/wan-audio.ts";
 import { hashFile } from "../review/media.ts";
-import type { ReviewService, Subject } from "../review/service.ts";
+import type { ReviewRequest, ReviewService, Subject } from "../review/service.ts";
 import { buildGeneratedProduction, writeScript, type Script } from "./script.ts";
 import { DAYS, type MakeInstruction, type Pick as ValuePick, type PostInstruction } from "./spec.ts";
-import { CampaignStore, campaignTaskFor, driveFileTaken, type Campaign, type CampaignTask, type LibraryEntry, type LibraryKind, type TaskState } from "./store.ts";
+import { CampaignStore, campaignTaskFor, driveFileTaken, mayPostUnseen, type Campaign, type CampaignTask, type LibraryEntry, type LibraryKind, type TaskState } from "./store.ts";
 
 /** What the worker needs of the production worker (a stand-in in tests). */
 export interface Productions {
@@ -460,7 +460,7 @@ export class CampaignWorker {
     const subject: Subject = file?.choice?.raw ? { kind: "file", path: file.sourcePath!, name: file.choice.name } : { kind: "edit", id: t.editId! };
     const keep = t.kind !== "post" && c.libraryName ? c.libraryName : undefined;
     const planned = c.postTime ? localAt(t.date, c.postTime) : null;
-    const review = await this.reviews.request({
+    const q: ReviewRequest = {
       subject,
       accountIds: accounts.map((a) => a.id),
       caption: text.caption,
@@ -473,9 +473,13 @@ export class CampaignWorker {
       expireAtSchedule: false,
       expiresInHours: REVIEW_HOURS,
       ...(keep ? { keep } : {}),
-    });
+    };
+    // Types that all allow it (the task's own snapshot of them; the review service checks them again itself): it's
+    // approved without the user once its file is made, and placed like any approved post. Otherwise it waits.
+    const unseen = mayPostUnseen(this.campaigns, c.types ?? []);
+    const review = unseen ? await this.reviews.autoApprove(q, c.types) : await this.reviews.request(q);
     this.campaigns.updateTask(t.id, { state: "reviewing", reviewId: review.id });
-    log(t, `${subject.kind === "file" ? `the Drive file ${file!.name}` : `edit ${t.editId}`} sent for review (review ${review.id})`);
+    log(t, `${subject.kind === "file" ? `the Drive file ${file!.name}` : `edit ${t.editId}`} sent for review (review ${review.id})${review.auto ? ", approved by its types" : ""}`);
   }
 
   private followReview(t: CampaignTask, c: TaskChoices) {
@@ -768,12 +772,13 @@ export class CampaignWorker {
 
   // ---- held posts nobody will place ----
 
-  /** Cancels a campaign post while it's still held (holding never sends anything, so nothing is half-posted). */
+  /** Cancels a campaign post while it's still held (cancelPost keeps any job that already tried: see there). */
   private cancelHeld(postId: number) {
     const held = this.store.jobsForPost(postId).some((j) => typeof j.progress.heldFrom === "number");
     if (!held) return;
-    this.store.cancelPost(postId);
-    console.log(`campaigns: cancelled held post ${postId}`);
+    const { cancelled } = this.store.cancelPost(postId);
+    // A held job that already tried (or holds an upload checkpoint) is left as it is: still held, it never goes out.
+    console.log(`campaigns: cancelled held post ${postId}${cancelled ? "" : " (a job that already tried is kept, held)"}`);
   }
 
   /**

@@ -186,6 +186,17 @@ const ready = new WeakSet<Store>();
 const runnable = (c: Campaign) => c.enabled && c.compiledSha !== null && c.compiledSha === c.textSha;
 
 /**
+ * Whether a campaign video with these types may post without the user's approval: it has at least one type, and
+ * every one of them exists and allows it. Anything else (no types, one that doesn't allow it, one since deleted)
+ * waits for approval. Asked when the video goes to review, so a type switched off before then means it waits.
+ */
+export function mayPostUnseen(cs: CampaignStore, typeIds: number[]): boolean {
+  if (!typeIds.length) return false;
+  const types = new Map(cs.types().map((t) => [t.id, t]));
+  return typeIds.every((id) => types.get(id)?.autoPost === true);
+}
+
+/**
  * The campaign task a production or edit belongs to (an edit: itself or any edit it was revised from), or null.
  * Other workers ask, to tell agents that the campaign sends it for review itself.
  */

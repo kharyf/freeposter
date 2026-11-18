@@ -579,14 +579,17 @@ export class Store {
   }
 
   /**
-   * Cancels a post's unstarted jobs (and held ones: a held job isn't running, whatever it tried before); jobs under way are
-   * left alone, since stopping mid-upload could leave a half-made post. Deletes the post when no jobs remain.
+   * Cancels a post's unstarted jobs: never tried, nothing sent. A held one counts when holding is all its progress
+   * says (in a retry or waiting for quota too). A job that has tried, or carries an upload checkpoint (an Instagram
+   * container, a Facebook upload), is left alone, like jobs under way: it may have half-made a post on the platform.
+   * Deletes the post when no jobs remain.
    */
   cancelPost(postId: number): { cancelled: number; deleted: Post | undefined; orphanedSource: string | null } {
     const post = this.post(postId);
     const { changes } = this.db
-      .prepare(`DELETE FROM jobs WHERE post_id = ? AND ((state = 'queued' AND attempts = 0 AND progress = '{}')
-                OR (state IN ('queued', 'retry', 'waiting_quota') AND json_extract(progress, '$.heldFrom') IS NOT NULL))`)
+      .prepare(`DELETE FROM jobs WHERE post_id = ? AND attempts = 0 AND ((state = 'queued' AND progress = '{}')
+                OR (state IN ('queued', 'retry', 'waiting_quota') AND json_extract(progress, '$.heldFrom') IS NOT NULL
+                    AND json_remove(progress, '$.heldFrom') = '{}'))`)
       .run(postId);
     const left = this.db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE post_id = ?").get(postId) as { n: number };
     if (left.n === 0) {

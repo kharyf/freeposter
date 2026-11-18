@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS reviews (
   at_sec REAL,
   post_id INTEGER,
   error TEXT,
+  auto INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -76,6 +77,11 @@ export interface ReviewDraft {
   captionTopic: string | null;
   /** a campaign video made to keep, not post: approving keeps it in the library under this name and makes no post */
   keep?: string | null;
+  /**
+   * A campaign video whose types (these) may post without approval: once its file is made, it's approved by them
+   * if they still all allow it then (see mayPostUnseen); otherwise it waits for the user like any review.
+   */
+  autoTypes?: number[];
 }
 
 export interface Review {
@@ -105,7 +111,8 @@ export interface Review {
   sendError: string | null;
   promptMessageId: number | null;
   decidedAt: number | null;
-  decidedVia: "telegram" | "window" | null;
+  /** type: nobody decided; the video's types allow posting without approval (auto) */
+  decidedVia: "telegram" | "window" | "type" | null;
   decidedBy: number | null;
   decisionUpdateId: number | null;
   reason: Reason | null;
@@ -113,6 +120,8 @@ export interface Review {
   atSec: number | null;
   postId: number | null;
   error: string | null;
+  /** approved by its types, unseen by the user */
+  auto: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -124,7 +133,7 @@ const toReview = (r: any): Review => ({
   nonceHash: r.nonce_hash, chatId: r.chat_id, cardMessageId: r.card_message_id, cardDirty: Boolean(r.card_dirty), cardVersion: r.card_version,
   sendAttempts: r.send_attempts, nextSendAt: r.next_send_at, sendError: r.send_error, promptMessageId: r.prompt_message_id,
   decidedAt: r.decided_at, decidedVia: r.decided_via, decidedBy: r.decided_by, decisionUpdateId: r.decision_update_id,
-  reason: r.reason, note: r.note, atSec: r.at_sec, postId: r.post_id, error: r.error, createdAt: r.created_at, updatedAt: r.updated_at,
+  reason: r.reason, note: r.note, atSec: r.at_sec, postId: r.post_id, error: r.error, auto: Boolean(r.auto), createdAt: r.created_at, updatedAt: r.updated_at,
 });
 
 export interface Decision {
@@ -144,6 +153,9 @@ export class ReviewStore {
   constructor(store: Store) {
     this.store = store;
     store.db.exec(SCHEMA);
+    // Databases made before types could approve a campaign video.
+    const columns = store.db.prepare("PRAGMA table_info(reviews)").all() as { name: string }[];
+    if (!columns.some((c) => c.name === "auto")) store.db.exec("ALTER TABLE reviews ADD COLUMN auto INTEGER NOT NULL DEFAULT 0");
   }
 
   get db() {
@@ -196,6 +208,19 @@ export class ReviewStore {
       .prepare(`UPDATE reviews SET state = 'pending', master_path = ?, master_sha256 = ?, view_path = ?, duration_sec = ?, draft = ?, updated_at = ?
                 WHERE id = ? AND state = 'preparing'`)
       .run(f.masterPath, f.masterSha256, f.viewPath, f.durationSec, JSON.stringify(f.draft), Date.now(), id);
+    return changes > 0;
+  }
+
+  /**
+   * The exact file is made and the video's types allow it to post unseen: approved by them in the same step, so it
+   * never waits (and no card is sent). True only for the call that moved it out of 'preparing'.
+   */
+  preparedAutoApproved(id: number, f: { masterPath: string; masterSha256: string; viewPath: string; durationSec: number; draft: ReviewDraft }): boolean {
+    const now = Date.now();
+    const { changes } = this.db
+      .prepare(`UPDATE reviews SET state = 'approved', auto = 1, decided_via = 'type', decided_at = ?, master_path = ?, master_sha256 = ?, view_path = ?,
+                duration_sec = ?, draft = ?, updated_at = ? WHERE id = ? AND state = 'preparing'`)
+      .run(now, f.masterPath, f.masterSha256, f.viewPath, f.durationSec, JSON.stringify(f.draft), now, id);
     return changes > 0;
   }
 

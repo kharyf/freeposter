@@ -4,6 +4,7 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { captionVideo, transcriptText, type CaptionDeps } from "../caption.ts";
+import { CampaignStore, mayPostUnseen } from "../campaigns/store.ts";
 import { dataDir } from "../config.ts";
 import type { Store } from "../db.ts";
 import { sourceTime, type Segment } from "../edit/cuts.ts";
@@ -118,6 +119,7 @@ export class ReviewService {
    */
   ownedByCampaign: (s: Subject) => boolean = () => false;
   timer: NodeJS.Timeout | undefined;
+  private typeStore: CampaignStore | undefined;
 
   constructor(store: Store, deps: ReviewDeps) {
     this.store = store;
@@ -143,6 +145,12 @@ export class ReviewService {
     return this.deps.productions?.();
   }
 
+  /** The video types, and whether each may post without approval. */
+  private get campaignTypes() {
+    this.typeStore ??= new CampaignStore(this.store);
+    return this.typeStore;
+  }
+
   private event(r: Review, type: EventType, summary: string, extra: Record<string, unknown> = {}) {
     queueEvent(this.store, type, `${type}:${r.id}`, { review_id: r.id, subject: this.subjectView(r), ...extra }, summary);
   }
@@ -163,6 +171,28 @@ export class ReviewService {
 
   /** Checks what can be checked now and queues the review; preparing it (the exact file, the caption) happens in tick(). */
   async request(q: ReviewRequest): Promise<Review> {
+    const { review } = await this.open(q);
+    void this.tick().catch((err) => console.error(`reviews: ${(err as Error).message}`));
+    return review;
+  }
+
+  /**
+   * A campaign video whose types (all of them, at least one) allow posting without approval: its review is prepared
+   * exactly as any other (the exact file, the caption, every check) and then approved by those types, unseen, and its
+   * post made held for the campaign worker to place, just as an approval would. The types are checked here and again
+   * once the file is made, whatever the caller says; when they don't (or no longer) allow it, it's an ordinary review
+   * that waits for the user. Resolves once the review is prepared: approved, waiting, or failed like any review.
+   */
+  async autoApprove(q: ReviewRequest, typeIds: number[]): Promise<Review> {
+    if (q.via !== "campaign") throw new Error("only a campaign video can post without approval");
+    if (!mayPostUnseen(this.campaignTypes, typeIds)) return this.request(q);
+    const { review, work } = await this.open(q, [...typeIds]);
+    await work;
+    return this.reviews.get(review.id)!;
+  }
+
+  /** A new review, preparing. One that may post unseen starts its preparation at once (it's awaited by autoApprove). */
+  private async open(q: ReviewRequest, autoTypes?: number[]): Promise<{ review: Review; work: Promise<void> | null }> {
     if (q.via !== "campaign" && this.ownedByCampaign(q.subject)) {
       throw new Error(`this ${q.subject.kind} is a campaign video: FreePoster sends it for review itself, from its campaign`);
     }
@@ -203,14 +233,15 @@ export class ReviewService {
     if (q.scheduledAt && q.expireAtSchedule !== false) expiresAt = Math.max(Math.min(expiresAt, q.scheduledAt), now + MIN_LIFETIME_MS);
     const draft: ReviewDraft = {
       accountIds: q.accountIds, caption: q.caption, title: q.title, scheduledAt: q.scheduledAt, tiktok: q.tiktok,
-      allowDuplicate: q.allowDuplicate, captionTopic, ...(q.keep !== undefined ? { keep: q.keep } : {}),
+      allowDuplicate: q.allowDuplicate, captionTopic, ...(q.keep !== undefined ? { keep: q.keep } : {}), ...(autoTypes ? { autoTypes } : {}),
     };
     const { review, superseded } = this.reviews.create({ subjectKind: q.subject.kind, subjectId, revision, sourcePath: source, draft, expiresAt, requestedVia: q.via });
     for (const id of superseded) log(id, `replaced by review ${review.id}`);
-    log(review.id, `requested by ${q.via === "drive" ? "Drive intake" : q.via === "campaign" ? "a campaign" : `the ${q.via}`} for ${this.label(review).toLowerCase()}`);
+    log(review.id, `requested by ${q.via === "drive" ? "Drive intake" : q.via === "campaign" ? "a campaign" : `the ${q.via}`} for ${this.label(review).toLowerCase()}${autoTypes ? " (its types may post it without approval)" : ""}`);
+    // Started before anything else can see it preparing, so it's prepared once.
+    const work = autoTypes ? this.prepare(review) : null;
     this.onChange();
-    void this.tick().catch((err) => console.error(`reviews: ${(err as Error).message}`));
-    return review;
+    return { review, work };
   }
 
   // ---- the background work ----
@@ -286,6 +317,17 @@ export class ReviewService {
         draft.captionTopic = null;
       }
       await checkDraft(this.store, this.deps.publishers, this.postDraft({ ...r, draft }, made.masterPath, made.masterSha256), draft.allowDuplicate);
+      if (draft.autoTypes) {
+        // Asked again now: a type switched off (or deleted) while the video was made means it waits for the user.
+        if (r.requestedVia === "campaign" && mayPostUnseen(this.campaignTypes, draft.autoTypes)) {
+          if (!this.reviews.preparedAutoApproved(r.id, { ...made, draft })) return; // closed meanwhile
+          log(r.id, "approved by its types (posts without approval)");
+          this.carryOut(this.reviews.get(r.id)!);
+          return;
+        }
+        log(r.id, "its types no longer all allow posting without approval: it waits for the user");
+        delete draft.autoTypes;
+      }
       if (!this.reviews.prepared(r.id, { ...made, draft })) return; // closed meanwhile
       log(r.id, "waiting for the user");
       this.event(r, "review.waiting", `${this.label(r)} is waiting for the user's decision (review ${r.id}). Don't ask them to approve in chat: they decide on the review itself.`,
@@ -372,16 +414,26 @@ export class ReviewService {
     }
     if (!this.reviews.decide(r.id, "approved", d)) return this.settled(this.reviews.get(id));
     log(r.id, `approved (${d.via})`);
+    return this.carryOut(this.reviews.get(id)!);
+  }
+
+  /** Who approved it, for the events. */
+  private approver(r: Review) {
+    return r.auto ? "Its types allow posting without approval, so FreePoster approved" : "The user approved";
+  }
+
+  /** What an approval does: a kept video is kept, anything else gets its post (held, for a campaign's). */
+  private carryOut(r: Review): Outcome {
     if (r.draft.keep) {
       // Kept for a later "post" line (or the user): approved, and nothing goes out.
       if (r.subjectKind === "edit") this.store.approveEdit(r.subjectId!);
-      this.event(r, "review.approved", `The user approved ${this.label(r).toLowerCase()} (review ${r.id}); it's kept in the library as ${r.draft.keep}, not posted.`, { kept_as: r.draft.keep });
+      this.event(r, "review.approved", `${this.approver(r)} ${this.label(r).toLowerCase()} (review ${r.id}); it's kept in the library as ${r.draft.keep}, not posted.`, { kept_as: r.draft.keep, auto: r.auto });
       this.onChange();
-      return { ok: true, message: `Approved. It's kept in the library as ${r.draft.keep}; nothing was posted.`, review: this.reviews.get(id) };
+      return { ok: true, message: `Approved. It's kept in the library as ${r.draft.keep}; nothing was posted.`, review: this.reviews.get(r.id) };
     }
-    const postId = this.makePost(this.reviews.get(id)!);
+    const postId = this.makePost(r);
     this.onChange();
-    return { ok: postId !== null, message: postId !== null ? `Approved. Post ${postId} is going out.` : "Approved, but the post couldn't be made.", review: this.reviews.get(id) };
+    return { ok: postId !== null, message: postId !== null ? `Approved. Post ${postId} is going out.` : "Approved, but the post couldn't be made.", review: this.reviews.get(r.id) };
   }
 
   /** The approved review's post, made once: a crash between the approval and here is finished by tick(). */
@@ -398,7 +450,7 @@ export class ReviewService {
       if (r.subjectKind === "edit") this.store.approveEdit(r.subjectId!);
       if (r.subjectKind === "production") this.productions?.approve(r.subjectId!, postId);
       this.deps.runner.tick();
-      this.event(r, "review.approved", `The user approved ${this.label(r).toLowerCase()} (review ${r.id}); post ${postId} is going out. get_post follows it.`, { post_id: postId });
+      this.event(r, "review.approved", `${this.approver(r)} ${this.label(r).toLowerCase()} (review ${r.id}); post ${postId} is going out. get_post follows it.`, { post_id: postId, auto: r.auto });
       return postId;
     } catch (err) {
       const why = (err as Error).message;
@@ -604,6 +656,8 @@ export class ReviewService {
       redo: r.state === "redo" ? this.redoContext(r) : null,
       post_id: r.postId,
       kept_as: r.draft.keep ?? null,
+      /** approved by its types: posted without the user seeing it */
+      auto: r.auto,
       error: r.error,
       created_at: iso(r.createdAt),
     };
@@ -616,6 +670,8 @@ export class ReviewService {
     const problems: Problem[] = [];
     const rows = this.store.db.prepare("SELECT DISTINCT post_id FROM jobs WHERE state = 'published' ORDER BY post_id").all() as { post_id: number }[];
     const counts = { review: 0, window: 0, drive: 0, legacy: 0 };
+    /** posted without approval: its types allowed it (they pass, and are listed so the user can see what went out unseen) */
+    const auto: { review_id: number; post_id: number }[] = [];
     for (const { post_id } of rows) {
       const post = this.store.post(post_id);
       if (!post) continue;
@@ -630,6 +686,10 @@ export class ReviewService {
       if (!r) { problems.push({ post_id, problem: "made by a review that doesn't exist" }); continue; }
       if (!r.decidedAt || r.decidedAt > post.createdAt) problems.push({ post_id, problem: `review ${r.id} wasn't decided before the post was made` });
       if (!r.decidedVia) problems.push({ post_id, problem: `review ${r.id} doesn't say where it was approved` });
+      if (r.auto) {
+        auto.push({ review_id: r.id, post_id });
+        if (r.requestedVia !== "campaign" || r.decidedVia !== "type") problems.push({ post_id, problem: `review ${r.id} is marked approved by its types, but isn't a campaign's type approval` });
+      } else if (r.decidedVia === "type") problems.push({ post_id, problem: `review ${r.id} says its types approved it, but it isn't marked auto` });
       if (r.masterSha256 !== post.approvedSha256) problems.push({ post_id, problem: `review ${r.id} approved a different file than the post names` });
       for (const j of published) {
         if (!j.uploadedSha256) problems.push({ post_id, job_id: j.id, problem: "the upload's hash wasn't recorded" });
@@ -640,8 +700,9 @@ export class ReviewService {
       ok: problems.length === 0,
       published_posts: rows.length,
       by_origin: counts,
+      auto,
       problems,
-      note: "Posts from the window and Drive weren't reviewed by design; legacy posts were made before uploads were recorded.",
+      note: "Posts from the window and Drive weren't reviewed by design; legacy posts were made before uploads were recorded. Posts under auto went out without approval because every one of the video's types allowed it.",
     };
   }
 }
