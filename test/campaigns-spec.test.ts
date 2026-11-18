@@ -77,3 +77,12 @@ test("a make rule needs a named CTA in the campaign", () => {
   assert.ok(p.includes("a make rule needs a named CTA in the campaign"));
   assert.ok(parseCompiled(doc({ rules: [rule({ kind: "stop_using" })] }, [make({ cta: { pick: "random" } })]), vocab).ok);
 });
+
+test("stop_using only works for hooks, angles and CTAs", () => {
+  for (const label of ["style", "type"]) {
+    const r = { ...rule(), when: { ...rule().when, label } };
+    const p = bad(doc({ rules: [r] }));
+    assert.ok(p.some((x) => x.startsWith("rules[0]") && x.includes("stop using only works for hooks, angles and CTAs")), p.join("; "));
+  }
+  for (const label of ["hook", "angle", "cta"]) assert.ok(parseCompiled(doc({ rules: [{ ...rule(), when: { ...rule().when, label } }] }), vocab).ok, label);
+});

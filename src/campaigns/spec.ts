@@ -171,7 +171,11 @@ export function parseCompiled(raw: unknown, vocab: Vocabulary): { ok: true; valu
     }
     let then: Rule["then"] = { kind: "stop_using" };
     if (!isObj(o.then)) problem(`${where}.then must be an object`);
-    else if (o.then.kind === "stop_using") only(o.then, ["kind"], `${where}.then`);
+    else if (o.then.kind === "stop_using") {
+      only(o.then, ["kind"], `${where}.then`);
+      // Only hooks, angles and CTAs have random and best pools to stop using a value from.
+      if (!["hook", "angle", "cta"].includes(when.label)) problem(`${where}.then: stop using only works for hooks, angles and CTAs`);
+    }
     else if (o.then.kind === "make") {
       const t = o.then;
       only(t, ["kind", "count", "keep", "vary", "post"], `${where}.then`);

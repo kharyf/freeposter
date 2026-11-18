@@ -9,8 +9,9 @@
 //  - A rule fires at most once per matched value, ever (rule_firings, key "<label>:<value>").
 //  - make: its copies are tasks dated today, made by the campaign worker's one pipeline and placed under the daily
 //    post cap like any other. The matched label is held to the match; vary labels are random; everything else is
-//    copied from the newest make instruction that produced a matched video (a copied CTA that wasn't named
-//    becomes the campaign's first named CTA: a rule never invents one).
+//    copied from this campaign's newest make instruction that produced a matched video, else its own first make
+//    line (never another campaign's, even under account scope). The CTA always comes from this campaign (see
+//    ruleInstruction); a rule never invents one. A match that can't be built fires nothing and is told once.
 //  - stop_using: the hook, angle or CTA leaves this campaign's random and best picks; named lines keep using it.
 //  - Stopped (the kill switch): nothing is evaluated, so nothing is used up either.
 import { defaultSetId, setAccounts } from "../accounts.ts";
@@ -112,13 +113,28 @@ function evaluateRule(deps: RuleDeps, c: Campaign, rule: Rule, ruleIndex: number
   for (const m of matched) {
     const key = `${label}:${m.key}`;
     const videos = scoped.filter((l) => finalPosts.has(l.postId) && keysOf(l, label).includes(m.key));
-    // Built before the firing is recorded, so a rule that can't be built is tried again next refresh.
+    // Built before the firing is recorded: a rule that can't be built doesn't fire, and the user is told (once).
     const made = rule.then.kind === "make" ? ruleInstruction(campaigns, c, rule, m.key, videos) : null;
-    if (!campaigns.ruleFired(c.id, ruleIndex, key)) continue;
-    let taskIds: number[] = [];
-    if (made) taskIds = deps.worker.addRuleTasks(c, ruleIndex, made.ins, made.fixed, { index: ruleIndex, label, key: m.key }, deps.now);
-    else campaigns.exclude(c.id, label as LibraryKind, Number(m.key));
-    tellFiring(deps, c, rule, ruleIndex, m, taskIds);
+    if (made && "error" in made) {
+      queueEvent(store, "campaign.failed", `campaign.failed:rule:${c.id}:${ruleIndex}:${key}`,
+        { campaign_id: c.id, rule_index: ruleIndex, rule: rule.source, label, value_key: m.key, error: made.error },
+        `Campaign "${c.name}": the rule "${rule.source}" matched the ${label} ${valueName(deps, label, m.key)}, but ${made.error}, so it made nothing.`);
+      continue;
+    }
+    // The firing and what it does are one transaction: a throw part-way spends nothing, and it fires next refresh.
+    store.db.exec("BEGIN");
+    try {
+      if (!campaigns.ruleFired(c.id, ruleIndex, key)) { store.db.exec("COMMIT"); continue; }
+      let taskIds: number[] = [];
+      if (made) taskIds = deps.worker.addRuleTasks(c, ruleIndex, made.ins, made.fixed, { index: ruleIndex, label, key: m.key }, deps.now);
+      else campaigns.exclude(c.id, label as LibraryKind, Number(m.key));
+      tellFiring(deps, c, rule, ruleIndex, m, taskIds);
+      store.db.exec("COMMIT");
+    } catch (err) {
+      store.db.exec("ROLLBACK");
+      console.error(`campaign ${c.id}: rule ${ruleIndex + 1} (${key}): ${(err as Error).message}; tried again next refresh`);
+      continue;
+    }
     out.push({ campaignId: c.id, ruleIndex, key });
   }
   return out;
@@ -126,10 +142,13 @@ function evaluateRule(deps: RuleDeps, c: Campaign, rule: Rule, ruleIndex: number
 
 /**
  * The make instruction a make rule's match becomes: the matched label held to the match (same_as_rule), vary labels
- * random, the rest copied from the newest make instruction that produced one of the matched videos (else the
- * campaign's own first make line). A copied CTA that wasn't named is the campaign's first named CTA.
+ * random, the rest copied from the newest make instruction of THIS campaign that produced one of the matched videos
+ * (else the campaign's own first make line): another campaign's lines are never copied, even under account scope.
+ * A copied CTA always comes from this campaign: a named one still in the library, else its first named CTA still
+ * in the library, else the source task's own CTA if it still exists, else a random library CTA. An error (nothing
+ * fires) when there's no line to copy or no CTA in the library at all.
  */
-function ruleInstruction(campaigns: CampaignStore, c: Campaign, rule: Rule, key: string, videos: VideoLabels[]): { ins: MakeInstruction; fixed: Partial<Record<LibraryKind, number>> } {
+function ruleInstruction(campaigns: CampaignStore, c: Campaign, rule: Rule, key: string, videos: VideoLabels[]): { ins: MakeInstruction; fixed: Partial<Record<LibraryKind, number>> } | { error: string } {
   const then = rule.then as Extract<Rule["then"], { kind: "make" }>;
   const label = rule.when.label;
   const lines = DAYS.flatMap((d) => c.compiled!.days[d] ?? []).filter((i): i is MakeInstruction => i.kind === "make");
@@ -143,11 +162,12 @@ function ruleInstruction(campaigns: CampaignStore, c: Campaign, rule: Rule, key:
     const via = (t?.choices as unknown as TaskChoices | undefined)?.sourceTaskId;
     if (t && t.kind === "post" && via) t = campaigns.task(via);
     const ch = t?.choices as unknown as TaskChoices | undefined;
-    if (!t || ch?.instruction?.kind !== "make" || t.id <= newest) continue;
+    if (!t || t.campaignId !== c.id || ch?.instruction?.kind !== "make" || t.id <= newest) continue;
     newest = t.id;
     source = { ins: ch.instruction, choices: ch };
   }
-  if (!source && !lines[0]) throw new Error("it makes videos, but the campaign has no make line to copy them from");
+  if (!source && !lines[0]) return { error: "the campaign has no make line to copy its videos from" };
+  if (!campaigns.entries("cta").length) return { error: "the library has no CTA to end its videos with" };
   source ??= { ins: lines[0]!, choices: undefined };
   const src = source.ins;
 
@@ -165,7 +185,12 @@ function ruleInstruction(campaigns: CampaignStore, c: Campaign, rule: Rule, key:
   const angle = pickFor("angle");
   let cta = pickFor("cta");
   const copiedCta = label !== "cta" && !then.keep.includes("cta") && !then.vary.includes("cta");
-  if (copiedCta && cta.pick !== "named") cta = { pick: "named", id: namedCtas[0]! };
+  const isCta = (id: number | undefined) => id !== undefined && campaigns.entry(id)?.kind === "cta";
+  if (copiedCta && !(cta.pick === "named" && isCta(cta.id))) {
+    const first = namedCtas.find(isCta);
+    const had = (source.choices?.cta as LibraryEntry | undefined)?.id;
+    cta = first !== undefined ? { pick: "named", id: first } : isCta(had) ? { pick: "named", id: had! } : { pick: "random" };
+  }
 
   const style = label === "style" ? key : (source.choices?.style ?? src.style);
   const typeId = Number(key);

@@ -193,3 +193,14 @@ test("'on this account' gives account scope", () => {
   assert.deepEqual(unread, []);
   assert.equal(compiled.rules[0].when.scope, "account");
 });
+
+test("stop using a style or type isn't read: it has nothing to stop", () => {
+  for (const line of [
+    "When analytics show that a style on this campaign is not working, stop using it",
+    "When analytics show that a video type on this campaign is not working, stop using it",
+  ]) {
+    const { compiled, unread } = parse(line);
+    assert.deepEqual(unread, [{ line, day: null }]);
+    assert.equal(compiled.rules.length, 0);
+  }
+});

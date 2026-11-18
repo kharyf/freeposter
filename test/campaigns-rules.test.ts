@@ -283,13 +283,103 @@ test("a rule's posts keep the daily cap; killed, nothing is evaluated", async ()
   assert.deepEqual(days, ["2026-11-17", "2026-11-18"], "the cap of 1 moves the second to tomorrow");
 });
 
-test("scope account counts every video on the campaign's accounts; a hook rule never acts on another campaign's text", () => {
+test("scope account counts every video on the campaign's accounts, but copies only this campaign's own line and CTA", () => {
   const s = setup();
-  const other = s.campaign([], { sun: [s.make()] }, "Other");
+  const otherLine = s.make({ style: "fancy", cta: { pick: "named", id: s.ctaB }, types: [s.typeId], post: { at: "07:00" } });
+  const other = s.campaign([], { sun: [otherLine] }, "Other");
   const id = s.campaign([workingHook({ scope: "account" })]);
   s.baseline();
-  for (let i = 0; i < 3; i++) s.campaignVideo(other, 10_000, { hook: s.hooks[2] });
+  for (let i = 0; i < 3; i++) s.campaignVideo(other, 10_000, { hook: s.hooks[2], cta: s.ctaB, style: "fancy", types: [s.typeId] }, otherLine);
   assert.deepEqual(s.evaluate().fired.map((f) => [f.campaignId, f.key]), [[id, `hook:${s.hooks[2]}`]]);
-  assert.equal(s.ruleTasks(id).length, 3);
+  const tasks = s.ruleTasks(id);
+  assert.equal(tasks.length, 3);
+  for (const t of tasks) {
+    assert.equal((t.choices.hook as LibraryEntry).id, s.hooks[2], "the matched hook is pinned");
+    assert.equal(t.choices.style, "basic", "this campaign's own line's style, not the other campaign's");
+    assert.equal((t.choices.cta as LibraryEntry).id, s.ctaA, "this campaign's CTA, never the other campaign's");
+    assert.deepEqual(t.choices.types, []);
+  }
   assert.equal(s.ruleTasks(other).length, 0);
+});
+
+test("a campaign-scoped rule ignores another campaign's high-scoring videos", () => {
+  const s = setup();
+  const other = s.campaign([], { sun: [s.make()] }, "Other");
+  const id = s.campaign([workingHook()]);
+  s.baseline();
+  for (let i = 0; i < 3; i++) s.campaignVideo(other, 10_000, { hook: s.hooks[2] });
+  assert.deepEqual(s.evaluate().fired, []);
+  assert.equal(s.ruleTasks(id).length, 0);
+});
+
+test("a copied CTA that can't be used falls back: the source task's CTA, then random; no CTA at all doesn't fire and says so once", () => {
+  // The campaign's named CTA is gone; the source line's CTA was random, and its video got B.
+  const s = setup();
+  const id = s.campaign([workingHook()]);
+  s.baseline();
+  for (let i = 0; i < 3; i++) s.campaignVideo(id, 10_000, { hook: s.hooks[0], cta: s.ctaB }, s.make({ cta: { pick: "random" } }));
+  s.cs.deleteEntry(s.ctaA);
+  assert.equal(s.evaluate().fired.length, 1);
+  for (const t of s.ruleTasks(id)) {
+    assert.equal(t.state, "queued", t.error ?? "");
+    assert.equal((t.choices.cta as LibraryEntry).id, s.ctaB);
+  }
+
+  // B is gone too: a random library CTA.
+  const r = setup();
+  const id2 = r.campaign([workingHook()]);
+  r.baseline();
+  for (let i = 0; i < 3; i++) r.campaignVideo(id2, 10_000, { hook: r.hooks[0], cta: r.ctaB }, r.make({ cta: { pick: "random" } }));
+  r.cs.deleteEntry(r.ctaA);
+  r.cs.deleteEntry(r.ctaB);
+  const ctaC = r.cs.addEntry({ kind: "cta", name: "c", text: "Follow for more", url: "https://example.com/c" });
+  assert.equal(r.evaluate().fired.length, 1);
+  for (const t of r.ruleTasks(id2)) {
+    assert.equal(t.state, "queued", t.error ?? "");
+    assert.equal((t.choices.cta as LibraryEntry).id, ctaC);
+  }
+
+  // No CTA in the library at all: nothing fires, nothing is spent, and the user is told once.
+  const q = setup();
+  const id3 = q.campaign([workingHook()]);
+  q.baseline();
+  for (let i = 0; i < 3; i++) q.campaignVideo(id3, 10_000, { hook: q.hooks[0] });
+  q.cs.deleteEntry(q.ctaA);
+  q.cs.deleteEntry(q.ctaB);
+  assert.deepEqual(q.evaluate().fired, []);
+  assert.deepEqual(q.evaluate().fired, []);
+  assert.equal(q.ruleTasks(id3).length, 0);
+  assert.equal(q.cs.db.prepare("SELECT COUNT(*) AS n FROM rule_firings").get()!.n, 0);
+  const failed = q.store.outbox().filter((e) => e.event === "campaign.failed");
+  assert.equal(failed.length, 1);
+  assert.match(JSON.parse(failed[0].body).summary, /CTA/);
+});
+
+test("no source video and no make line: one failure event, nothing spent", () => {
+  const s = setup();
+  const other = s.campaign([], { sun: [s.make()] }, "Other");
+  const id = s.campaign([workingHook({ scope: "account" })], {});
+  s.baseline();
+  for (let i = 0; i < 3; i++) s.campaignVideo(other, 10_000, { hook: s.hooks[2] });
+  assert.deepEqual(s.evaluate().fired, []);
+  assert.deepEqual(s.evaluate().fired, []);
+  assert.equal(s.cs.db.prepare("SELECT COUNT(*) AS n FROM rule_firings").get()!.n, 0);
+  const failed = s.store.outbox().filter((e) => e.event === "campaign.failed");
+  assert.equal(failed.length, 1);
+  assert.equal(JSON.parse(failed[0].body).campaign_id, id);
+});
+
+test("a firing whose tasks can't be made isn't spent: it fires on the next refresh", () => {
+  const s = setup();
+  const id = s.campaign([workingHook()]);
+  s.baseline();
+  for (let i = 0; i < 3; i++) s.campaignVideo(id, 10_000, { hook: s.hooks[0] });
+  const real = s.worker.addRuleTasks.bind(s.worker);
+  s.worker.addRuleTasks = (...args) => { real(...args); throw new Error("disk full"); };
+  assert.deepEqual(s.evaluate().fired, []);
+  assert.equal(s.cs.db.prepare("SELECT COUNT(*) AS n FROM rule_firings").get()!.n, 0);
+  assert.equal(s.ruleTasks(id).length, 0, "the half-made tasks are rolled back");
+  s.worker.addRuleTasks = real;
+  assert.equal(s.evaluate().fired.length, 1);
+  assert.equal(s.ruleTasks(id).length, 3);
 });
