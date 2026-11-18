@@ -68,6 +68,7 @@ test("GET /api/analytics returns videos, comparisons, permission notes and AI us
   assert.equal(body.compare.hook[0].name, "Stop Scrolling");
   assert.deepEqual(body.needsPermission, [{ accountId: tt.id, name: "@tt", platform: "tiktok" }]);
   assert.ok(body.ai.budgeted && body.ai.all);
+  assert.deepEqual(body.ai.max, { calls: 50, tokens: 200_000 }, "the ceiling the tab shows today's use against");
 });
 
 test("GET /api/analytics filters and validates", async () => {

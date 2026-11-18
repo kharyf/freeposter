@@ -1,7 +1,7 @@
 // The Analytics tab's HTTP API: the scored videos with their label comparisons, one video's raw numbers, and the
 // user's corrections to a video's labels.
 import type { FastifyInstance } from "fastify";
-import { todayUse } from "../ai/budget.ts";
+import { budget, todayUse } from "../ai/budget.ts";
 import { CampaignStore } from "../campaigns/store.ts";
 import type { Store } from "../db.ts";
 import { styleById } from "../edit/styles.ts";
@@ -91,7 +91,7 @@ function analyticsRoutes(app: FastifyInstance, store: Store, now: () => number) 
       if (acct && !seen.has(acct.id)) seen.set(acct.id, { accountId: acct.id, name: acct.name, platform: acct.platform });
     }
 
-    return { age, videos, compare, needsPermission: [...seen.values()], ai: todayUse(store, t) };
+    return { age, videos, compare, needsPermission: [...seen.values()], ai: { ...todayUse(store, t), max: budget(store) } };
   });
 
   app.get("/api/analytics/videos/:postId", async (req, reply) => {

@@ -10,9 +10,12 @@
     /* --accent is FreePoster Blue; --trim is its light companion for borders and outlines */
     --accent: #1f5eff; --trim: #8fbeff; --ok: #1d7a46; --warn: #a15c00; --bad: #b42318;
     --tiktok: #111; --instagram: #c13584; --facebook: #1877f2; --x: #000; --youtube: #e00;
+    /* Analytics chart series, one per platform in a fixed order (validated: adjacent CVD and normal-vision gates) */
+    --s-tiktok: #2a78d6; --s-instagram: #eb6834; --s-facebook: #1baf7a; --s-x: #eda100; --s-youtube: #e87ba4;
   }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #161615; --panel: #201f1d; --ink: #ecebe7; --muted: #a09d96; --line: #34322e; --accent: #6d95ff; --ok: #4cc283; --warn: #f0a640; --bad: #ff6b5e; --tiktok: #ddd; --x: #ddd; }
+    :root { --bg: #161615; --panel: #201f1d; --ink: #ecebe7; --muted: #a09d96; --line: #34322e; --accent: #6d95ff; --ok: #4cc283; --warn: #f0a640; --bad: #ff6b5e; --tiktok: #ddd; --x: #ddd;
+      --s-tiktok: #3987e5; --s-instagram: #d95926; --s-facebook: #199e70; --s-x: #c98500; --s-youtube: #d55181; }
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -251,6 +254,77 @@
     .cal .entry .s { display: none; }
     .cal .entry { padding: 2px 3px; font-size: 11px; }
   }
+  /* ---- Analytics tab ---- */
+  main.page { display: block; }
+  .an-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 16px; }
+  .an-filters select { width: auto; padding: 6px 8px; font-size: 13px; }
+  .an-ai { margin-left: auto; font-variant-numeric: tabular-nums; }
+  .an-banner { border-left: 3px solid var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); border-radius: 6px; padding: 8px 12px; margin-bottom: 16px; font-size: 13px; }
+  .an-loading { opacity: .55; transition: opacity .15s; }
+  .an-dims { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 0 16px; }
+  .an-dims > .dim { font-size: 13px; font-weight: 600; padding: 10px 0; border-top: 1px solid var(--line); }
+  .an-dims > .vals { display: flex; flex-wrap: wrap; gap: 6px 24px; padding: 8px 0; border-top: 1px solid var(--line); min-width: 0; }
+  .an-dims > :nth-child(-n+2) { border-top: 0; }
+  @media (max-width: 700px) { .an-dims { grid-template-columns: 1fr; } .an-dims > .vals { border-top: 0; padding-top: 0; } .an-dims > .dim { padding-bottom: 4px; } }
+  .an-val { display: grid; grid-template-columns: minmax(0, 180px) 2.2em 96px auto; align-items: center; gap: 8px; font-size: 13px; min-width: 0; border-radius: 4px; }
+  .an-val:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .an-val .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .an-val .md { font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }
+  .an-val .ct { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .an-val.thin { opacity: .55; }
+  .an-val.thin .md { font-weight: 400; color: var(--muted); }
+  .an-val svg { display: block; width: 96px; height: 12px; overflow: visible; }
+  .an-scroll { overflow-x: auto; margin: 0 -16px; padding: 0 16px; }
+  .an-table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 760px; }
+  .an-table th { text-align: left; font-size: 12px; font-weight: 600; color: var(--muted); padding: 4px 8px 6px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  .an-table td { padding: 7px 8px 7px 0; border-top: 1px solid var(--line); vertical-align: middle; }
+  .an-table tbody tr:first-child td { border-top: 0; }
+  .an-table tbody tr { cursor: pointer; }
+  .an-table tbody tr:hover, .an-table tbody tr.on { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+  .an-table tbody tr:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .an-table .num { text-align: right; font-variant-numeric: tabular-nums; width: 3.2em; }
+  .an-table .ttl { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+  .an-table .lbl { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+  .an-table .pf { width: 22px; text-align: center; padding-right: 4px; }
+  .an-table th.pf .picon { margin: 0 auto; width: 14px; height: 14px; }
+  .prov { color: var(--muted); font-weight: 400; }
+  .an-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--ink); vertical-align: middle; }
+  .an-dot.has { background: var(--ink); }
+  .an-dot.warn { border-color: var(--warn); background: var(--warn); }
+  .an-key { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 10px; }
+  .an-key span { display: inline-flex; align-items: center; gap: 5px; }
+  .an-detail h3 { margin: 18px 0 6px; font-size: 13px; font-weight: 600; }
+  .an-detail .scores { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .an-chart { position: relative; }
+  .an-chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .an-chart svg:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 4px; }
+  .an-chart .axis { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+  .an-chart .grid { stroke: var(--line); stroke-width: 1; }
+  .an-chart .cross { stroke: var(--muted); stroke-width: 1; }
+  .an-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; margin-bottom: 6px; }
+  .an-legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .an-legend i, .an-tip i { display: inline-block; width: 14px; height: 2px; border-radius: 1px; }
+  .an-tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font-size: 12px; box-shadow: 0 2px 8px rgb(0 0 0 / .12); white-space: nowrap; z-index: 2; }
+  .an-tip .h { color: var(--muted); margin-bottom: 2px; }
+  .an-tip div { display: flex; align-items: center; gap: 6px; }
+  .an-tip strong { font-variant-numeric: tabular-nums; }
+  .an-raw { overflow-x: auto; }
+  .an-raw table { border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+  .an-raw th, .an-raw td { text-align: right; padding: 3px 10px 3px 0; border-top: 1px solid var(--line); white-space: nowrap; font-weight: 400; }
+  .an-raw th { color: var(--muted); }
+  .an-raw th:first-child, .an-raw td:first-child { text-align: left; }
+  .an-raw .pname { display: flex; align-items: center; gap: 6px; margin: 10px 0 4px; font-size: 13px; font-weight: 600; }
+  .an-labels { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0 16px; }
+  .an-labels input[type=text] { margin-top: 6px; }
+  .an-labels .types { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+  .an-labels .types label { display: flex; gap: 6px; align-items: center; font-weight: 400; margin: 4px 0; }
+  .an-labels .types input { width: auto; margin: 0; }
+  .an-save { display: flex; gap: 10px; align-items: center; margin-top: 14px; }
+  .an-val svg .trk { stroke: var(--line); stroke-width: 2; stroke-linecap: round; }
+  .an-val svg .rg { fill: color-mix(in srgb, var(--accent) 30%, transparent); }
+  .an-val svg .dot { fill: var(--accent); stroke: var(--panel); stroke-width: 2; }
+  .an-val.thin svg .rg { fill: color-mix(in srgb, var(--muted) 30%, transparent); }
+  .an-val.thin svg .dot { fill: var(--muted); }
 </style>
 </head>
 <body>
@@ -261,6 +335,7 @@
   <button type="button" role="tab" id="tabHome" aria-selected="true" aria-controls="home">Home</button>
   <button type="button" role="tab" id="tabStyles" aria-selected="false" aria-controls="styles">Editing Styles</button>
   <button type="button" role="tab" id="tabCalendar" aria-selected="false" aria-controls="calendar">Calendar</button>
+  <button type="button" role="tab" id="tabAnalytics" aria-selected="false" aria-controls="analytics">Analytics</button>
   <button type="button" role="tab" id="tabSetup" aria-selected="false" aria-controls="setup">Setup</button>
 </nav>
 <div id="redirectBanner"></div>
@@ -401,6 +476,26 @@
   <div id="calGrid" class="cal"></div>
   <section id="calDetail" class="cal-detail" hidden></section>
 </div>
+
+<main id="analytics" class="page" role="tabpanel" aria-label="Analytics" hidden>
+  <div class="an-filters">
+    <select id="anAccount" aria-label="Account"><option value="">All accounts</option></select>
+    <select id="anDays" aria-label="Period">
+      <option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option>
+    </select>
+    <select id="anSource" aria-label="Source">
+      <option value="">Source: all</option><option value="recorded">Recorded</option><option value="generated">Generated</option>
+    </select>
+    <select id="anCampaign" aria-label="Campaign"><option value="">Campaign: all</option></select>
+    <select id="anAge" aria-label="Compare scores at">
+      <option value="24h">Compare at 24h</option><option value="72h" selected>Compare at 72h</option><option value="7d">Compare at 7d</option>
+    </select>
+    <span id="anAi" class="muted an-ai"></span>
+  </div>
+  <div id="anPermission"></div>
+  <div id="anBody"><div class="muted">Loading…</div></div>
+  <section id="anDetail" class="an-detail" hidden></section>
+</main>
 
 <div id="setup" role="tabpanel" aria-label="FreePoster setup" hidden>
   <div class="wiz">
@@ -784,8 +879,8 @@ async function openSetup(stepId) {
   renderSetup();
 }
 
-/** Home, Editing Styles, Calendar and Setup share the page; one shows at a time. */
-const TABS = { home: "tabHome", styles: "tabStyles", calendar: "tabCalendar", setup: "tabSetup" };
+/** Home, Editing Styles, Calendar, Analytics and Setup share the page; one shows at a time. */
+const TABS = { home: "tabHome", styles: "tabStyles", calendar: "tabCalendar", analytics: "tabAnalytics", setup: "tabSetup" };
 function showTab(name) {
   $("setup").classList.toggle("open", name === "setup");
   for (const [panel, tab] of Object.entries(TABS)) {
@@ -794,6 +889,7 @@ function showTab(name) {
   }
   if (name === "styles") renderStyles();
   if (name === "calendar") loadCalendar();
+  if (name === "analytics") showAnalytics();
 }
 
 function closeSetup() {
@@ -1317,7 +1413,7 @@ document.addEventListener("click", (e) => {
   const link = e.target.closest("[data-open-tab]");
   if (link) { e.preventDefault(); $(TABS[link.dataset.openTab]).click(); }
 });
-for (const name of ["styles", "calendar"]) {
+for (const name of ["styles", "calendar", "analytics"]) {
   $(TABS[name]).addEventListener("click", () => {
     if ($("setup").classList.contains("open")) closeSetup();
     showTab(name);
@@ -2033,6 +2129,385 @@ $("calNext").addEventListener("click", () => { calMonth = new Date(calMonth.getF
 $("calToday").addEventListener("click", () => { const d = new Date(); calMonth = new Date(d.getFullYear(), d.getMonth(), 1); loadCalendar(); });
 // Keeps the month current while it's showing, as posts go out.
 setInterval(() => { if (!$("calendar").hidden) loadCalendar(); }, 15000);
+
+// ---- Analytics tab: how each video did, and which hooks, angles, CTAs, styles and types are working ----
+
+const AN_PLATFORMS = ["tiktok", "instagram", "facebook", "x", "youtube"];
+const AN_DIMS = [["hook", "Hooks"], ["angle", "Angles"], ["cta", "CTAs"], ["style", "Styles"], ["type", "Types"], ["source", "Recorded vs generated"]];
+const AN_AGES = [["1h", 3600], ["6h", 21600], ["24h", 86400], ["72h", 259200], ["7d", 604800], ["30d", 2592000]];
+const AN_SVG = "http://www.w3.org/2000/svg";
+let an = null; // the last /api/analytics answer
+let anRefs = { entries: [], types: [], campaigns: [] };
+let anOpen = null; // the post whose detail is showing
+let anSeq = 0; // answers to older requests are dropped
+let anCharts = null; // the open detail's chart series, to redraw on resize
+
+const anLabel = (p) => status.platforms.find((x) => x.platform === p)?.label ?? p;
+const anStyleName = (id) => status.editingStyles.find((s) => s.id === id)?.name ?? id;
+const anNum = (n) => n >= 10000 ? new Intl.NumberFormat([], { notation: "compact", maximumFractionDigits: 1 }).format(n) : Math.round(n).toLocaleString();
+const anFull = (n) => Number.isInteger(n) ? n.toLocaleString() : n.toLocaleString([], { maximumFractionDigits: 2 });
+const anAge = (sec) => { const h = sec / 3600; return h <= 72 ? `${+h.toFixed(h < 10 ? 1 : 0)}h` : `${+(h / 24).toFixed(h < 240 ? 1 : 0)}d`; };
+const anVideos = (n) => `${n} video${n === 1 ? "" : "s"}`;
+const anShort = (t, max = 22) => t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t;
+
+function anValueName(dim, r) {
+  if (dim === "style") return anStyleName(r.key);
+  if (dim === "source") return r.key === "recorded" ? "Recorded" : "Generated";
+  return r.name ?? r.key;
+}
+
+/** One label value: its median score, its 90% interval on a 0–100 track, and how many videos it rests on. */
+function anVal(dim, r) {
+  const name = anValueName(dim, r);
+  const x = (v) => 2 + (Math.max(0, Math.min(100, v)) / 100) * 92;
+  const tip = `${name}: median ${Math.round(r.median)}, 90% interval ${Math.round(r.lo)}–${Math.round(r.hi)}, ${anVideos(r.n)}${r.enough ? "" : " (not enough videos to tell)"}`;
+  return `<div class="an-val ${r.enough ? "" : "thin"}" tabindex="0" title="${esc(tip)}" aria-label="${esc(tip)}">
+    <span class="nm">${esc(name)}</span><span class="md">${Math.round(r.median)}</span>
+    <svg viewBox="0 0 96 12" aria-hidden="true"><line class="trk" x1="2" x2="94" y1="6" y2="6"/>
+      <rect class="rg" x="${x(r.lo)}" y="3" width="${Math.max(0, x(r.hi) - x(r.lo))}" height="6" rx="3"/>
+      <circle class="dot" cx="${x(r.median)}" cy="6" r="4"/></svg>
+    <span class="ct">${r.enough ? anVideos(r.n) : `${r.n} · not enough videos`}</span></div>`;
+}
+
+/** A video's overall score at one age: "p" and muted while provisional, "–" when there's none yet. */
+function anScore(scores, age) {
+  const v = scores.overall[age];
+  if (v === undefined) return `<span class="muted" title="no score at ${age} yet">–</span>`;
+  const per = Object.entries(scores.perPlatform).filter(([, a]) => a[age] !== undefined).map(([p, a]) => `${anLabel(p)} ${Math.round(a[age])}`).join(", ");
+  return scores.provisional[age]
+    ? `<span class="prov" title="${esc(`provisional (${per}): fewer than 8 videos at ${age} on the account, or a platform has no number at ${age} yet`)}">${Math.round(v)}p</span>`
+    : `<span title="${esc(per)}">${Math.round(v)}</span>`;
+}
+
+/** Filled = has numbers, hollow = none yet, warning = the account must sign in again. Blank: not posted there. */
+function anDots(v) {
+  const need = new Set(an.needsPermission.map((a) => a.accountId));
+  return AN_PLATFORMS.map((p) => {
+    const mine = v.platforms.filter((j) => j.platform === p);
+    if (!mine.length) return `<td class="pf"></td>`;
+    const [cls, what] = mine.some((j) => need.has(j.accountId)) ? ["warn", "needs permission, sign in again"]
+      : mine.some((j) => j.hasData) ? ["has", "has numbers"] : ["", "no numbers yet"];
+    return `<td class="pf"><span class="an-dot ${cls}" role="img" aria-label="${esc(`${anLabel(p)}: ${what}`)}" title="${esc(`${anLabel(p)}: ${what}`)}"></span></td>`;
+  }).join("");
+}
+
+async function loadAnalyticsRefs() {
+  const get = (u) => fetch(u).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  const [lib, types, camps] = await Promise.all([get("/api/library"), get("/api/types"), get("/api/campaigns")]);
+  anRefs = { entries: lib?.entries ?? [], types: types?.types ?? [], campaigns: camps?.campaigns ?? [] };
+  const fill = (el, first, options) => {
+    const keep = el.value;
+    el.innerHTML = `<option value="">${first}</option>` + options.map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`).join("");
+    el.value = options.some(([v]) => String(v) === keep) ? keep : "";
+  };
+  fill($("anAccount"), "All accounts", status.accounts.map((a) => [a.id, `${anLabel(a.platform)} · ${a.name}`]));
+  fill($("anCampaign"), "Campaign: all", anRefs.campaigns.map((c) => [c.id, c.name]));
+}
+
+function anQuery() {
+  const q = new URLSearchParams({ days: $("anDays").value, age: $("anAge").value });
+  if ($("anAccount").value) q.set("account", $("anAccount").value);
+  if ($("anSource").value) q.set("source", $("anSource").value);
+  if ($("anCampaign").value) q.set("campaign", $("anCampaign").value);
+  return q;
+}
+
+async function loadAnalytics() {
+  const seq = ++anSeq;
+  $("anBody").classList.add("an-loading"); // the last render stays while the new one loads
+  try {
+    const res = await fetch(`/api/analytics?${anQuery()}`);
+    const body = await res.json().catch(() => ({}));
+    if (seq !== anSeq) return;
+    if (!res.ok) { banner("err", body.error ?? "Couldn't load the analytics"); return; }
+    an = body;
+    renderAnalytics();
+  } finally {
+    if (seq === anSeq) $("anBody").classList.remove("an-loading");
+  }
+}
+
+function showAnalytics() {
+  loadAnalyticsRefs().then(loadAnalytics);
+  anDrawCharts(); // the window may have changed size while another tab showed
+}
+
+function renderAnalytics() {
+  const { budgeted, all, max } = an.ai;
+  $("anAi").textContent = `AI today · campaigns & labels: ${budgeted.calls} / ${max.calls} calls, ${anNum(budgeted.tokens)} / ${anNum(max.tokens)} tokens · all AI: ${all.calls} calls`;
+  $("anAi").title = "Campaigns and labels stop for the day at either limit; captions and edits aren't counted against it";
+  $("anPermission").innerHTML = an.needsPermission.length ? `<div class="an-banner" role="status"><strong>Needs permission.</strong>
+    FreePoster can't read the numbers for ${an.needsPermission.map((a) => `<span class="row" style="display:inline-flex;gap:4px">${icon(a.platform)} ${esc(a.name)}</span>`).join(", ")}
+    until ${an.needsPermission.length === 1 ? "it signs" : "they sign"} in again: <a href="#" class="link" data-setup="connect">Setup → Connect accounts</a>.</div>` : "";
+
+  if (!an.videos.length) {
+    const filtered = $("anAccount").value || $("anSource").value || $("anCampaign").value;
+    $("anBody").innerHTML = `<section><h2>No videos to score yet</h2>
+      <p class="muted" style="margin:0">${filtered ? "No published video matches these filters in this period. " : "Nothing has been published in this period yet. "}Scores appear once a video
+      has been out for a day: FreePoster reads each platform's numbers 1 hour, 6 hours, 1 day, 3 days, 7 days and 30 days after posting, and scores
+      the video against the account's other recent videos at 24 hours, 72 hours and 7 days.</p></section>`;
+    return;
+  }
+
+  const dims = AN_DIMS.map(([dim, title]) => {
+    const vals = an.compare[dim] ?? [];
+    return `<div class="dim">${title}</div><div class="vals">${vals.length ? vals.map((r) => anVal(dim, r)).join("") : `<span class="muted">no scored videos yet</span>`}</div>`;
+  }).join("");
+  const label = (x) => (x ? x.name ?? x.text ?? "" : "");
+  const rows = an.videos.map((v) => {
+    const parts = [v.hook, v.angle, v.cta].map(label);
+    return `<tr data-an-post="${v.postId}" tabindex="0" class="${v.postId === anOpen ? "on" : ""}">
+      <td class="ttl" title="${esc(v.title)}">${esc(v.title || "(untitled)")}</td>
+      <td>${v.source === "recorded" ? "rec" : "gen"}</td>
+      <td>${esc(v.styleId ? anStyleName(v.styleId) : "–")}</td>
+      <td class="lbl" title="${esc(parts.map((p) => p || "–").join(" / "))}">${esc(parts.map((p) => (p ? anShort(p) : "–")).join(" / "))}</td>
+      ${["24h", "72h", "7d"].map((a) => `<td class="num">${anScore(v.scores, a)}</td>`).join("")}
+      ${anDots(v)}</tr>`;
+  }).join("");
+  $("anBody").innerHTML = `
+    <section>
+      <div class="section-head"><h2>What's working</h2><span class="muted">median score at ${esc(an.age)} · bar: 90% interval on 0–100</span></div>
+      <div class="an-dims">${dims}</div>
+    </section>
+    <section>
+      <div class="section-head"><h2>Videos</h2><span class="muted">${anVideos(an.videos.length)} · click one for its numbers</span></div>
+      <div class="an-scroll"><table class="an-table">
+        <thead><tr><th>Video</th><th>Src</th><th>Style</th><th>Hook / Angle / CTA</th><th class="num">24h</th><th class="num">72h</th><th class="num">7d</th>
+          ${AN_PLATFORMS.map((p) => `<th class="pf" title="${esc(anLabel(p))}">${icon(p)}</th>`).join("")}</tr></thead>
+        <tbody>${rows}</tbody></table></div>
+      <div class="an-key muted"><span style="display:inline">Scores are percentiles among the account's last 30 videos at that age (0–100); <strong class="prov">p</strong> = provisional</span>
+        <span><span class="an-dot has"></span> has numbers</span><span><span class="an-dot"></span> none yet</span><span><span class="an-dot warn"></span> needs permission</span></div>
+    </section>`;
+}
+
+/**
+ * A line chart in inline SVG with a crosshair that snaps to the nearest x and a tooltip listing every series there.
+ * series: [{ name, color, dash, points: [{ x, y }] }]; x/y: { log, domain: [lo, hi], ticks: [[value, label]] }.
+ */
+function anLineChart(host, { series, x, y, fmtX, fmtY }) {
+  // drawn at the width it has, so its text stays at the page's size
+  const W = Math.max(320, Math.round(host.clientWidth || 640)), H = 220, L = 46, R = 14, T = 10, B = 24;
+  const f = (axis) => (axis.log ? Math.log10 : (v) => v);
+  const sx = (v) => L + ((f(x)(v) - f(x)(x.domain[0])) / (f(x)(x.domain[1]) - f(x)(x.domain[0]))) * (W - L - R);
+  const sy = (v) => H - B - ((f(y)(v) - f(y)(y.domain[0])) / (f(y)(y.domain[1]) - f(y)(y.domain[0]))) * (H - T - B);
+  const yv = (v) => Math.max(y.domain[0], v);
+  const svg = [`<svg viewBox="0 0 ${W} ${H}" tabindex="0" role="img" aria-label="${esc(series.map((s) => s.name).join(", "))}">`];
+  for (const [v, t] of y.ticks) svg.push(`<line class="grid" x1="${L}" x2="${W - R}" y1="${sy(v)}" y2="${sy(v)}"/><text class="axis" x="${L - 6}" y="${sy(v) + 4}" text-anchor="end">${esc(t)}</text>`);
+  for (const [v, t] of x.ticks) svg.push(`<text class="axis" x="${sx(v)}" y="${H - 6}" text-anchor="middle">${esc(t)}</text>`);
+  svg.push(`<line class="cross" y1="${T}" y2="${H - B}" visibility="hidden"/>`);
+  for (const s of series) {
+    const pts = s.points.map((p) => `${sx(p.x).toFixed(1)},${sy(yv(p.y)).toFixed(1)}`);
+    svg.push(`<polyline points="${pts.join(" ")}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"${s.dash ? ` stroke-dasharray="6 4"` : ""}/>`);
+    if (s.points.length <= 30) for (const p of s.points) svg.push(`<circle cx="${sx(p.x)}" cy="${sy(yv(p.y))}" r="4" fill="${s.color}" stroke="var(--panel)" stroke-width="2"/>`);
+  }
+  svg.push(`<rect x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}" fill="transparent"/></svg>`);
+  host.innerHTML = svg.join("");
+  const el = host.querySelector("svg"), cross = el.querySelector(".cross");
+  const xs = [...new Set(series.flatMap((s) => s.points.map((p) => p.x)))].sort((a, b) => a - b);
+  const tip = document.createElement("div");
+  tip.className = "an-tip";
+  tip.hidden = true;
+  host.append(tip);
+  let at = -1;
+  const show = (i) => {
+    at = Math.max(0, Math.min(xs.length - 1, i));
+    const px = sx(xs[at]);
+    cross.setAttribute("x1", px); cross.setAttribute("x2", px); cross.setAttribute("visibility", "visible");
+    tip.replaceChildren();
+    const h = document.createElement("div"); h.className = "h"; h.textContent = fmtX(xs[at]); tip.append(h);
+    for (const s of series) {
+      // the series' point nearest the crosshair, when it's close enough to be the same moment
+      const near = s.points.reduce((b, p) => (Math.abs(sx(p.x) - px) < Math.abs(sx(b.x) - px) ? p : b), s.points[0]);
+      const row = document.createElement("div");
+      const key = document.createElement("i"); key.style.background = s.color;
+      const val = document.createElement("strong"); val.textContent = near && Math.abs(sx(near.x) - px) <= 14 ? fmtY(near.y) : "–";
+      const name = document.createElement("span"); name.textContent = s.name;
+      row.append(key, val, name);
+      tip.append(row);
+    }
+    tip.hidden = false;
+    const scale = el.clientWidth / W;
+    const left = px * scale;
+    tip.style.top = "4px";
+    tip.style.left = left > el.clientWidth / 2 ? "" : `${left + 10}px`;
+    tip.style.right = left > el.clientWidth / 2 ? `${el.clientWidth - left + 10}px` : "";
+  };
+  const hide = () => { at = -1; tip.hidden = true; cross.setAttribute("visibility", "hidden"); };
+  el.addEventListener("pointermove", (e) => {
+    const r = el.getBoundingClientRect();
+    const px = ((e.clientX - r.left) / r.width) * W;
+    let best = 0;
+    xs.forEach((v, i) => { if (Math.abs(sx(v) - px) < Math.abs(sx(xs[best]) - px)) best = i; });
+    show(best);
+  });
+  el.addEventListener("pointerleave", hide);
+  el.addEventListener("blur", hide);
+  el.addEventListener("focus", () => show(at < 0 ? xs.length - 1 : at));
+  el.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); show(at + (e.key === "ArrowLeft" ? -1 : 1)); }
+    if (e.key === "Escape") hide();
+  });
+}
+
+/** Log ticks at powers of ten (every other one when there are many). */
+function anLogTicks(lo, hi) {
+  const ticks = [];
+  for (let p = Math.round(Math.log10(lo)); p <= Math.round(Math.log10(hi)); p++) ticks.push([10 ** p, anNum(10 ** p)]);
+  return ticks.length > 6 ? ticks.filter((_, i) => i % 2 === 0) : ticks;
+}
+
+async function loadAnDetail(postId) {
+  anOpen = postId;
+  for (const tr of $("anBody").querySelectorAll("[data-an-post]")) tr.classList.toggle("on", Number(tr.dataset.anPost) === postId);
+  const res = await fetch(`/api/analytics/videos/${postId}`);
+  const d = await res.json().catch(() => ({}));
+  if (anOpen !== postId) return;
+  if (!res.ok) { banner("err", d.error ?? "Couldn't load that video"); return; }
+  renderAnDetail(d);
+}
+
+function anPick(kind, title, l) {
+  const entries = anRefs.entries.filter((e) => e.kind === kind);
+  const id = l?.[`${kind}Id`] ?? null, text = l?.[`${kind}Text`] ?? null;
+  const sel = id !== null ? `id:${id}` : text ? "text" : "";
+  const known = id === null || entries.some((e) => e.id === id);
+  return `<div><label for="anL_${kind}">${title}</label>
+    <select id="anL_${kind}" data-an-pick="${kind}">
+      <option value="">None</option>
+      ${entries.map((e) => `<option value="id:${e.id}" ${sel === `id:${e.id}` ? "selected" : ""}>${esc(e.name)}</option>`).join("")}
+      ${known ? "" : `<option value="id:${id}" selected>Library entry ${id}</option>`}
+      <option value="text" ${sel === "text" ? "selected" : ""}>Other (type it)…</option>
+    </select>
+    <input type="text" id="anL_${kind}Text" maxlength="2000" value="${esc(text ?? "")}" placeholder="The ${kind === "cta" ? "CTA" : kind}'s words" aria-label="${title} text" ${sel === "text" ? "" : "hidden"}></div>`;
+}
+
+function renderAnDetail(d) {
+  const box = $("anDetail");
+  box.hidden = false;
+  const acct = (id) => status.accounts.find((a) => a.id === id)?.name;
+  const seen = new Map();
+  const series = d.platforms.map((p) => {
+    const n = (seen.get(p.platform) ?? 0) + 1;
+    seen.set(p.platform, n);
+    const kind = p.snapshots.find((s) => s.views !== null)?.viewsKind ?? "views";
+    return { ...p, kind, dash: n > 1, color: `var(--s-${p.platform})`, name: `${anLabel(p.platform)}${acct(p.accountId) ? ` · ${acct(p.accountId)}` : ""}${kind === "impressions" ? " (impressions)" : ""}`,
+      points: p.snapshots.filter((s) => s.views !== null).map((s) => ({ x: s.ageSec, y: s.views })).sort((a, b) => a.x - b.x) };
+  });
+  const drawn = series.filter((s) => s.points.length);
+  const scores = ["24h", "72h", "7d"].map((a) => `${a} <strong>${anScore(d.scores, a)}</strong>`).join(" · ");
+  const per = Object.entries(d.scores.perPlatform).map(([p, a]) => `<span class="row" style="display:inline-flex;gap:4px">${icon(p)} ${["24h", "72h", "7d"].map((x) => (a[x] === undefined ? "–" : Math.round(a[x]))).join(" / ")}</span>`).join("");
+  const legend = (list) => `<div class="an-legend">${list.map((s) => `<span><i style="background:${s.color}"></i>${icon(s.platform)} ${esc(s.name)}</span>`).join("")}</div>`;
+  const retained = d.platforms.filter((p) => p.retention?.length);
+  const rawKeys = (p) => [...new Set(p.snapshots.flatMap((s) => Object.keys(s.raw)))].sort();
+  const raw = d.platforms.map((p) => {
+    const keys = rawKeys(p);
+    const kind = series.find((s) => s.jobId === p.jobId).kind;
+    return `<div class="pname">${icon(p.platform)} ${esc(series.find((s) => s.jobId === p.jobId).name)}${p.url ? ` <a class="link" href="${esc(p.url)}" target="_blank" rel="noopener" style="font-weight:400">view</a>` : ""}</div>
+      ${p.snapshots.length ? `<table><thead><tr><th>Age</th><th>Read</th><th>${kind === "impressions" ? "Impressions" : "Views"}</th>${keys.map((k) => `<th>${esc(k)}</th>`).join("")}</tr></thead>
+        <tbody>${p.snapshots.map((s) => `<tr><td>${anAge(s.ageSec)}</td><td>${esc(new Date(s.takenAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }))}</td>
+          <td>${s.views === null ? "–" : anFull(s.views)}</td>${keys.map((k) => `<td>${s.raw[k] === undefined ? "–" : anFull(s.raw[k])}</td>`).join("")}</tr>`).join("")}</tbody></table>`
+        : `<div class="muted">No numbers yet${p.state !== "published" ? ` (${esc(String(p.state).replace("_", " "))})` : ""}.</div>`}`;
+  }).join("");
+  const l = d.labels;
+  const styles = status.editingStyles.map((s) => [s.id, s.name]);
+  if (l?.styleId && !styles.some(([id]) => id === l.styleId)) styles.push([l.styleId, l.styleId]);
+
+  box.innerHTML = `
+    <div class="section-head"><h2>${esc(d.title || "(untitled)")}</h2><button type="button" data-an-close>Close</button></div>
+    <div class="scores"><span>Overall: ${scores}</span>${per}</div>
+    <h3>Views by age</h3>
+    ${drawn.length ? `${legend(drawn)}<div class="an-chart" id="anViews"></div>` : `<div class="muted">No numbers yet: the first are read an hour after posting.</div>`}
+    ${retained.length ? `<h3>Audience retention</h3>${legend(retained.map((p) => series.find((s) => s.jobId === p.jobId)))}<div class="an-chart" id="anRetention"></div>` : ""}
+    <h3>Numbers</h3><div class="an-raw">${raw || `<div class="muted">Not posted anywhere.</div>`}</div>
+    <h3>Labels</h3>
+    <div class="an-labels">
+      <div><label for="anL_source">Source</label><select id="anL_source">
+        <option value="recorded" ${l?.source !== "generated" ? "selected" : ""}>Recorded</option><option value="generated" ${l?.source === "generated" ? "selected" : ""}>Generated</option></select></div>
+      <div><label for="anL_style">Style</label><select id="anL_style"><option value="">None</option>
+        ${styles.map(([id, name]) => `<option value="${esc(id)}" ${l?.styleId === id ? "selected" : ""}>${esc(name)}</option>`).join("")}</select></div>
+      ${anPick("hook", "Hook", l)}${anPick("angle", "Angle", l)}${anPick("cta", "CTA", l)}
+    </div>
+    <label>Types</label>
+    <div class="an-labels"><div class="types">${anRefs.types.length
+      ? anRefs.types.map((t) => `<label><input type="checkbox" data-an-type="${t.id}" ${l?.types?.includes(t.id) ? "checked" : ""}> ${esc(t.name)}</label>`).join("")
+      : `<span class="muted">No types in the library yet.</span>`}</div></div>
+    <div class="an-save"><button type="button" id="anSave">Save labels</button><span id="anSaveNote" class="muted">${l ? `Labelled by ${esc(l.labelledBy)}` : "Not labelled yet"}</span></div>`;
+
+  anCharts = { drawn, retained, series };
+  anDrawCharts();
+}
+
+/** Draws the open detail's charts at the width they have now (again when the window is resized). */
+function anDrawCharts() {
+  if (!anCharts || $("anDetail").hidden || $("analytics").hidden) return;
+  const { drawn, retained, series } = anCharts;
+  if (drawn.length) {
+    const ages = drawn.flatMap((s) => s.points.map((p) => p.x)), views = drawn.flatMap((s) => s.points.map((p) => Math.max(1, p.y)));
+    const xd = [Math.min(3600, ...ages), Math.max(604800, ...ages)];
+    const yd = [10 ** Math.floor(Math.log10(Math.min(...views))), 10 ** Math.max(Math.ceil(Math.log10(Math.max(...views))), Math.floor(Math.log10(Math.min(...views))) + 1)];
+    anLineChart($("anViews"), {
+      series: drawn,
+      x: { log: true, domain: xd, ticks: AN_AGES.filter(([, s]) => s >= xd[0] && s <= xd[1]).map(([t, s]) => [s, t]) },
+      y: { log: true, domain: yd, ticks: anLogTicks(yd[0], yd[1]) },
+      fmtX: (v) => `${anAge(v)} after posting`, fmtY: (v) => anFull(v),
+    });
+  }
+  if (retained.length) {
+    const rs = retained.map((p) => ({ ...series.find((s) => s.jobId === p.jobId), points: p.retention.map((r, i) => ({ x: p.retention.length > 1 ? i / (p.retention.length - 1) : 0, y: r })) }));
+    const top = Math.max(1, ...rs.flatMap((s) => s.points.map((p) => p.y)));
+    anLineChart($("anRetention"), {
+      series: rs,
+      x: { log: false, domain: [0, 1], ticks: [0, 0.25, 0.5, 0.75, 1].map((v) => [v, `${v * 100}%`]) },
+      y: { log: false, domain: [0, top], ticks: [0, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2].filter((v) => v <= top).map((v) => [v, `${v * 100}%`]) },
+      fmtX: (v) => `${Math.round(v * 100)}% into the video`, fmtY: (v) => `${Math.round(v * 100)}% watching`,
+    });
+  }
+}
+
+async function saveAnLabels() {
+  const body = { source: $("anL_source").value, styleId: $("anL_style").value || null, types: [...$("anDetail").querySelectorAll("[data-an-type]:checked")].map((c) => Number(c.dataset.anType)) };
+  for (const kind of ["hook", "angle", "cta"]) {
+    const v = $(`anL_${kind}`).value;
+    if (v.startsWith("id:")) body[`${kind}Id`] = Number(v.slice(3));
+    else if (v === "text") { body[`${kind}Text`] = $(`anL_${kind}Text`).value.trim() || null; body[`${kind}Id`] = null; }
+    else { body[`${kind}Id`] = null; body[`${kind}Text`] = null; }
+  }
+  const postId = anOpen;
+  $("anSave").disabled = true;
+  const res = await fetch(`/api/analytics/labels/${postId}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const out = await res.json().catch(() => ({}));
+  if (anOpen !== postId) return;
+  $("anSave").disabled = false;
+  if (!res.ok) { $("anSaveNote").innerHTML = `<span style="color:var(--bad)">${esc(out.error ?? "Couldn't save")}</span>`; return; }
+  await Promise.all([loadAnalytics(), loadAnDetail(postId)]);
+  $("anSaveNote").innerHTML = `<span style="color:var(--ok)">Saved</span>`;
+}
+
+for (const id of ["anAccount", "anDays", "anSource", "anCampaign", "anAge"]) $(id).addEventListener("change", loadAnalytics);
+$("anBody").addEventListener("click", (e) => {
+  const tr = e.target.closest("[data-an-post]");
+  if (tr) loadAnDetail(Number(tr.dataset.anPost)).then(() => $("anDetail").scrollIntoView({ behavior: "smooth", block: "nearest" }));
+});
+$("anBody").addEventListener("keydown", (e) => {
+  const tr = e.target.closest("[data-an-post]");
+  if (tr && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); tr.click(); }
+});
+$("anDetail").addEventListener("click", (e) => {
+  if (e.target.closest("[data-an-close]")) { anOpen = null; $("anDetail").hidden = true; for (const tr of $("anBody").querySelectorAll("tr.on")) tr.classList.remove("on"); }
+  if (e.target.closest("#anSave")) saveAnLabels();
+});
+$("anDetail").addEventListener("change", (e) => {
+  const pick = e.target.closest("[data-an-pick]");
+  if (pick) {
+    const input = $(`anL_${pick.dataset.anPick}Text`);
+    input.hidden = pick.value !== "text";
+    if (!input.hidden) input.focus();
+  }
+});
+let anResize;
+window.addEventListener("resize", () => { clearTimeout(anResize); anResize = setTimeout(anDrawCharts, 150); });
+// Numbers arrive as the poller reads them; the list keeps up while it's showing (the open detail isn't redrawn under an edit).
+setInterval(() => { if (!$("analytics").hidden) loadAnalytics(); }, 60000);
 
 loadStatus().then(() => {
   updateCounters();

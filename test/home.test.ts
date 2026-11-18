@@ -41,3 +41,16 @@ test("a fresh install with nothing to bring over starts empty", () => {
   assert.equal(homeFolder(user), user);
   assert.ok(!existsSync(join(user, ".env")));
 });
+
+test("the window has an Analytics tab and its panel", async () => {
+  const { buildServer } = await import("../src/server.ts");
+  const { Runner } = await import("../src/runner.ts");
+  const { publishers } = await import("../src/platforms/index.ts");
+  const { newStore } = await import("./helpers.ts");
+  const store = newStore();
+  const app = buildServer(store, new Runner(store, publishers, tmp()), publishers);
+  const res = await app.inject("/");
+  assert.equal(res.statusCode, 200);
+  assert.ok(res.body.includes(`id="tabAnalytics"`), "the Analytics tab button");
+  assert.ok(res.body.includes(`id="analytics"`), "the Analytics panel");
+});
