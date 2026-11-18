@@ -3125,9 +3125,7 @@ $("cpList").addEventListener("click", async (e) => {
   if (conf) return cpConfirm(Number(conf.dataset.cpConfirm), conf);
   const rel = e.target.closest("[data-cp-release]");
   if (rel) {
-    if (!confirm("Release this Drive file from its campaign?
-
-It goes on by its filename instead: to review, or (a _RAW file) posted at its filename's time. If its filename's day has passed, it is marked too late and nothing posts.")) return;
+    if (!confirm("Release this Drive file from its campaign?\n\nIt goes on by its filename instead: to review, or (a _RAW file) posted at its filename's time. If its filename's day has passed, it is marked too late and nothing posts.")) return;
     const r = await cpBusy(rel, () => cpCall("POST", `/api/campaigns/held/${encodeURIComponent(rel.dataset.cpRelease)}/release`));
     if (!r.ok) banner("err", `Couldn't release it: ${r.error}`);
     return loadCampaigns();

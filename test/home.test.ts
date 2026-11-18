@@ -68,3 +68,10 @@ test("the window has a Campaigns tab, its panel and the Autorun warning", async 
   assert.ok(res.body.includes(`id="campaigns"`), "the Campaigns panel");
   assert.ok(res.body.includes(`id="autorun-warning"`), "the dialog that says what Autorun may and may not do");
 });
+
+test("the window's own script parses (a syntax slip would leave every tab blank)", () => {
+  const html = readFileSync(join(import.meta.dirname, "..", "public", "index.html"), "utf8");
+  const scripts = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+  assert.ok(scripts.length);
+  for (const s of scripts) assert.doesNotThrow(() => new Function(s));
+});
