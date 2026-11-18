@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { before, test } from "node:test";
 import type { AiService } from "../src/ai/router.ts";
 import type { Question } from "../src/ai/providers.ts";
+import { checkBudget } from "../src/ai/budget.ts";
 import { AnalyticsStore } from "../src/analytics/store.ts";
 import type { Script } from "../src/campaigns/script.ts";
 import { DAYS, type CompiledCampaign, type Day, type MakeInstruction, type PostInstruction } from "../src/campaigns/spec.ts";
@@ -51,6 +52,7 @@ function setup(opts: { cap?: number; defaults?: string[] } = {}) {
   const ai = {
     ask: async (job: string, q: Question): Promise<Script> => {
       assert.equal(job, "script");
+      checkBudget(store, job); // as the router does first
       asked.push(q);
       const hook = /Hook: (.*)/.exec(q.prompt)![1];
       const call = /CTA \(spoken call\): (.*)/.exec(q.prompt)![1];
@@ -644,4 +646,35 @@ test("a campaign job whose post no campaign task owns can't be retried", async (
   s.store.db.prepare("DELETE FROM campaign_tasks WHERE id = ?").run(t.id);
   assert.match(s.store.retryJob(job.id) ?? "", /no campaign task/);
   assert.equal(s.store.job(job.id)!.state, "failed");
+});
+
+test("a campaign task (and a rule task) waits for tomorrow's AI budget instead of failing, says so once, and runs after midnight", async () => {
+  const s = setup();
+  const id = s.campaign({ tue: [s.make(1, { at: "18:00" })] });
+  s.worker.materialize();
+  const [t] = s.cs.tasksOn(id, "2026-11-17");
+  const ruleTask = s.cs.addTask({ campaignId: id, date: "2026-11-17", dayIndex: 2, instructionIndex: 0, copy: 9, kind: "rule", choices: s.cs.task(t.id)!.choices })!;
+  s.store.setPref("ai.budget.calls", 0);
+  await s.tick();
+  for (const task of [s.cs.task(t.id)!, s.cs.task(ruleTask)!]) {
+    assert.equal(task.state, "queued", task.error ?? "");
+    assert.equal(task.error, null, "not a failure");
+    assert.match(String((task.choices as any).waiting), /tomorrow's AI budget/);
+  }
+  assert.equal(s.store.eventByKey(`campaign.failed:${t.id}`), undefined, "no failure notification");
+  const ev = s.store.eventByKey(`campaign.waiting:${t.id}:2026-11-17`);
+  assert.ok(ev, "the user is told it waits");
+  assert.match(JSON.parse(ev.body).summary, /tries again after midnight/);
+  // Still today: it isn't tried again.
+  const asked = s.asked.length;
+  await s.tick();
+  assert.equal(s.cs.task(t.id)!.state, "queued");
+  assert.equal(s.asked.length, asked);
+  // Tomorrow, with budget again: it's made, and placed later the way any late approval is.
+  s.store.setPref("ai.budget.calls", 50);
+  s.clock.now = at(2026, 11, 18, 8);
+  await s.tick();
+  const next = s.cs.task(t.id)!;
+  assert.equal(next.state, "rendering", next.error ?? "");
+  assert.equal((next.choices as any).waiting, undefined);
 });

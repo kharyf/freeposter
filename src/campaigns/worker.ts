@@ -18,6 +18,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { defaultSetId, defaultTikTok, setAccounts } from "../accounts.ts";
+import { OverBudget } from "../ai/budget.ts";
 import type { AiService } from "../ai/router.ts";
 import { compareLabels, scoreVideos } from "../analytics/score.ts";
 import { AnalyticsStore } from "../analytics/store.ts";
@@ -84,6 +85,9 @@ export interface TaskChoices {
   rule?: { index: number; label: string; key: string };
   /** what the picker had to fall back on (every value stopped by a rule, say) */
   notes?: string[];
+  /** today's AI budget was used up when its script was due: what the tab shows, and when it tries again */
+  waiting?: string;
+  waitUntil?: number;
 }
 
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -403,7 +407,9 @@ export class CampaignWorker {
     switch (t.state) {
       case "queued":
         if (t.kind === "post") return this.findVideo(t);
+        if (c.waitUntil !== undefined && this.now() < c.waitUntil) return; // waiting for tomorrow's AI budget
         if (this.campaigns.killed()) return; // stopped: nothing new starts
+        if (c.waitUntil !== undefined) this.setChoices(t.id, { waiting: undefined, waitUntil: undefined });
         this.campaigns.updateTask(t.id, { state: "scripting" });
         return this.spawn(t, () => this.makeScript(t.id));
       case "scripting":
@@ -444,7 +450,13 @@ export class CampaignWorker {
     if (!c.script) {
       if (!this.ai) throw new Error("no AI provider is set up to write the script");
       log({ id }, "writing the script");
-      const script = await this.write({ ai: this.ai }, { hook: c.hook!, angle: c.angle!, cta: c.cta! });
+      let script: Script;
+      try {
+        script = await this.write({ ai: this.ai }, { hook: c.hook!, angle: c.angle!, cta: c.cta! });
+      } catch (err) {
+        if (err instanceof OverBudget || (err as Error)?.name === "OverBudget") return this.waitForBudget(id);
+        throw err;
+      }
       this.setChoices(id, { script });
     }
     this.campaigns.updateTask(id, { state: "rendering" });
@@ -766,6 +778,25 @@ export class CampaignWorker {
   }
 
   // ---- failures and notifications ----
+
+  /**
+   * Today's AI budget is used up: the task goes back to "queued" (never failed) and waits for the budget to reset at
+   * local midnight, then tries again; its post is placed then like any later approval. The user is told once a day.
+   */
+  private waitForBudget(id: number) {
+    const now = this.now();
+    const until = endOfDay(dayKey(now));
+    const waiting = "waiting for tomorrow's AI budget: today's is used up, so its script is written after midnight";
+    this.setChoices(id, { waiting, waitUntil: until });
+    this.campaigns.updateTask(id, { state: "queued", error: null });
+    const t = this.campaigns.task(id)!;
+    const c = t.choices as unknown as TaskChoices;
+    const name = c.campaignName ?? this.campaigns.campaign(t.campaignId)?.name ?? `campaign ${t.campaignId}`;
+    const what = t.kind === "rule" ? "a rule's video" : `video ${t.copy + 1} of "${c.instruction?.source ?? `line ${t.instructionIndex + 1}`}"`;
+    log(t, waiting);
+    queueEvent(this.store, "campaign.waiting", `campaign.waiting:${id}:${dayKey(now)}`, { campaign_id: t.campaignId, task_id: id, date: t.date, until: new Date(until).toISOString() },
+      `Campaign "${name}": ${what} for ${t.date} is waiting for tomorrow's AI budget (today's is used up); FreePoster tries again after midnight.`);
+  }
 
   fail(id: number, error: string, notify = true) {
     const t = this.campaigns.task(id);

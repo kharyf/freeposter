@@ -2941,7 +2941,10 @@ function cpTaskHtml(t) {
     ch.postTime && `at ${esc(ch.postTime)}`].filter(Boolean).join(" · ");
   const notes = [...(Array.isArray(ch.notes) ? ch.notes : [])];
   if (t.kind === "post" && ch.sourceTaskId) notes.push("this line posts a kept campaign video; if a Drive file with this name arrives, it stays held");
-  return `<li><span class="st ${esc(t.state)}">${esc(CP_STATE_WORD[t.state] ?? t.state)}</span> · ${esc(t.kind)}${name}${bits ? ` · ${bits}` : ""}
+  // today's AI budget ran out before its script: it waits (it isn't failed) and tries again after midnight
+  const waiting = t.state === "queued" && ch.waiting;
+  if (waiting) notes.push(ch.waiting);
+  return `<li><span class="st ${esc(t.state)}">${waiting ? "Waiting for tomorrow's AI budget" : esc(CP_STATE_WORD[t.state] ?? t.state)}</span> · ${esc(t.kind)}${name}${bits ? ` · ${bits}` : ""}
     ${t.error ? `<span class="why err">${esc(t.error)}</span>` : ""}${notes.map((n) => `<span class="why">Note: ${esc(n)}</span>`).join("")}</li>`;
 }
 
