@@ -579,6 +579,27 @@ export class Store {
   }
 
   /**
+   * A cancelled post's held jobs that cancelPost had to keep (they had tried, or carry an upload checkpoint): each is
+   * finished as failed and no longer held, so it never goes out and stays in the history; retry_job can send it
+   * deliberately. Returns the platforms they were for.
+   */
+  failHeld(postId: number): string[] {
+    const jobs = this.db.prepare("SELECT id, platform, progress FROM jobs WHERE post_id = ? AND state IN ('queued', 'retry', 'waiting_quota')").all(postId) as { id: number; platform: string; progress: string }[];
+    const platforms: string[] = [];
+    for (const j of jobs) {
+      const progress = JSON.parse(j.progress) as Record<string, unknown>;
+      if (typeof progress.heldFrom !== "number") continue;
+      const next = progress.heldFrom;
+      delete progress.heldFrom;
+      this.db
+        .prepare("UPDATE jobs SET state = 'failed', error = ?, progress = ?, next_run_at = ?, updated_at = ? WHERE id = ?")
+        .run(`cancelled while held: it had already started on ${j.platform}; check there for a leftover draft`, JSON.stringify(progress), next, Date.now(), j.id);
+      platforms.push(j.platform);
+    }
+    return platforms;
+  }
+
+  /**
    * Cancels a post's unstarted jobs: never tried, nothing sent. A held one counts when holding is all its progress
    * says (in a retry or waiting for quota too). A job that has tried, or carries an upload checkpoint (an Instagram
    * container, a Facebook upload), is left alone, like jobs under way: it may have half-made a post on the platform.

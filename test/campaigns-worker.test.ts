@@ -532,7 +532,7 @@ test("approving a review whose task already failed cancels the held post and say
   assert.ok(s.store.eventByKey(`campaign.failed:post:${postId}`));
 });
 
-test("while stopped, a job that fails into a retry stays held, and a held retry that tried is never deleted", async () => {
+test("while stopped, a job that fails into a retry stays held, and a held retry that tried is never deleted, and is failed (not stranded) once its task stops", async () => {
   const s = setup();
   const id = s.campaign({ tue: [s.make(1, { at: "default" })] });
   s.worker.materialize();
@@ -547,11 +547,18 @@ test("while stopped, a job that fails into a retry stays held, and a held retry 
   assert.equal(s.store.job(job.id)!.nextRunAt, job.nextRunAt, "a running job isn't touched");
   s.store.finishJob(job.id, "retry", { error: "timeout", nextRunAt: Date.now() + 30_000 });
   assert.equal(s.store.job(job.id)!.nextRunAt, Number.MAX_SAFE_INTEGER, "it fell into a retry while stopped: held");
-  // It tried once (it may have half-made a post on the platform): cancelling leaves it, still held.
+  // It tried once (it may have half-made a post on the platform): cancelling never deletes it.
   const { cancelled } = s.store.cancelPost(postId);
   assert.equal(cancelled, 0);
   assert.ok(s.store.post(postId));
-  assert.equal(s.store.job(job.id)!.nextRunAt, Number.MAX_SAFE_INTEGER);
+  // Its task stops: the post isn't left held forever; the job is finished as failed, in the history, and the user told.
+  s.cs.updateTask(t.id, { state: "failed", error: "stopped" });
+  await s.tick();
+  const stopped = s.store.job(job.id)!;
+  assert.equal(stopped.state, "failed");
+  assert.equal(stopped.progress.heldFrom, undefined);
+  assert.match(stopped.error ?? "", /already started on x/);
+  assert.match(JSON.parse(s.store.eventByKey(`campaign.failed:post:${postId}`)!.body).summary, /check x for a leftover draft/);
 });
 
 test("two campaign posts never share a minute", async () => {

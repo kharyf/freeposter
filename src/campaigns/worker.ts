@@ -712,9 +712,9 @@ export class CampaignWorker {
       });
     }
     // An approved post this task never placed is still held: it must never go out on its own.
-    if (r?.postId && t.state !== "scheduled" && t.state !== "posted") this.cancelHeld(r.postId);
+    const started = r?.postId && t.state !== "scheduled" && t.state !== "posted" ? this.cancelHeld(r.postId) : "";
     log(t, `failed: ${error}`);
-    if (notify) this.tell(this.campaigns.task(id)!, "campaign.failed", error);
+    if (notify) this.tell(this.campaigns.task(id)!, "campaign.failed", started ? `${error}. ${started}` : error);
   }
 
   private tell(t: CampaignTask, type: "campaign.failed" | "campaign.missed", error: string) {
@@ -756,10 +756,14 @@ export class CampaignWorker {
       try {
         const c = t.choices as unknown as TaskChoices;
         const campaign = this.campaigns.campaign(t.campaignId);
-        if (!campaign) { this.cancelHeld(t.postId!); this.fail(t.id, "its campaign is gone"); continue; }
+        if (!campaign) { const started = this.cancelHeld(t.postId!); this.fail(t.id, `its campaign is gone${started ? `. ${started}` : ""}`); continue; }
         const stillFits = from >= now && this.postsOn(campaign.id, dayKey(from), t.id).length < campaign.dailyPostCap && !this.takenMinutes(t.id).has(minute(from));
         const at = stillFits ? from : this.postTime(t, c, campaign);
-        if (at === null) { this.cancelHeld(t.postId!); this.fail(t.id, `no day in the next ${MAX_DAYS_AHEAD} has room under the daily post cap of ${campaign.dailyPostCap}`); continue; }
+        if (at === null) {
+          const started = this.cancelHeld(t.postId!);
+          this.fail(t.id, `no day in the next ${MAX_DAYS_AHEAD} has room under the daily post cap of ${campaign.dailyPostCap}${started ? `. ${started}` : ""}`);
+          continue;
+        }
         if (this.store.releasePost(t.postId!, { at }) > 0) released++;
       } catch (err) {
         this.fail(t.id, (err as Error).message);
@@ -772,13 +776,24 @@ export class CampaignWorker {
 
   // ---- held posts nobody will place ----
 
-  /** Cancels a campaign post while it's still held (cancelPost keeps any job that already tried: see there). */
-  private cancelHeld(postId: number) {
+  /**
+   * Stops a campaign post while it's still held: its jobs that never tried are cancelled; one that already tried (or
+   * carries an upload checkpoint) can't just be deleted, since it may have half-made a post, so it's finished as
+   * failed (kept in the history, never sent on its own). Returns what the user should know: "" when nothing had
+   * started, else a sentence naming where to look for a leftover draft.
+   */
+  private cancelHeld(postId: number): string {
     const held = this.store.jobsForPost(postId).some((j) => typeof j.progress.heldFrom === "number");
-    if (!held) return;
-    const { cancelled } = this.store.cancelPost(postId);
-    // A held job that already tried (or holds an upload checkpoint) is left as it is: still held, it never goes out.
-    console.log(`campaigns: cancelled held post ${postId}${cancelled ? "" : " (a job that already tried is kept, held)"}`);
+    if (!held) return "";
+    this.store.cancelPost(postId);
+    const started = this.store.post(postId) ? this.store.failHeld(postId) : [];
+    if (!started.length) {
+      console.log(`campaigns: cancelled held post ${postId}`);
+      return "";
+    }
+    const where = started.join(", ");
+    console.log(`campaigns: stopped held post ${postId}; it had already started on ${where}, so those uploads are marked failed`);
+    return `Its upload had already started on ${where}, so it was stopped and marked failed rather than deleted: check ${where} for a leftover draft.`;
   }
 
   /**
@@ -796,11 +811,12 @@ export class CampaignWorker {
       const wanted = tasks.map((r) => this.campaigns.task(r.id)!).some((t) =>
         (t.state === "reviewing" && t.reviewId === review_id) || (t.state === "scheduled" && t.postId === post_id));
       if (wanted) continue;
-      this.cancelHeld(post_id);
+      const started = this.cancelHeld(post_id);
       const task = tasks[0] ? this.campaigns.task(tasks[0].id) : undefined;
+      const what = started ? `its post was stopped. ${started}` : "its post was cancelled and nothing was posted.";
       queueEvent(this.store, "campaign.failed", `campaign.failed:post:${post_id}`,
-        { campaign_id: task?.campaignId ?? null, task_id: task?.id ?? null, post_id, review_id, error: "approved after its campaign task had stopped" },
-        `A campaign video was approved (review ${review_id}) after its campaign task had stopped${task?.error ? ` (${task.error})` : ""}, so its post was cancelled and nothing was posted.`);
+        { campaign_id: task?.campaignId ?? null, task_id: task?.id ?? null, post_id, review_id, error: "approved after its campaign task had stopped", started: Boolean(started) },
+        `A campaign video was approved (review ${review_id}) after its campaign task had stopped${task?.error ? ` (${task.error})` : ""}, so ${what}`);
     }
   }
 

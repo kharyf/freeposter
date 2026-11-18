@@ -181,17 +181,17 @@ export class ReviewService {
    * exactly as any other (the exact file, the caption, every check) and then approved by those types, unseen, and its
    * post made held for the campaign worker to place, just as an approval would. The types are checked here and again
    * once the file is made, whatever the caller says; when they don't (or no longer) allow it, it's an ordinary review
-   * that waits for the user. Resolves once the review is prepared: approved, waiting, or failed like any review.
+   * that waits for the user. Resolves as soon as the review is opened (preparing, its preparation under way), like
+   * request(): the caller records it and follows it as any review; tick() waits for the preparation.
    */
   async autoApprove(q: ReviewRequest, typeIds: number[]): Promise<Review> {
     if (q.via !== "campaign") throw new Error("only a campaign video can post without approval");
     if (!mayPostUnseen(this.campaignTypes, typeIds)) return this.request(q);
-    const { review, work } = await this.open(q, [...typeIds]);
-    await work;
-    return this.reviews.get(review.id)!;
+    const { review } = await this.open(q, [...typeIds]);
+    return review;
   }
 
-  /** A new review, preparing. One that may post unseen starts its preparation at once (it's awaited by autoApprove). */
+  /** A new review, preparing. One that may post unseen starts its preparation at once (prepare() never rejects). */
   private async open(q: ReviewRequest, autoTypes?: number[]): Promise<{ review: Review; work: Promise<void> | null }> {
     if (q.via !== "campaign" && this.ownedByCampaign(q.subject)) {
       throw new Error(`this ${q.subject.kind} is a campaign video: FreePoster sends it for review itself, from its campaign`);
@@ -322,7 +322,15 @@ export class ReviewService {
         if (r.requestedVia === "campaign" && mayPostUnseen(this.campaignTypes, draft.autoTypes)) {
           if (!this.reviews.preparedAutoApproved(r.id, { ...made, draft })) return; // closed meanwhile
           log(r.id, "approved by its types (posts without approval)");
-          this.carryOut(this.reviews.get(r.id)!);
+          // Approved now: a failure from here isn't one of preparing it. The user is told, and tick() finishes it.
+          try {
+            this.carryOut(this.reviews.get(r.id)!);
+          } catch (err) {
+            const why = (err as Error).message;
+            log(r.id, `approved by its types, but couldn't be carried out yet: ${why}`);
+            this.event(r, "review.failed", `Review ${r.id} of ${this.label(r).toLowerCase()} was approved by its types, but FreePoster couldn't finish it yet: ${why}. It tries again.`, { error: why, auto: true });
+            this.onChange();
+          }
           return;
         }
         log(r.id, "its types no longer all allow posting without approval: it waits for the user");
@@ -461,8 +469,22 @@ export class ReviewService {
     }
   }
 
+  /**
+   * Finishes approvals a crash or an error interrupted: a post that wasn't made yet, or a kept video whose edit wasn't
+   * marked approved (a kept campaign video is always an edit's).
+   */
   private resumeApproved() {
-    for (const r of this.reviews.inState("approved")) if (r.postId === null && !r.draft.keep) this.makePost(r);
+    for (const r of this.reviews.inState("approved")) {
+      if (!r.draft.keep) {
+        if (r.postId === null) this.makePost(r);
+      } else if (r.subjectKind === "edit" && this.store.edit(r.subjectId!)?.state === "ready" && this.store.edit(r.subjectId!)?.approvedAt === null) {
+        try {
+          this.carryOut(r);
+        } catch (err) {
+          console.error(`[review ${r.id}] couldn't keep it yet: ${(err as Error).message}`);
+        }
+      }
+    }
   }
 
   async reject(id: number, d: Decision): Promise<Outcome> {
