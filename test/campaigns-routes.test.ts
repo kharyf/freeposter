@@ -9,7 +9,10 @@ import type { CampaignWorker } from "../src/campaigns/worker.ts";
 import { publishers } from "../src/platforms/index.ts";
 import { Runner } from "../src/runner.ts";
 import { buildServer } from "../src/server.ts";
+import { config } from "../src/config.ts";
 import { newStore, tmp } from "./helpers.ts";
+
+const OWN = { host: `localhost:${config.port}` };
 
 const emptyDays = () => Object.fromEntries(DAYS.map((d) => [d, []])) as unknown as CompiledCampaign["days"];
 
@@ -31,7 +34,7 @@ function setup(ai: Pick<AiService, "ask"> | null = null) {
     days: { ...emptyDays(), tue: [{ kind: "make", count: 1, style: "basic", hook: { pick: "named", id: entry }, angle: { pick: "random" }, cta: { pick: "named", id: cta }, types: [], post: { at: "default" }, source: "x" }] },
     rules: [],
   });
-  const send = (method: string, url: string, payload?: unknown) => app.inject({ method: method as "GET", url, ...(payload === undefined ? {} : { payload: payload as object }) });
+  const send = (method: string, url: string, payload?: unknown) => app.inject({ method: method as "GET", url, headers: OWN, ...(payload === undefined ? {} : { payload: payload as object }) });
   return { store, cs, app, calls, hook, cta, campaignId, compiled, send };
 }
 
@@ -251,4 +254,41 @@ test("types: list, add, switch Post without approval", async () => {
   }
   assert.equal((await send("PUT", `/api/types/${id}/auto-post`, { on: "yes" })).statusCode, 400);
   assert.equal((await send("PUT", "/api/types/999/auto-post", { on: true })).statusCode, 404);
+});
+
+test("a change is refused from another website or a foreign host, and allowed from the window itself", async () => {
+  const { app, calls, cs } = setup();
+  const post = (headers: Record<string, string>) => app.inject({ method: "POST", url: "/api/campaigns/resume", headers });
+  let res = await post({ ...OWN, origin: "https://evil.example" });
+  assert.equal(res.statusCode, 403);
+  assert.ok(res.json().error);
+  res = await post({ host: "evil.example" });
+  assert.equal(res.statusCode, 403);
+  res = await app.inject({ method: "POST", url: "/api/library", headers: { ...OWN, origin: "https://evil.example" }, payload: { kind: "hook", name: "x", text: "y" } });
+  assert.equal(res.statusCode, 403);
+  assert.equal(cs.entries().length, 2); // the two setup made
+  assert.equal(calls.resume, 0);
+  res = await post({ ...OWN, origin: `http://localhost:${config.port}` });
+  assert.equal(res.statusCode, 200);
+  assert.equal(calls.resume, 1);
+  // reading stays open to any host (it changes nothing)
+  assert.equal((await app.inject({ method: "GET", url: "/api/campaigns/status", headers: { host: "evil.example" } })).statusCode, 200);
+});
+
+test("a preview made from text that was edited again while the AI was thinking can't be confirmed", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  let first = true;
+  const ai = { ask: async () => { if (first) { first = false; await gate; } return { lines: [] }; } } as unknown as Pick<AiService, "ask">;
+  const { send, campaignId, compiled, cs } = setup(ai);
+  const a = send("PUT", `/api/campaigns/${campaignId}/text`, { text: "unreadable line A" });
+  await new Promise((r) => setTimeout(r, 50));
+  const b = await send("PUT", `/api/campaigns/${campaignId}/text`, { text: "unreadable line B" });
+  assert.equal(b.statusCode, 200);
+  release();
+  const previewA = (await a).json();
+  assert.notEqual(previewA.textSha, b.json().textSha);
+  const res = await send("POST", `/api/campaigns/${campaignId}/confirm`, { compiled: compiled(), textSha: previewA.textSha });
+  assert.equal(res.statusCode, 409);
+  assert.equal(cs.campaign(campaignId)!.compiled, null);
 });

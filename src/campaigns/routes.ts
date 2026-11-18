@@ -4,6 +4,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { accountSets } from "../accounts.ts";
 import { todayUse } from "../ai/budget.ts";
 import type { Store } from "../db.ts";
+import { trustedRequest } from "../mcp.ts";
 import { campaignVocabulary, undoChange } from "./autorun.ts";
 import { parseCompiled } from "./spec.ts";
 import { CampaignStore, type Campaign, type LibraryKind, type TaskState } from "./store.ts";
@@ -36,7 +37,23 @@ function names(node: unknown, id: number): boolean {
   return Object.values(node).some((v) => names(v, id));
 }
 
-export function registerCampaignRoutes(app: FastifyInstance, store: Store, worker?: CampaignWorker) {
+/** Everything that changes something is for this app's own window or a local agent, never another website (CSRF, DNS rebinding). */
+function guarded(app: FastifyInstance, routes: (scope: FastifyInstance) => void) {
+  void app.register(async (scope) => {
+    scope.addHook("onRequest", async (req, reply) => {
+      if (req.method === "GET" || req.method === "HEAD") return;
+      const refused = trustedRequest(req);
+      if (refused) return reply.code(403).send({ error: refused });
+    });
+    routes(scope);
+  });
+}
+
+export function registerCampaignRoutes(root: FastifyInstance, store: Store, worker?: CampaignWorker) {
+  guarded(root, (app) => campaignRoutes(app, store, worker));
+}
+
+function campaignRoutes(app: FastifyInstance, store: Store, worker?: CampaignWorker) {
   const cs = worker?.campaigns ?? new CampaignStore(store);
   const bad = (reply: FastifyReply, error: string, problems?: string[]) => reply.code(400).send(problems ? { error, problems } : { error });
   const missing = (reply: FastifyReply, what: string, id: number | null) => reply.code(404).send({ error: `no ${what} ${id ?? ""}`.trim() });
@@ -84,8 +101,9 @@ export function registerCampaignRoutes(app: FastifyInstance, store: Store, worke
     const text = bodyOf(req).text;
     if (typeof text !== "string" || text.length > TEXT_MAX) return bad(reply, `text must be text of at most ${TEXT_MAX} characters`);
     cs.setText(c.id, text);
+    const textSha = cs.campaign(c.id)!.textSha; // before the await: a later edit must not lend its sha to this preview
     const { compiled, couldNotUnderstand } = await translateCampaign({ ai: worker?.ai ?? null }, text, campaignVocabulary(store, cs));
-    return { compiled, couldNotUnderstand, textSha: cs.campaign(c.id)!.textSha };
+    return { compiled, couldNotUnderstand, textSha };
   });
 
   app.post("/api/campaigns/:id/confirm", async (req, reply) => {

@@ -6,6 +6,7 @@ import { CampaignStore } from "../src/campaigns/store.ts";
 import { Runner } from "../src/runner.ts";
 import { buildServer } from "../src/server.ts";
 import { publishers } from "../src/platforms/index.ts";
+import { config } from "../src/config.ts";
 import { account, newStore, tmp } from "./helpers.ts";
 
 const DAY = 86_400_000;
@@ -106,8 +107,8 @@ test("GET /api/analytics/videos/:postId gives labels, snapshots, retention and s
 });
 
 test("PUT /api/analytics/labels/:postId saves the user's edits and validates ids", async () => {
-  const { app, posts, analytics, angle, cta, type } = setup();
-  const put = (id: number, body: unknown) => app.inject({ method: "PUT", url: `/api/analytics/labels/${id}`, payload: body as object });
+  const { app, posts, analytics, angle, cta, type, hook, store, tt } = setup();
+  const put = (id: number, body: unknown) => app.inject({ method: "PUT", url: `/api/analytics/labels/${id}`, headers: { host: `localhost:${config.port}` }, payload: body as object });
 
   let res = await put(posts[0], { angleId: null, angleText: "Custom angle", styleId: "fancy", types: [], hookText: "typed hook", hookId: null });
   assert.equal(res.statusCode, 200, res.body);
@@ -134,4 +135,18 @@ test("PUT /api/analytics/labels/:postId saves the user's edits and validates ids
     assert.ok(res.json().error);
   }
   assert.equal((await put(9999, { styleId: "basic" })).statusCode, 404);
+
+  // an id wins over text sent with it
+  res = await put(posts[0], { hookId: hook, hookText: "ignored" });
+  assert.equal(res.statusCode, 200);
+  assert.equal(analytics.labels(posts[0])!.hookText, null);
+
+  // a post with no labels yet needs its source
+  const fresh = store.createPost({ caption: "", title: "New", sourcePath: "x.mp4", sha256: "sha-new", tiktok: null }, [tt.id]);
+  assert.equal((await put(fresh, { styleId: "basic" })).statusCode, 400);
+  assert.equal((await put(fresh, { styleId: "basic", source: "recorded" })).statusCode, 200);
+
+  // another website can't relabel
+  res = await app.inject({ method: "PUT", url: `/api/analytics/labels/${posts[0]}`, headers: { host: `localhost:${config.port}`, origin: "https://evil.example" }, payload: { styleId: "basic" } });
+  assert.equal(res.statusCode, 403);
 });

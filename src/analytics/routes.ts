@@ -5,6 +5,7 @@ import { todayUse } from "../ai/budget.ts";
 import { CampaignStore } from "../campaigns/store.ts";
 import type { Store } from "../db.ts";
 import { styleById } from "../edit/styles.ts";
+import { trustedRequest } from "../mcp.ts";
 import { compareLabels, SCORE_AGES, scoreVideos, type LabelDimension, type ScoreAge } from "./score.ts";
 import { AnalyticsStore } from "./store.ts";
 import type { Source, VideoLabels } from "./types.ts";
@@ -17,7 +18,23 @@ const intIn = (v: unknown, min: number, max: number): number | null => {
 };
 const ID_MAX = Number.MAX_SAFE_INTEGER;
 
-export function registerAnalyticsRoutes(app: FastifyInstance, store: Store, now: () => number = Date.now) {
+/** Everything that changes something is for this app's own window or a local agent, never another website (CSRF, DNS rebinding). */
+function guarded(app: FastifyInstance, routes: (scope: FastifyInstance) => void) {
+  void app.register(async (scope) => {
+    scope.addHook("onRequest", async (req, reply) => {
+      if (req.method === "GET" || req.method === "HEAD") return;
+      const refused = trustedRequest(req);
+      if (refused) return reply.code(403).send({ error: refused });
+    });
+    routes(scope);
+  });
+}
+
+export function registerAnalyticsRoutes(root: FastifyInstance, store: Store, now: () => number = Date.now) {
+  guarded(root, (app) => analyticsRoutes(app, store, now));
+}
+
+function analyticsRoutes(app: FastifyInstance, store: Store, now: () => number) {
   const analytics = new AnalyticsStore(store);
 
   app.get("/api/analytics", async (req, reply) => {
@@ -68,10 +85,9 @@ export function registerAnalyticsRoutes(app: FastifyInstance, store: Store, now:
     }))]));
 
     // accounts whose metrics can't be read until the user signs in again
-    const stuck = analytics.db.prepare("SELECT DISTINCT job_id FROM metric_poll WHERE done = 0 AND last_error = 'needs permission'").all() as { job_id: number }[];
     const seen = new Map<number, { accountId: number; name: string; platform: string }>();
-    for (const { job_id } of stuck) {
-      const acct = store.account(store.job(job_id)?.accountId ?? -1);
+    for (const jobId of analytics.needingPermission()) {
+      const acct = store.account(store.job(jobId)?.accountId ?? -1);
       if (acct && !seen.has(acct.id)) seen.set(acct.id, { accountId: acct.id, name: acct.name, platform: acct.platform });
     }
 
@@ -113,7 +129,9 @@ export function registerAnalyticsRoutes(app: FastifyInstance, store: Store, now:
     if (typeof body !== "object" || Array.isArray(body)) return bad("expected an object");
     const cs = new CampaignStore(store);
 
-    const l: VideoLabels = analytics.labels(postId) ?? {
+    const existing = analytics.labels(postId);
+    if (!existing && body.source === undefined) return bad("this post has no labels yet: say its source (recorded or generated)");
+    const l: VideoLabels = existing ?? {
       postId, source: "recorded", styleId: null, hookId: null, hookText: null, angleId: null, angleText: null, ctaId: null, ctaText: null,
       campaignId: null, campaignTaskId: null, types: [], labelledBy: "user",
     };
@@ -138,7 +156,7 @@ export function registerAnalyticsRoutes(app: FastifyInstance, store: Store, now:
         if (id !== null) {
           if (!Number.isInteger(id)) return bad(`${idKey} must be a library entry id or null`);
           if (cs.entry(id as number)?.kind !== kind) return bad(`no ${kind} in the library with id ${id}`);
-          if (body[textKey] === undefined) l[textKey] = null;
+          l[textKey] = null; // an id wins over any text sent with it
         }
         l[idKey] = id as number | null;
       }

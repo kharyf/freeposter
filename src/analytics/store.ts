@@ -135,6 +135,11 @@ export class AnalyticsStore {
       .run(jobId, nextAt);
   }
 
+  /** Jobs still polled whose platform wants the user to sign in again. */
+  needingPermission(): number[] {
+    return (this.db.prepare("SELECT job_id FROM metric_poll WHERE done = 0 AND last_error = 'needs permission' ORDER BY job_id").all() as { job_id: number }[]).map((r) => r.job_id);
+  }
+
   duePolls(now: number, limit: number): { jobId: number; attempts: number }[] {
     return (this.db.prepare("SELECT job_id, attempts FROM metric_poll WHERE done = 0 AND next_at <= ? ORDER BY next_at LIMIT ?").all(now, limit) as any[])
       .map((r) => ({ jobId: r.job_id, attempts: r.attempts }));
