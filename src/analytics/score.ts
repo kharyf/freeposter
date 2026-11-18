@@ -2,7 +2,8 @@
 import type { Job, Platform } from "../types.ts";
 import { AGES, type Snapshot, type VideoLabels } from "./types.ts";
 
-export type ScoreAge = "24h" | "72h" | "7d";
+export type ScoreAge = "24h" | "72h" | "7d" | "30d";
+/** the ages the API and tab expose; "30d" is only for the backtest, which passes it to scoreVideos */
 export const SCORE_AGES: ScoreAge[] = ["24h", "72h", "7d"];
 export type LabelDimension = "hook" | "angle" | "cta" | "style" | "type" | "source";
 
@@ -70,8 +71,9 @@ export function scoreVideos(input: {
   snapshotsByJob: Map<number, Snapshot[]>;
   jobs: ScoredJob[];
   now: number;
+  ages?: ScoreAge[];
 }): VideoScore[] {
-  const { labels, snapshotsByJob, jobs, now } = input;
+  const { labels, snapshotsByJob, jobs, now, ages = SCORE_AGES } = input;
   const cache = new Map<string, number | null>();
   const get = (job: ScoredJob, age: ScoreAge): number | null => {
     const key = `${job.id}:${age}`;
@@ -97,7 +99,7 @@ export function scoreVideos(input: {
   return labels.map((label) => {
     const score: VideoScore = { postId: label.postId, perPlatform: {}, overall: {}, provisional: {} };
     const mine = jobs.filter((j) => j.postId === label.postId);
-    for (const age of SCORE_AGES) {
+    for (const age of ages) {
       const byPlatform = new Map<Platform, number[]>();
       let provisional = false;
       for (const job of mine) {
@@ -128,6 +130,44 @@ export function scoreVideos(input: {
     }
     return score;
   });
+}
+
+/** average ranks (1-based; tied values share the mean of the ranks they span) */
+function ranks(values: number[]): number[] {
+  const order = values.map((v, i) => ({ v, i })).sort((x, y) => x.v - y.v);
+  const out = new Array<number>(values.length);
+  for (let i = 0; i < order.length; ) {
+    let j = i;
+    while (j + 1 < order.length && order[j + 1]!.v === order[i]!.v) j++;
+    const avg = (i + j) / 2 + 1;
+    for (let k = i; k <= j; k++) out[order[k]!.i] = avg;
+    i = j + 1;
+  }
+  return out;
+}
+
+/**
+ * Spearman rank correlation: Pearson over average ranks, so ties are handled.
+ * NaN (undefined) when there are fewer than 2 pairs or either series has zero variance (all values equal).
+ */
+export function spearman(a: number[], b: number[]): number {
+  const n = Math.min(a.length, b.length);
+  if (n < 2) return NaN;
+  const ra = ranks(a.slice(0, n));
+  const rb = ranks(b.slice(0, n));
+  const ma = ra.reduce((x, y) => x + y, 0) / n;
+  const mb = rb.reduce((x, y) => x + y, 0) / n;
+  let cov = 0, va = 0, vb = 0;
+  for (let i = 0; i < n; i++) {
+    const da = ra[i]! - ma;
+    const db = rb[i]! - mb;
+    cov += da * db;
+    va += da * da;
+    vb += db * db;
+  }
+  if (va === 0 || vb === 0) return NaN;
+  const r = cov / Math.sqrt(va * vb);
+  return Math.max(-1, Math.min(1, r));
 }
 
 function mulberry32(seed: number): () => number {
