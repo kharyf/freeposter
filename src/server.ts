@@ -429,6 +429,8 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
 
   // PUT with a JSON body: a cross-site page can't send this without a CORS preflight we never answer.
   app.put<{ Body: { values?: Record<string, unknown>; prefs?: Record<string, unknown> } }>("/api/settings", async (req, reply) => {
+    const refused = trustedRequest(req); // the same check as /mcp: no other site or host name may change settings
+    if (refused) return reply.code(403).send({ error: refused });
     const input = req.body?.values ?? {};
     const out: Partial<Record<SettingKey, string>> = {};
     const problems: string[] = [];

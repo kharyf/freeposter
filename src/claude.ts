@@ -23,6 +23,8 @@ export function findClaude(): string {
     ...(process.env.PATH ?? "").split(delimiter).filter(Boolean),
     // Desktop apps don't always get the shell's PATH (macOS especially).
     join(homedir(), ".local", "bin"), join(homedir(), ".claude", "local"), "/opt/homebrew/bin", "/usr/local/bin",
+    // npm's global folder on Windows, where `npm i -g @anthropic-ai/claude-code` puts claude.cmd.
+    ...(process.env.APPDATA ? [join(process.env.APPDATA, "npm")] : []),
   ];
   for (const dir of dirs) {
     if (win) {

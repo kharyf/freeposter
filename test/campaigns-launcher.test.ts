@@ -56,6 +56,56 @@ test("does nothing when disabled", async () => {
   assert.equal(s.calls.length, 0);
 });
 
+test("a disabled launcher says it's off, once", async () => {
+  const s = setup({ enabled: false });
+  await s.launcher.tick();
+  assert.equal(s.store.pref("agent.launch.status"), "off");
+  let writes = 0;
+  const set = s.store.setPref.bind(s.store);
+  s.store.setPref = (k, v) => { if (k === "agent.launch.status") writes++; set(k, v); };
+  await s.launcher.tick();
+  s.store.setPref("agent.launch.enabled", true);
+  await s.launcher.tick(); // nothing open: idle
+  await s.launcher.tick();
+  assert.equal(s.store.pref("agent.launch.status"), "idle");
+  assert.equal(writes, 1);
+});
+
+test("stop aborts a running launch", async () => {
+  const s = setup();
+  s.add(1);
+  let seen: AbortSignal | undefined;
+  const launcher = new AgentLauncher({
+    store: s.store, campaigns: s.cs, now: () => s.clock.now, dataDir: s.dir, find: () => "claude",
+    borrowGpu: async (fn) => ({ value: await fn() }),
+    run: (_c, _a, _s, o) => new Promise((_resolve, reject) => {
+      seen = o?.signal;
+      assert.equal(o?.killTree, true);
+      o?.signal?.addEventListener("abort", () => reject(new Error("claude was stopped")));
+    }),
+  });
+  const running = launcher.tick();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(seen?.aborted, false);
+  launcher.stop();
+  await running;
+  assert.equal(seen?.aborted, true);
+  assert.equal(s.store.pref("agent.launch.status"), "last run failed: claude was stopped");
+});
+
+test("a run that throws or times out is shown as failed", async () => {
+  const s = setup();
+  s.add(1);
+  const launcher = new AgentLauncher({
+    store: s.store, campaigns: s.cs, now: () => s.clock.now, dataDir: s.dir, find: () => "claude",
+    borrowGpu: async (fn) => ({ value: await fn() }),
+    run: async () => { throw new Error("it didn't answer within 120 minutes"); },
+  });
+  await launcher.tick();
+  assert.equal(s.store.pref("agent.launch.status"), "last run failed: it didn't answer within 120 minutes");
+  assert.ok(!existsSync(join(s.dir, "agent-mcp.json")));
+});
+
 test("skips when claude isn't installed", async () => {
   const s = setup({ claude: "" });
   s.add(1);
@@ -84,12 +134,14 @@ test("launches once for an open brief and not again while running", async () => 
   assert.equal(opts?.env?.ANTHROPIC_API_KEY, undefined);
   const mcp = JSON.parse(readFileSync(mcpPath, "utf8"));
   assert.deepEqual(mcp.mcpServers.freeposter.type, "http");
-  assert.equal(mcp.mcpServers.freeposter.url, `${config.baseUrl}/mcp`);
+  // Always the local address the server listens on, never a public tunnel in BASE_URL.
+  assert.equal(mcp.mcpServers.freeposter.url, `http://127.0.0.1:${config.port}/mcp`);
   assert.equal(s.store.pref("agent.launch.status"), `working on task ${first}`);
 
   s.finish({ code: 0, stdout: "done", stderr: "" });
   await running;
   assert.equal(s.store.pref("agent.launch.status"), "idle");
+  assert.ok(!existsSync(mcpPath), "the MCP config is removed after the run");
   // The first brief isn't claimed by the stub, so it's still open: not launched again within the lease time.
   const next = s.launcher.tick();
   await new Promise((r) => setImmediate(r));
@@ -112,6 +164,7 @@ test("the prompt names the task id", async () => {
   assert.match(prompt, /renew_brief/);
   assert.match(prompt, /submit_brief/);
   assert.match(prompt, /give_up_brief/);
+  assert.match(prompt, /don't call FreePoster's start_production, create_edit/);
   s.finish({ code: 0, stdout: "", stderr: "" });
   await running;
 });

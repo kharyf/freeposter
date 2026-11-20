@@ -4,7 +4,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { findAnswer, schemaProblem } from "../src/ai/answer.ts";
-import { unwrapCmd, type ProgramRun } from "../src/ai/cli.ts";
+import { processTree, runProgram, unwrapCmd, type ProgramRun } from "../src/ai/cli.ts";
 import * as openrouter from "../src/ai/openrouter.ts";
 import { PROVIDERS, strictSchema, type ProviderId, type Question } from "../src/ai/providers.ts";
 import { AiService } from "../src/ai/router.ts";
@@ -54,6 +54,39 @@ test("npm's Windows launchers are run through node directly, so a multi-line pro
   const argv = unwrapCmd(cmd)!;
   assert.ok(argv.length === 2 && /node/i.test(argv[0]));
   assert.equal(argv[1], `${dir}\\node_modules\\@openai\\codex\\bin\\codex.js`);
+});
+
+/** Runs a node program that waits, with the tree kill stubbed: it records the pid and ends just that process. */
+async function treeKilled(opts: Parameters<ProgramRun>[3]) {
+  const killed: number[] = [];
+  const real = processTree.kill;
+  processTree.kill = (pid) => { killed.push(pid); process.kill(pid); };
+  try {
+    const error = await runProgram(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], "", opts).then(() => null, (err: Error) => err);
+    return { killed, error };
+  } finally {
+    processTree.kill = real;
+  }
+}
+
+test("an opted-in run's whole process tree is killed when it's aborted", async () => {
+  const ac = new AbortController();
+  setTimeout(() => ac.abort(), 300);
+  const { killed, error } = await treeKilled({ killTree: true, signal: ac.signal });
+  assert.equal(killed.length, 1);
+  assert.match(error!.message, /was stopped/);
+});
+
+test("an opted-in run's whole process tree is killed when it times out", async () => {
+  const { killed, error } = await treeKilled({ killTree: true, timeoutMs: 300 });
+  assert.equal(killed.length, 1);
+  assert.match(error!.message, /didn't answer within/);
+});
+
+test("runs that don't opt in never use the tree kill", async () => {
+  const { killed, error } = await treeKilled({ timeoutMs: 300 });
+  assert.deepEqual(killed, []);
+  assert.match(error!.message, /didn't answer within/);
 });
 
 // ---- each provider's program ----

@@ -6,8 +6,11 @@ import { delimiter, dirname, join } from "node:path";
 
 export const TIMEOUT_MS = 3 * 60_000;
 
-/** cwd defaults to the temp folder and timeoutMs to TIMEOUT_MS. */
-export type ProgramRun = (cmd: string, args: string[], stdin: string, opts?: { env?: NodeJS.ProcessEnv; cwd?: string; timeoutMs?: number }) =>
+/**
+ * cwd defaults to the temp folder and timeoutMs to TIMEOUT_MS. signal stops the run. With killTree, a timeout or
+ * stop ends the program's whole process tree (what it started too), not just the program.
+ */
+export type ProgramRun = (cmd: string, args: string[], stdin: string, opts?: { env?: NodeJS.ProcessEnv; cwd?: string; timeoutMs?: number; signal?: AbortSignal; killTree?: boolean }) =>
   Promise<{ code: number | null; stdout: string; stderr: string }>;
 
 /** Folders to look in besides PATH: desktop apps don't always get the shell's PATH. */
@@ -57,6 +60,18 @@ export function unwrapCmd(path: string): string[] | null {
   return out.some((t) => t.includes("%")) ? null : out;
 }
 
+/** Ends a process and everything it started (replaced in tests). */
+export const processTree = {
+  kill(pid: number) {
+    if (process.platform === "win32") {
+      spawn("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" }).on("error", () => {});
+    } else {
+      // The program was started as its own process group, so the negative pid reaches the whole group.
+      try { process.kill(-pid, "SIGKILL"); } catch { /* already gone */ }
+    }
+  },
+};
+
 export const runProgram: ProgramRun = (cmd, args, stdin, opts = {}) => new Promise((resolve, reject) => {
   let file = cmd;
   let argv = args;
@@ -72,15 +87,39 @@ export const runProgram: ProgramRun = (cmd, args, stdin, opts = {}) => new Promi
     }
   }
   const timeout = opts.timeoutMs ?? TIMEOUT_MS;
-  const child = spawn(file, argv, { cwd: opts.cwd ?? tmpdir(), env: opts.env ?? process.env, windowsHide: true, timeout, shell });
+  const tree = Boolean(opts.killTree);
+  const late = () => new Error(`it didn't answer within ${timeout / 60_000} minutes`);
+  if (opts.signal?.aborted) return reject(new Error(`${cmd} was stopped`));
+  const child = spawn(file, argv, {
+    cwd: opts.cwd ?? tmpdir(), env: opts.env ?? process.env, windowsHide: true, shell,
+    // A tree-killed run keeps its own timer; elsewhere spawn's timeout ends just the program, as it always has.
+    ...(tree ? { detached: process.platform !== "win32" } : { timeout, signal: opts.signal }),
+  });
   let stdout = "";
   let stderr = "";
+  let ended: Error | null = null;
+  const end = (why: Error) => {
+    if (ended || child.pid === undefined || child.exitCode !== null) return;
+    ended = why;
+    processTree.kill(child.pid);
+  };
+  const timer = tree ? setTimeout(() => end(late()), timeout) : undefined;
+  const onAbort = () => end(new Error(`${cmd} was stopped`));
+  if (tree) opts.signal?.addEventListener("abort", onAbort, { once: true });
+  const done = () => { clearTimeout(timer); opts.signal?.removeEventListener("abort", onAbort); };
   child.stdout.on("data", (d) => (stdout += d));
   child.stderr.on("data", (d) => (stderr += d));
-  child.on("error", (err: NodeJS.ErrnoException) => reject(err.code === "ENOENT" ? new Error(`${cmd} couldn't be started`) : err));
-  child.on("close", (code, signal) => signal
-    ? reject(new Error(`it didn't answer within ${timeout / 60_000} minutes`))
-    : resolve({ code, stdout, stderr }));
+  child.on("error", (err: NodeJS.ErrnoException) => {
+    done();
+    if (err.name === "AbortError") return reject(new Error(`${cmd} was stopped`));
+    reject(err.code === "ENOENT" ? new Error(`${cmd} couldn't be started`) : err);
+  });
+  child.on("close", (code, signal) => {
+    done();
+    if (ended) reject(ended);
+    else if (signal) reject(late());
+    else resolve({ code, stdout, stderr });
+  });
   child.stdin.on("error", () => {}); // a program that doesn't read stdin closes it early
   child.stdin.end(stdin);
 });

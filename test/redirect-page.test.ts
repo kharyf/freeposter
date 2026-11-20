@@ -15,7 +15,7 @@ test("sign-ins go through the hosted redirect page and come back to /callback", 
   const store = newStore();
   const signIns: string[] = [];
   const app = buildServer(store, new Runner(store, publishers, tmp()), publishers, { onSignIn: (q) => signIns.push(q) });
-  const put = (values: Record<string, string>) => app.inject({ method: "PUT", url: "/api/settings", payload: { values } });
+  const put = (values: Record<string, string>) => app.inject({ method: "PUT", url: "/api/settings", headers: { host: `localhost:${config.port}` }, payload: { values } });
 
   // only an https page is accepted
   assert.equal((await put({ REDIRECT_PAGE_URL: "http://relay.example" })).statusCode, 400);
@@ -60,8 +60,8 @@ test("the redirect folder is made from the templates with the owner's details, a
   const post = (url: string, payload: object = {}) => app.inject({ method: "POST", url, payload });
 
   assert.equal((await post("/api/redirect-page/folder")).statusCode, 400, "details first");
-  assert.equal((await app.inject({ method: "PUT", url: "/api/settings", payload: { values: { SITE_CONTACT_EMAIL: "nope" } } })).statusCode, 400);
-  await app.inject({ method: "PUT", url: "/api/settings", payload: { values: { SITE_OWNER_NAME: "Kim & Co", SITE_CONTACT_EMAIL: "kim@example.com" } } });
+  assert.equal((await app.inject({ method: "PUT", url: "/api/settings", headers: { host: `localhost:${config.port}` }, payload: { values: { SITE_CONTACT_EMAIL: "nope" } } })).statusCode, 400);
+  await app.inject({ method: "PUT", url: "/api/settings", headers: { host: `localhost:${config.port}` }, payload: { values: { SITE_OWNER_NAME: "Kim & Co", SITE_CONTACT_EMAIL: "kim@example.com" } } });
   const res = await post("/api/redirect-page/folder");
   assert.equal(res.statusCode, 200, res.body);
   const dir = res.json().path;
@@ -96,7 +96,7 @@ test("the address check opens the page, and Continue anyway lasts until the deta
 
   assert.equal((await app.inject("/connect/youtube")).statusCode, 400, "no Connect without a redirect URI");
   assert.equal((await app.inject("/api/status")).json().needsRedirectPage, true);
-  await app.inject({ method: "PUT", url: "/api/settings", payload: { values: { REDIRECT_PAGE_URL: "https://kim-freeposter.pages.dev" } } });
+  await app.inject({ method: "PUT", url: "/api/settings", headers: { host: `localhost:${config.port}` }, payload: { values: { REDIRECT_PAGE_URL: "https://kim-freeposter.pages.dev" } } });
   assert.equal((await app.inject("/connect/youtube")).statusCode, 302);
 
   const pages: Record<string, string> = {};
@@ -117,13 +117,13 @@ test("the address check opens the page, and Continue anyway lasts until the deta
   }
 
   // new details make the deployed Terms stale
-  await app.inject({ method: "PUT", url: "/api/settings", payload: { values: { SITE_OWNER_NAME: "Kim Lee" } } });
+  await app.inject({ method: "PUT", url: "/api/settings", headers: { host: `localhost:${config.port}` }, payload: { values: { SITE_OWNER_NAME: "Kim Lee" } } });
   assert.equal((await view()).redirectDone, false);
   await app.inject({ method: "POST", url: "/api/redirect-page/accept" });
   assert.equal((await view()).redirectDone, true, "Continue anyway");
 
   // a new address: every console still has the old one until setup is finished
-  await app.inject({ method: "PUT", url: "/api/settings", payload: { values: { REDIRECT_PAGE_URL: "https://kim2.pages.dev" } } });
+  await app.inject({ method: "PUT", url: "/api/settings", headers: { host: `localhost:${config.port}` }, payload: { values: { REDIRECT_PAGE_URL: "https://kim2.pages.dev" } } });
   assert.equal((await view()).redirectChangedFrom, "https://kim-freeposter.pages.dev/");
   await app.inject({ method: "PUT", url: "/api/setup", payload: { complete: true } });
   assert.equal((await view()).redirectChangedFrom, null);

@@ -2,11 +2,11 @@
 // headless on this computer to claim the brief through FreePoster's own MCP tools, make the film with the
 // lemo-opuscar skill and submit it. One launch at a time, on the GPU lane. A run that fails isn't retried here:
 // the brief's lease runs out and offers it again, and only then may the same task be launched again.
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { findProgram, lastWords, planEnv, type ProgramRun } from "../ai/cli.ts";
-import { codeDir, config, dataDir, setting } from "../config.ts";
+import { lastWords, planEnv, type ProgramRun } from "../ai/cli.ts";
+import { findClaude } from "../claude.ts";
+import { codeDir, config, dataDir } from "../config.ts";
 import type { Store } from "../db.ts";
 import { LEASE_MINUTES, openBriefs } from "./briefs.ts";
 import type { CampaignStore } from "./store.ts";
@@ -19,9 +19,6 @@ const MIN = 60_000;
 /** Where the prompt ships: templates/, unpacked beside the bundle in the installed app. */
 const promptFile = () => join(codeDir.replace(/app\.asar$/, "app.asar.unpacked"), "templates", "agent", "brief-prompt.md");
 
-/** Claude Code as the setup screen finds it: the saved path, else PATH and its usual install folders. */
-const findClaude = () => setting("CLAUDE_CODE_PATH") || findProgram(["claude"], [join(homedir(), ".claude", "local")]);
-
 export interface AgentLauncherDeps {
   store: Store;
   campaigns: CampaignStore;
@@ -30,7 +27,7 @@ export interface AgentLauncherDeps {
   now?: () => number;
   /** where agent-mcp.json and films/ go (FreePoster's data folder) */
   dataDir?: string;
-  /** Claude Code's path, "" when it isn't installed */
+  /** Claude Code's path, "" when it isn't installed (as the setup screen finds it) */
   find?: () => string;
 }
 
@@ -46,6 +43,8 @@ export class AgentLauncher {
   /** When each task was last launched, so a failing Claude isn't started again every tick. */
   private launched = new Map<number, number>();
   private timer?: ReturnType<typeof setTimeout>;
+  /** Stops the running launch's Claude, and everything it started. */
+  private abort?: AbortController;
 
   constructor(deps: AgentLauncherDeps) {
     this.store = deps.store;
@@ -66,17 +65,21 @@ export class AgentLauncher {
     tick();
   }
 
+  /** Stops ticking and ends a launch that's running (its brief's lease offers it again later). */
   stop() {
     clearTimeout(this.timer);
+    this.abort?.abort();
   }
 
+  /** Written only when it changes, since this runs every tick. */
   private status(text: string) {
-    this.store.setPref(STATUS_PREF, text);
+    if (this.store.pref<string>(STATUS_PREF) !== text) this.store.setPref(STATUS_PREF, text);
   }
 
   /** Starts Claude for the oldest open brief when it's turned on, installed, and nothing is running. Resolves when that run ends. */
   async tick(): Promise<void> {
-    if (this.store.pref<boolean>(ENABLED_PREF) !== true || this.running) return;
+    if (this.running) return;
+    if (this.store.pref<boolean>(ENABLED_PREF) !== true) return this.status("off");
     const claude = this.find();
     if (!claude) return this.status("Claude Code not found");
     const now = this.now();
@@ -88,17 +91,22 @@ export class AgentLauncher {
       return;
     }
     this.running = true;
+    const abort = (this.abort = new AbortController());
+    const mcpConfig = join(this.dir, "agent-mcp.json");
     try {
       const films = join(this.dir, "films");
       mkdirSync(films, { recursive: true });
-      const mcpConfig = this.writeMcpConfig();
+      this.writeMcpConfig(mcpConfig);
       const prompt = readFileSync(promptFile(), "utf8").replaceAll("{{task_id}}", String(task.id));
       const args = ["-p", prompt, "--mcp-config", mcpConfig, "--permission-mode", "acceptEdits", "--allowedTools", "Bash,Read,Write,Edit,Skill,mcp__freeposter__*"];
       const done = await this.borrowGpu(async () => {
         this.launched.set(task.id, this.now());
         this.status(`working on task ${task.id}`);
         // Without an API key in its environment, Claude Code runs on the user's plan.
-        return this.run(claude, args, "", { env: planEnv(["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]), cwd: films, timeoutMs: LEASE_MINUTES * MIN });
+        return this.run(claude, args, "", {
+          env: planEnv(["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]), cwd: films, timeoutMs: LEASE_MINUTES * MIN,
+          signal: abort.signal, killTree: true,
+        });
       });
       if (!done) return; // a GPU shot is running: next tick
       const { code, stdout, stderr } = done.value;
@@ -110,17 +118,19 @@ export class AgentLauncher {
       console.error(`agent launcher: task ${task.id}: ${(err as Error).message}`);
       this.status(`last run failed: ${(err as Error).message}`);
     } finally {
+      // It may hold the app password, so it's only on disk while Claude runs.
+      rmSync(mcpConfig, { force: true });
+      this.abort = undefined;
       this.running = false;
     }
   }
 
   /** FreePoster's MCP server as Claude Code reads it, with the app password when one is set. */
-  private writeMcpConfig(): string {
-    const path = join(this.dir, "agent-mcp.json");
-    const server: Record<string, unknown> = { type: "http", url: `${config.baseUrl}/mcp` };
+  private writeMcpConfig(path: string) {
+    // The address the server listens on, so nothing goes through a public tunnel set as BASE_URL.
+    const server: Record<string, unknown> = { type: "http", url: `http://127.0.0.1:${config.port}/mcp` };
     // The server takes the password as Basic auth with any user name, as the browser sends it.
     if (config.appPassword) server.headers = { Authorization: `Basic ${Buffer.from(`freeposter:${config.appPassword}`).toString("base64")}` };
     writeFileSync(path, JSON.stringify({ mcpServers: { freeposter: server } }, null, 2), { mode: 0o600 });
-    return path;
   }
 }

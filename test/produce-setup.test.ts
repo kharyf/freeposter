@@ -128,3 +128,17 @@ test("the agent launcher's toggle and language save as prefs through the setting
     await app.close();
   }
 });
+
+test("settings can only be saved from FreePoster's own host", async () => {
+  const store = newStore();
+  const app = buildServer(store, new Runner(store, publishers, tmp()), publishers, {});
+  try {
+    const foreign = await app.inject({ method: "PUT", url: "/api/settings", headers: { host: "evil.example" }, payload: { prefs: { "agent.launch.enabled": true } } });
+    assert.equal(foreign.statusCode, 403);
+    const crossSite = await app.inject({ method: "PUT", url: "/api/settings", headers: { ...HOST, origin: "https://evil.example" }, payload: { prefs: { "agent.launch.enabled": true } } });
+    assert.equal(crossSite.statusCode, 403);
+    assert.equal(store.pref("agent.launch.enabled"), undefined);
+  } finally {
+    await app.close();
+  }
+});

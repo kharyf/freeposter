@@ -8,7 +8,9 @@ import { Runner } from "../src/runner.ts";
 import { buildServer } from "../src/server.ts";
 import { newStore, tmp } from "./helpers.ts";
 
-const put = (url: string, body: unknown) => ({ method: "PUT" as const, url, payload: body as object });
+/** Settings are only saved from FreePoster's own host name (read per call: the port changes in the test). */
+const host = () => ({ host: `localhost:${config.port}` });
+const put = (url: string, body: unknown) => ({ method: "PUT" as const, url, payload: body as object, headers: host() });
 
 test("setup screen saves settings to .env, hides secrets, and enables platforms", async () => {
   writeFileSync(envFile, "# my notes\nYOUTUBE_CLIENT_ID=old\nOTHER=kept\n");
@@ -67,7 +69,7 @@ test("setup screen saves settings to .env, hides secrets, and enables platforms"
   const auth = { authorization: `Basic ${Buffer.from("me:hunter2").toString("base64")}` };
   assert.equal((await app.inject({ url: "/api/settings", headers: auth })).statusCode, 200);
   // with the redirect page switched off, sign-ins return to the public address directly
-  await app.inject({ ...put("/api/settings", { values: { REDIRECT_PAGE_URL: "off" } }), headers: auth });
+  await app.inject({ ...put("/api/settings", { values: { REDIRECT_PAGE_URL: "off" } }), headers: { ...auth, ...host() } });
   assert.equal((await app.inject({ url: "/api/settings", headers: auth })).json().redirectUris.x, "https://me.example.com/callback/x");
   assert.equal((await app.inject("/api/ping")).statusCode, 200, "the desktop launcher can still find a running copy");
 
