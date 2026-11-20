@@ -127,7 +127,7 @@ export interface Campaign {
 }
 
 export type TaskKind = "make" | "post" | "rule";
-export type TaskState = "queued" | "scripting" | "rendering" | "editing" | "reviewing" | "scheduled" | "posted" | "kept" | "missed" | "failed";
+export type TaskState = "queued" | "awaiting_agent" | "scripting" | "rendering" | "editing" | "reviewing" | "scheduled" | "posted" | "kept" | "missed" | "failed";
 
 export interface CampaignTask {
   id: number;

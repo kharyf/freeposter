@@ -32,6 +32,7 @@ import { generateMusic, generateSpeech } from "../produce/wan-audio.ts";
 import { hashFile } from "../review/media.ts";
 import type { ReviewRequest, ReviewService, Subject } from "../review/service.ts";
 import { ROW_INSTRUCTION_BASE } from "./rows.ts";
+import type { Brief, Delivery } from "./briefs.ts";
 import { buildGeneratedProduction, writeScript, type Script } from "./script.ts";
 import { DAYS, type MakeInstruction, type Pick as ValuePick, type PostInstruction } from "./spec.ts";
 import { CampaignStore, campaignTaskFor, driveFileTaken, mayPostUnseen, type Campaign, type CampaignTask, type LibraryEntry, type LibraryKind, type TaskState } from "./store.ts";
@@ -89,6 +90,14 @@ export interface TaskChoices {
   /** today's AI budget was used up when its script was due: what the tab shows, and when it tries again */
   waiting?: string;
   waitUntil?: number;
+  /** an agent film: what the agent is asked to make */
+  brief?: Brief;
+  /** the agent that has claimed the brief, until the time given */
+  lease?: { holder: string; until: number };
+  /** how many times the brief has been claimed */
+  offers?: number;
+  /** the agent's checked film, waiting for the worker to take it on */
+  delivery?: Delivery;
 }
 
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];

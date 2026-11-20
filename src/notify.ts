@@ -16,7 +16,8 @@ import { backoffMs } from "./runner.ts";
 export type EventType =
   | "production.ready" | "production.failed" | "edit.ready" | "edit.failed" | "post.done"
   | "review.waiting" | "review.approved" | "review.rejected" | "review.redo" | "review.failed" | "review.expired"
-  | "campaign.failed" | "campaign.missed" | "campaign.waiting" | "campaign.rule" | "campaign.changed";
+  | "campaign.failed" | "campaign.missed" | "campaign.waiting" | "campaign.rule" | "campaign.changed"
+  | "brief.requested" | "brief.expired";
 
 export const MAX_ATTEMPTS = 5;
 const KEEP_MS = 7 * 86_400_000;
@@ -25,6 +26,7 @@ export const EVENT_TYPES: EventType[] = [
   "production.ready", "production.failed", "edit.ready", "edit.failed", "post.done",
   "review.waiting", "review.approved", "review.rejected", "review.redo", "review.failed", "review.expired",
   "campaign.failed", "campaign.missed", "campaign.waiting", "campaign.rule", "campaign.changed",
+  "brief.requested", "brief.expired",
 ];
 
 /** Fires "event" whenever one is logged, so a wait_for_events call answers at once. */
