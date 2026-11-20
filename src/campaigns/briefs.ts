@@ -7,6 +7,7 @@ import type { Store } from "../db.ts";
 import { probe } from "../media.ts";
 import { hashFile } from "../review/media.ts";
 import type { Look } from "./looks.ts";
+import { foreignLinks, hasLink } from "./script.ts";
 import type { CampaignStore, CampaignTask } from "./store.ts";
 import type { TaskChoices } from "./worker.ts";
 
@@ -161,6 +162,17 @@ function checkSubmit(cs: CampaignStore, t: CampaignTask | undefined, taskId: num
   return null;
 }
 
+/**
+ * The agent's caption and title, through the same link check as a campaign script: the only link is the brief's
+ * CTA link, and when it has one the caption must carry it (so a caption is needed). Every problem, or none.
+ */
+export function captionProblems(brief: Brief, caption: string | undefined, title: string | undefined): string[] {
+  const problems = foreignLinks([caption ?? "", title ?? ""], { hook: brief.hook, angle: brief.angle, cta: brief.cta.text, url: brief.cta.url });
+  const url = brief.cta.url;
+  if (url && !hasLink(caption ?? "", url)) problems.push(`caption must include ${url}; write the caption, with the link`);
+  return problems;
+}
+
 export async function submitBrief(
   _store: Store, cs: CampaignStore, taskId: number, token: string,
   input: { videoPath: string; manifest: Delivery["manifest"]; caption?: string; title?: string }, now: number,
@@ -174,6 +186,9 @@ export async function submitBrief(
 
   const done = choicesOf(t).delivery;
   if (done) return done.hash === hash ? { ok: true, repeat: true } : fail(`task ${taskId} already has a delivery`);
+
+  const words = captionProblems(choicesOf(t).brief!, input.caption, input.title);
+  if (words.length) return fail(words.join("; "));
 
   const early = checkSubmit(cs, t, taskId, token, hash, now);
   if (early) return early;

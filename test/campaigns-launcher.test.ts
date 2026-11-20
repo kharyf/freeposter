@@ -239,6 +239,8 @@ test("the prompt names the task id", async () => {
   assert.match(prompt, /renew_brief/);
   assert.match(prompt, /submit_brief/);
   assert.match(prompt, /give_up_brief/);
+  assert.match(prompt, /claim_token/);
+  assert.match(prompt, /caption must include that link/);
   assert.match(prompt, /don't call FreePoster's start_production, create_edit/);
   s.finish({ code: 0, stdout: "", stderr: "" });
   await running;

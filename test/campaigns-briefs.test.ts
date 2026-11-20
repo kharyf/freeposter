@@ -29,7 +29,7 @@ before(() => {
   wide30 = clip("w30.mp4", "640x360", 30);
 });
 
-function setup(opts: { sec?: number | null; postAt?: number | null } = {}) {
+function setup(opts: { sec?: number | null; postAt?: number | null; ctaUrl?: string } = {}) {
   const store = newStore();
   const cs = new CampaignStore(store);
   const campaignId = cs.create({ name: "Films", text: "x", accountSetId: null, defaultPostTimes: [] });
@@ -38,6 +38,7 @@ function setup(opts: { sec?: number | null; postAt?: number | null } = {}) {
     instruction: { kind: "make", count: 1, style: null, look: look.key, sec: opts.sec === undefined ? 30 : opts.sec, hook: { kind: "random" }, angle: { kind: "random" }, cta: { kind: "random" }, types: [], post: null, source: "" },
     campaignName: "Films", day: "Thu", style: null, types: [], postTime: null, accountSetId: null,
     hook: { id: 1, kind: "hook", name: "h", text: "Stop scrolling", keywords: [], url: null, createdAt: 0 },
+    ...(opts.ctaUrl ? { cta: { id: 2, kind: "cta", name: "c", text: "Get the guide", keywords: [], url: opts.ctaUrl, createdAt: 0 } } : {}),
   } as unknown as TaskChoices;
   const brief = buildBrief(store, choices, look, postAt, T0);
   const add = (n: number) => cs.addTask({ campaignId, date: "2026-11-19", dayIndex: 4, instructionIndex: n, kind: "make", choices: { ...choices, brief }, state: "awaiting_agent" })!;
@@ -230,6 +231,41 @@ test("a give-up, stop or kill during the check stops the delivery", async () => 
   const r2 = await p2;
   assert.ok(!r2.ok && /campaign is stopped/.test(r2.error));
   assert.equal(ch(s2.cs, s2.id).delivery, undefined);
+});
+
+test("a caption with a foreign link is refused", async () => {
+  const { cs, store, id } = setup({ ctaUrl: "https://example.com/guide" });
+  const token = claim(cs, id, "A", T0);
+  for (const input of [
+    { caption: "Get the guide https://example.com/guide and evil.example dot com" },
+    { caption: "Get the guide https://example.com/guide", title: "see other.io" },
+  ]) {
+    const r = await submitBrief(store, cs, id, token, { videoPath: portrait30, manifest, ...input }, T0 + MIN);
+    assert.ok(!r.ok && /the link .* isn't allowed; the only link is https:\/\/example\.com\/guide/.test(r.error), JSON.stringify(r));
+  }
+  const none = setup();
+  const t2 = claim(none.cs, none.id, "A", T0);
+  const r = await submitBrief(none.store, none.cs, none.id, t2, { videoPath: portrait30, manifest, caption: "visit my.site" }, T0 + MIN);
+  assert.ok(!r.ok && /the link my\.site isn't allowed; the only link is none/.test(r.error), JSON.stringify(r));
+  assert.equal(ch(cs, id).delivery, undefined);
+});
+
+test("a caption missing the CTA link is refused", async () => {
+  const { cs, store, id } = setup({ ctaUrl: "https://example.com/guide" });
+  const token = claim(cs, id, "A", T0);
+  for (const caption of [undefined, "   ", "Get the guide today"]) {
+    const r = await submitBrief(store, cs, id, token, { videoPath: portrait30, manifest, ...(caption === undefined ? {} : { caption }) }, T0 + MIN);
+    assert.ok(!r.ok && r.error.includes("caption must include https://example.com/guide; write the caption, with the link"), JSON.stringify(r));
+  }
+  assert.equal(ch(cs, id).delivery, undefined);
+});
+
+test("a correct caption is accepted", async () => {
+  const { cs, store, id } = setup({ ctaUrl: "https://example.com/guide" });
+  const token = claim(cs, id, "A", T0);
+  const r = await submitBrief(store, cs, id, token, { videoPath: portrait30, manifest, caption: "Stop scrolling. Get the guide: example.com/guide", title: "The guide" }, T0 + MIN);
+  assert.deepEqual(r, { ok: true, repeat: false });
+  assert.equal(ch(cs, id).delivery!.caption, "Stop scrolling. Get the guide: example.com/guide");
 });
 
 test("a holder submitting after its lease expired but before the deadline is refused", async () => {

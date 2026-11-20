@@ -90,6 +90,28 @@ export const linksIn = (text: string): string[] => {
   return URL_PATTERNS.flatMap((re) => t.match(re) ?? []);
 };
 
+/**
+ * The link check every campaign text goes through: a link a viewer would read in the texts is refused unless it is
+ * in the user's own words (the chosen hook, angle and CTA, and the CTA's link), each named once.
+ */
+export function foreignLinks(texts: unknown[], own: { hook: string; angle: string; cta: string; url: string | null }): string[] {
+  // The chosen hook, angle and CTA are the user's own words (an agent can't add one that carries a link), so a link
+  // a viewer would read in them is allowed too: a hook the user wrote is never refused for reading as one.
+  const allowed = new Set<string>([own.hook, own.angle, own.cta, own.url ?? ""].flatMap((t) => linksIn(String(t))).map(normUrl));
+  const seen = new Set<string>();
+  const problems: string[] = [];
+  for (const text of texts) {
+    for (const m of linksIn(String(text ?? ""))) {
+      const n = normUrl(m);
+      if (!allowed.has(n) && !seen.has(n)) { seen.add(n); problems.push(`the link ${m} isn't allowed; the only link is ${own.url ?? "none"}`); }
+    }
+  }
+  return problems;
+}
+
+/** Whether a caption carries the CTA's link, read as a viewer reads it. */
+export const hasLink = (caption: string, url: string) => linksIn(caption).some((m) => normUrl(m) === normUrl(url));
+
 export function checkScript(s: Script, choice: ScriptChoice, targetSec?: number): string[] {
   const { maxLines: MAX_LINES, maxShots: MAX_SHOTS, minTotal: MIN_TOTAL_SEC, maxTotal: MAX_TOTAL_SEC } = scriptLimits(targetSec);
   const problems: string[] = [];
@@ -109,17 +131,9 @@ export function checkScript(s: Script, choice: ScriptChoice, targetSec?: number)
     if (!cta) problems.push("the call to action has no words, so the last line can't contain it");
     else if (!` ${last} `.includes(` ${cta} `)) problems.push(`the last line must contain the call to action: "${choice.cta.text}"`);
   }
-  // The chosen hook, angle and CTA are the user's own words (an agent can't add one that carries a link), so a link
-  // a viewer would read in them is allowed too: a hook the user wrote is never refused for reading as one.
-  const allowed = new Set<string>([choice.hook.text, choice.angle.text, choice.cta.text, choice.cta.url ?? ""].flatMap((t) => linksIn(String(t))).map(normUrl));
-  const seen = new Set<string>();
-  for (const text of [...lines, s.caption ?? "", s.title ?? "", s.musicPrompt ?? "", ...shots.map((sh) => sh?.prompt ?? "")]) {
-    for (const m of linksIn(String(text))) {
-      const n = normUrl(m);
-      if (!allowed.has(n) && !seen.has(n)) { seen.add(n); problems.push(`the link ${m} isn't allowed; the only link is ${choice.cta.url ?? "none"}`); }
-    }
-  }
-  if (choice.cta.url && !linksIn(String(s.caption ?? "")).some((m) => normUrl(m) === normUrl(choice.cta.url!))) problems.push(`the caption must contain the link ${choice.cta.url}`);
+  problems.push(...foreignLinks([...lines, s.caption ?? "", s.title ?? "", s.musicPrompt ?? "", ...shots.map((sh) => sh?.prompt ?? "")],
+    { hook: choice.hook.text, angle: choice.angle.text, cta: choice.cta.text, url: choice.cta.url ?? null }));
+  if (choice.cta.url && !hasLink(String(s.caption ?? ""), choice.cta.url)) problems.push(`the caption must contain the link ${choice.cta.url}`);
   if (shots.length < 1 || shots.length > MAX_SHOTS) problems.push(`there must be 1 to ${MAX_SHOTS} shots (got ${shots.length})`);
   let total = 0;
   shots.forEach((sh, i) => {

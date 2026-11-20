@@ -848,6 +848,8 @@ test("Stop Campaign holds only its own posts and starts nothing new for it; Star
 
 const HOUR = 3_600_000;
 const LOOK = { key: "lemo:ukiyo-e", name: "Ukiyo-e", description: "woodblock prints", needsImageGen: false, libraryVersion: "1.4.0" };
+/** An agent's caption with the campaign CTA's link, as every agent caption must carry. */
+const AGENT_CAPTION = "Woodblock week https://example.com/plan";
 /** Claims a brief and returns the claim token. */
 const claimed = (cs: CampaignStore, id: number, holder: string, now: number) => {
   const r = claimBrief(cs, id, holder, now);
@@ -870,7 +872,7 @@ function agentSetup(extra: Partial<Row> = {}) {
     const token = claimed(s.cs, t.id, "agent-1", s.clock.now);
     const out = await submitBrief(s.store, s.cs, t.id, token, {
       videoPath: opts.clip ?? clips[2], manifest: { look: LOOK.key, libraryVersion: "1.4.0" },
-      ...(opts.caption !== undefined ? { caption: opts.caption } : {}),
+      caption: opts.caption ?? AGENT_CAPTION,
     }, s.clock.now);
     assert.ok(out.ok, out.ok ? "" : out.error);
   };
@@ -982,7 +984,7 @@ test("an agent film goes brief, claim, submit, Redo, a new round, claim, submit,
   await s.tick();
   assert.equal(s.cs.task(s.task.id)!.state, "awaiting_agent");
   const token = claimed(s.cs, s.task.id, "agent-2", s.clock.now);
-  const out = await submitBrief(s.store, s.cs, s.task.id, token, { videoPath: clips[7], manifest: { look: LOOK.key, libraryVersion: "1.5.0" }, caption: "Woodblock week https://example.com/plan" }, s.clock.now);
+  const out = await submitBrief(s.store, s.cs, s.task.id, token, { videoPath: clips[7], manifest: { look: LOOK.key, libraryVersion: "1.5.0" }, caption: AGENT_CAPTION }, s.clock.now);
   assert.ok(out.ok, out.ok ? "" : out.error);
   await s.tick();
   const reviewing = s.cs.task(s.task.id)!;
@@ -1023,7 +1025,7 @@ test("an agent row never runs the script writer", async () => {
 
 test("a delivered film with no style goes straight to review as a file", async () => {
   const s = agentSetup();
-  await s.deliver({ caption: "Woodblock week" });
+  await s.deliver({ caption: "Woodblock week, plan it: example.com/plan" });
   await s.tick();
   const t = s.cs.task(s.task.id)!;
   assert.equal(t.state, "reviewing", t.error ?? "");
@@ -1031,7 +1033,7 @@ test("a delivered film with no style goes straight to review as a file", async (
   const r = s.reviews.reviews.get(t.reviewId!)!;
   assert.equal(r.subjectKind, "file");
   assert.equal(r.sourcePath, clips[2]);
-  assert.equal(r.draft.caption, "Woodblock week");
+  assert.equal(r.draft.caption, "Woodblock week, plan it: example.com/plan");
 });
 
 test("a delivered film with a style is edited first", async () => {
@@ -1147,7 +1149,7 @@ test("a claimed brief survives a new worker instance", async () => {
   assert.equal(t.state, "awaiting_agent");
   assert.equal((t.choices as any).lease.holder, "agent-1", "still claimed");
   assert.equal(claimBrief(s.cs, t.id, "agent-2", s.clock.now).ok, false, "nobody else can take it");
-  const out = await submitBrief(s.store, s.cs, t.id, token, { videoPath: clips[2], manifest: { look: LOOK.key, libraryVersion: "1.4.0" } }, s.clock.now);
+  const out = await submitBrief(s.store, s.cs, t.id, token, { videoPath: clips[2], manifest: { look: LOOK.key, libraryVersion: "1.4.0" }, caption: AGENT_CAPTION }, s.clock.now);
   assert.ok(out.ok, out.ok ? "" : out.error);
   await worker.tick(); await worker.idle();
   assert.equal(s.cs.task(t.id)!.state, "reviewing", s.cs.task(t.id)!.error ?? "");
@@ -1253,7 +1255,7 @@ test("a post line posts a kept agent film as it was delivered, labelled with its
   const [make, post] = s.cs.tasksOn(id, "2026-11-17");
   await s.tick();
   const token = claimed(s.cs, make.id, "agent-1", s.clock.now);
-  const out = await submitBrief(s.store, s.cs, make.id, token, { videoPath: clips[2], manifest: { look: LOOK.key, libraryVersion: "1.4.0" } }, s.clock.now);
+  const out = await submitBrief(s.store, s.cs, make.id, token, { videoPath: clips[2], manifest: { look: LOOK.key, libraryVersion: "1.4.0" }, caption: AGENT_CAPTION }, s.clock.now);
   assert.ok(out.ok, out.ok ? "" : out.error);
   await s.tick();
   await s.approve(make.id);

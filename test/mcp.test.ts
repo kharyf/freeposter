@@ -477,6 +477,7 @@ test("claim_brief through MCP uses the client name as holder and returns a claim
   assert.match(got.next, /renew_brief/);
   assert.match(got.next, /give_up_brief/);
   assert.match(got.claim_token, /^[0-9a-f-]{36}$/);
+  assert.match(got.next, /caption and title yourself/);
   assert.equal((worker!.campaigns.task(taskId)!.choices as any).lease.holder, "codex");
   // Another client under the same name doesn't get it, and can't renew it without the token.
   const twin = await call("claim_brief", { task_id: taskId });

@@ -131,7 +131,7 @@ export function agentTools(opts: {
         const r = leased(claimBrief(cs(), taskId(args), opts.agent(), Date.now(), token(args) || undefined));
         return {
           brief: view(r.brief), lease_until: iso(r.leaseUntil), claim_token: r.token,
-          next: `Make this film with the lemo-opuscar skill, using the brief's look (${r.brief.look}), language and instructions as the answers to its questions: don't ask the user anything. Write the treatment, then render. Call renew_brief with your claim_token at least every 30 minutes (the lease ends at lease_until), and when the file is ready call submit_brief with your claim_token, its absolute video_path and the library_version you used. If you can't make it, call give_up_brief with your claim_token and the reason. If needs_image_gen is true and you have no image generator, call give_up_brief at once.`,
+          next: `Make this film with the lemo-opuscar skill, using the brief's look (${r.brief.look}), language and instructions as the answers to its questions: don't ask the user anything. Write the treatment, then render. Call renew_brief with your claim_token at least every 30 minutes (the lease ends at lease_until), and when the file is ready call submit_brief with your claim_token, its absolute video_path and the library_version you used. Write the post's caption and title yourself and pass them to submit_brief: ${r.brief.cta.url ? `the caption must include the CTA link ${r.brief.cta.url}, and no other link` : "the brief's CTA has no link, so put no link in them"}. If you can't make it, call give_up_brief with your claim_token and the reason. If needs_image_gen is true and you have no image generator, call give_up_brief at once.`,
         };
       },
     },
@@ -150,7 +150,7 @@ export function agentTools(opts: {
     {
       name: "submit_brief",
       title: "Deliver a film for a brief",
-      description: "Delivers the finished film for a brief you hold. video_path is an absolute path on this computer to a portrait 9:16 video (about the brief's sec long when it has one). library_version is the producer's library version you made it with; treatment_path is the treatment file you wrote, if any. caption and title are optional. The film's look is the brief's own. Delivering the same file again is fine. FreePoster edits or reviews it and sends it to the user for approval: don't call request_review.",
+      description: "Delivers the finished film for a brief you hold. video_path is an absolute path on this computer to a portrait 9:16 video (about the brief's sec long when it has one). library_version is the producer's library version you made it with; treatment_path is the treatment file you wrote, if any. caption and title are the post's text, which you write: the only link allowed in them is the brief's CTA link (cta.url), and when it has one the caption must include it (a caption without it is refused). The film's look is the brief's own. Delivering the same file again is fine. FreePoster edits or reviews it and sends it to the user for approval: don't call request_review.",
       inputSchema: {
         type: "object",
         properties: {
