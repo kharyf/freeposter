@@ -1118,6 +1118,22 @@ test("two expired leases fail the task", async () => {
   assert.ok(s.store.eventByKey(`campaign.failed:${t.id}`));
 });
 
+test("a claim made after the tick's snapshot isn't wiped", async () => {
+  const s = agentSetup();
+  s.clock.now = at(2026, 11, 17, 12);
+  await s.tick();
+  claimed(s.cs, s.task.id, "agent-1", s.clock.now);
+  s.clock.now += 121 * 60_000;
+  // The tick read the task while agent-1's lease had run out; agent-2 claims it before the worker gets to it.
+  const stale = s.cs.task(s.task.id)!;
+  const token = claimed(s.cs, s.task.id, "agent-2", s.clock.now);
+  await (s.worker as any).followBrief(stale);
+  const t = s.cs.task(s.task.id)!;
+  assert.equal(t.state, "awaiting_agent", t.error ?? "");
+  assert.equal((t.choices as any).lease?.token, token, "agent-2's claim stands");
+  assert.equal(s.events("brief.expired").length, 0, "a live claim isn't told as expired");
+});
+
 test("a claimed brief survives a new worker instance", async () => {
   const s = agentSetup();
   s.clock.now = at(2026, 11, 17, 12);

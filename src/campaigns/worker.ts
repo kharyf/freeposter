@@ -447,7 +447,7 @@ export class CampaignWorker {
         this.campaigns.updateTask(t.id, { state: "scripting" });
         return this.spawn(t, () => this.makeScript(t.id));
       case "awaiting_agent":
-        return this.followBrief(t, c);
+        return this.followBrief(t);
       case "scripting":
         // A script left half-written by a restart is written again.
         return this.spawn(t, () => this.makeScript(t.id));
@@ -618,13 +618,21 @@ export class CampaignWorker {
    * A brief waiting for its film. A delivery is taken on; past the deadline the slot is missed; a lease that ran
    * out is cleared so another agent can claim it, until MAX_BRIEF_OFFERS claims have all run out.
    */
-  private async followBrief(t: CampaignTask, c: TaskChoices) {
+  private async followBrief(snapshot: CampaignTask) {
+    // The tick's snapshot may be old by now (an agent claimed or delivered since): judge the task as it is.
+    const t = this.campaigns.task(snapshot.id);
+    if (!t || t.state !== "awaiting_agent") return;
+    const c = t.choices as unknown as TaskChoices;
     if (c.delivery) return this.takeDelivery(t, c, c.delivery);
     if (!c.brief) return this.fail(t.id, "its brief is missing");
     const now = this.now();
     // A lease never outlasts the deadline, so at the deadline the slot is missed, not the lease expired.
     if (now >= c.brief.deadline) return this.missBrief(t, c.brief.deadline);
     if (!c.lease || c.lease.until > now) return;
+    const judged = c.lease;
+    // Only the lease judged expired is acted on; a newer claim since stands.
+    const still = (this.campaigns.task(t.id)?.choices as unknown as TaskChoices | undefined)?.lease;
+    if (!still || still.holder !== judged.holder || still.until !== judged.until || still.token !== judged.token) return;
     const offers = c.offers ?? 0;
     const last = offers >= MAX_BRIEF_OFFERS;
     const launching = this.launching();
