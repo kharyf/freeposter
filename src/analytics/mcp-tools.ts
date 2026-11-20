@@ -10,7 +10,7 @@ import { labelNames, selectVideos } from "./view.ts";
 
 type Args = Record<string, unknown>;
 
-const DIMENSIONS: LabelDimension[] = ["hook", "angle", "cta", "style", "type", "source"];
+const DIMENSIONS: LabelDimension[] = ["hook", "angle", "cta", "style", "type", "source", "look", "producer"];
 const round = (n: number | undefined) => (n === undefined ? undefined : Math.round(n * 10) / 10);
 const iso = (ms: number | null | undefined) => (ms === null || ms === undefined ? null : new Date(ms).toISOString());
 const roundAll = (o: Partial<Record<string, number>>) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, round(v)]));
@@ -29,7 +29,7 @@ export function analyticsTools(opts: { store: Store; fail: (message: string) => 
     {
       name: "get_analytics",
       title: "Get analytics",
-      description: "Published videos with their scores (percentile 0-100 against the account's own last 30 videos, at 24h, 72h and 7d; provisional until the baseline is big enough) and their labels, plus how each label value (hook, angle, CTA, style, type, source) compares: median score with a 90% interval and how many videos. Values with fewer than 3 videos have enough: false. Filter by account, recent days, source (recorded or generated) or campaign. Comparisons are at the age you choose (default 72h).",
+      description: "Published videos with their scores (percentile 0-100 against the account's own last 30 videos, at 24h, 72h and 7d; provisional until the baseline is big enough) and their labels, plus how each label value (hook, angle, CTA, style, type, source, look, producer) compares: median score with a 90% interval and how many videos. Values with fewer than 3 videos have enough: false. Filter by account, recent days, source (recorded or generated) or campaign. Comparisons are at the age you choose (default 72h).",
       inputSchema: {
         type: "object",
         properties: {
@@ -67,6 +67,7 @@ export function analyticsTools(opts: { store: Store; fail: (message: string) => 
               published_at: iso(Math.min(...mine.map((j) => j.publishedAt ?? 0))),
               accounts: mine.map((j) => ({ account_id: j.accountId, platform: j.platform })),
               source: l.source, campaign_id: l.campaignId, style: l.styleId,
+              producer: l.producer ?? null, look: l.look ?? null, look_version: l.lookVersion ?? null,
               hook: value(l.hookId, l.hookText), angle: value(l.angleId, l.angleText), cta: value(l.ctaId, l.ctaText),
               types: l.types.map((id) => ({ id, name: typeName.get(String(id)) ?? null })),
               score: roundAll(s?.overall ?? {}), provisional: s?.provisional ?? {},

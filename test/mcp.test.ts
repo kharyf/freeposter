@@ -7,6 +7,7 @@ import type { Publisher } from "../src/platforms/base.ts";
 import { publishers as real } from "../src/platforms/index.ts";
 import { queueEvent } from "../src/notify.ts";
 import { AnalyticsStore } from "../src/analytics/store.ts";
+import { syncLooks } from "../src/campaigns/looks.ts";
 import { CampaignStore } from "../src/campaigns/store.ts";
 import { CampaignWorker } from "../src/campaigns/worker.ts";
 import { ProductionStore } from "../src/produce/store.ts";
@@ -405,6 +406,32 @@ test("get_analytics gives scores and label comparisons; get_video_metrics gives 
   assert.equal(m.labels.source, "generated");
   assert.equal(m.jobs[0].snapshots[0].views, 200);
   assert.equal((await call("get_video_metrics", { post_id: 9999 })).isError, true);
+  await app.close();
+});
+
+test("get_analytics compares look and producer", async () => {
+  const { app, call, store } = setup();
+  const a = new AnalyticsStore(store);
+  syncLooks(store, "lemo-opuscar", [{ key: "lemo:ukiyo-e", name: "Ukiyo-e", description: "", needsImageGen: false, libraryVersion: "1" }]);
+  const acct = store.upsertAccount(account("youtube", { expiresAt: null }));
+  for (let i = 0; i < 4; i++) {
+    const postId = store.createPost({ caption: "", title: "", sourcePath: "x.mp4", sha256: `look-${i}`, tiktok: null }, [acct.id]);
+    const job = store.jobsForPost(postId)[0];
+    store.finishJob(job.id, "published", { resultUrl: "https://youtube.com/shorts/x" });
+    store.db.prepare("UPDATE jobs SET published_at = ? WHERE id = ?").run(Date.now() - 4 * 86_400_000, job.id);
+    a.addSnapshot({ jobId: job.id, platform: "youtube", externalId: `l${i}`, takenAt: Date.now(), ageSec: 259_200, reading: { views: 100 * (i + 1), viewsKind: "views", raw: {}, retention: null } });
+    const film = i < 3;
+    a.setLabels({ postId, source: "generated", styleId: null, producer: film ? "lemo-opuscar" : "freeposter-wangp", look: film ? "lemo:ukiyo-e" : null, lookVersion: film ? "1" : null,
+      hookId: null, hookText: null, angleId: null, angleText: null, ctaId: null, ctaText: null, campaignId: null, campaignTaskId: null, types: [], labelledBy: "campaign" });
+  }
+  const out = (await call("get_analytics")).structuredContent;
+  const look = out.comparisons.look.find((r: any) => r.key === "lemo:ukiyo-e");
+  assert.equal(look.name, "Ukiyo-e");
+  assert.equal(look.n, 3);
+  assert.equal(look.enough, true);
+  assert.deepEqual(out.comparisons.producer.map((r: any) => [r.key, r.n]).sort(), [["freeposter-wangp", 1], ["lemo-opuscar", 3]]);
+  const v = out.videos.find((x: any) => x.look === "lemo:ukiyo-e");
+  assert.equal(v.producer, "lemo-opuscar");
   await app.close();
 });
 
