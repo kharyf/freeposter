@@ -16,3 +16,6 @@ redirect-page/tiktok*.txt
 redirect-page/terms/
 docs/superpowers/
 TTlogo.jpg
+
+# Test Output
+testout.txt

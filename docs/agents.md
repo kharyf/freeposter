@@ -119,13 +119,15 @@ Once, and again whenever the skill's library changes, the agent tells FreePoster
 
 - `sync_looks` (`producer: "lemo-opuscar"`, `library_version`, `looks`: each with `key` like `lemo:impasto-oil`, `name`, `description`, `needs_image_gen`). Send the whole list: a look left out is hidden, not deleted, so videos already labelled with it keep their name.
 
-When a brief is due, FreePoster logs `brief.requested` (a film is wanted) or `brief.expired` (the agent holding it ran out of time and it's offered again). The agent then:
+When a brief is due, FreePoster logs `brief.requested` (a film is wanted) or `brief.expired` (the agent holding it ran out of time and it's offered again). When Setup's **Start Claude for campaign films** is on, these events carry `handled_by: "freeposter"`: FreePoster starts Claude for the brief itself, so another agent shouldn't claim it. Otherwise the agent:
 
-1. **Claims** it with `claim_brief` (`task_id`; `list_briefs` shows the open ones). The brief is the look, hook, angle, cta (`text`, `url`), `sec` (length in seconds, or null), `instructions`, `language`, `needs_image_gen`, `deadline` and `post_at`. The claim is a lease of up to two hours under the name your MCP client gave, never past the deadline. A brief can be offered twice; after that the task fails.
+1. **Claims** it with `claim_brief` (`task_id`; `list_briefs` shows the open ones). The brief is the look, hook, angle, cta (`text`, `url`), `sec` (length in seconds, or null), `instructions`, `language`, `needs_image_gen`, `deadline` and `post_at`. The claim is a lease of up to two hours, never past the deadline, and comes with a `claim_token`: `renew_brief`, `submit_brief` and `give_up_brief` need it, so two agents under the same client name can't both hold a brief. A brief can be offered twice; after that the task fails.
 2. **Makes the film** with the lemo-opuscar skill, using the brief's look, language and instructions as the answers to the skill's questions. It doesn't ask you anything. If `needs_image_gen` is true and the agent has no image generator, it calls `give_up_brief` at once.
 3. **Renews** with `renew_brief` at least every 30 minutes while it works; a lease that runs out frees the brief.
-4. **Delivers** with `submit_brief` (`task_id`, `video_path`, `library_version`, optionally `treatment_path`, `caption`, `title`). The film is the brief's look; the agent doesn't choose it. Delivering the same file again is harmless.
+4. **Delivers** with `submit_brief` (`task_id`, `claim_token`, `video_path`, `library_version`, optionally `treatment_path`, `caption`, `title`). The film is the brief's look; the agent doesn't choose it. The agent writes the caption and title: the only link allowed in them is the brief's CTA link, and when there is one the caption must include it. Delivering the same file again is harmless.
 
 The file must be portrait 9:16, pass FreePoster's usual video checks, and last within 20% (at least 2 seconds) of the brief's `sec` when it has one. A video that fails comes back as an error saying why, and the agent can fix and deliver again before the deadline. The deadline is 30 minutes before the post time, so you have time to review; a brief with no post time is due within a day. If nothing arrives by then, the slot is skipped.
 
 If it can't make the film, the agent calls `give_up_brief` with a reason: the task fails and you get a Telegram message saying the agent gave up and why.
+
+If you tap Redo on an agent film, FreePoster gives the agent a new round of the brief, with your note added to its instructions, for the same slot (the `review.redo` event says `handled_by: "freeposter"`).
