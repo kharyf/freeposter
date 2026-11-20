@@ -1,0 +1,220 @@
+// The MCP tools an outside agent (the lemo-opuscar skill) uses to make campaign films: sync its catalogue of looks,
+// then claim a brief, keep its lease, and deliver a film or give up. The agent is only ever the holder under the name
+// its MCP client gave; it never posts, schedules or reviews anything (FreePoster does that with what it delivers).
+import type { Store } from "../db.ts";
+import { queueEvent } from "../notify.ts";
+import type { ToolDef } from "../produce/mcp-tools.ts";
+import { claimBrief, giveUpBrief, openBriefs, renewBrief, submitBrief, type Brief } from "./briefs.ts";
+import { syncLooks } from "./looks.ts";
+import { CampaignStore } from "./store.ts";
+import { iso } from "./view.ts";
+import type { CampaignWorker, TaskChoices } from "./worker.ts";
+
+type Args = Record<string, unknown>;
+
+const MAX_LOOKS = 200;
+const PRODUCERS = ["lemo-opuscar"];
+
+export function agentTools(opts: {
+  store: Store;
+  worker: () => CampaignWorker | undefined;
+  /** the connected MCP client's name, the lease holder */
+  agent: () => string;
+  fail: (message: string) => Error;
+}): ToolDef[] {
+  const { store, fail } = opts;
+  let own: CampaignStore | undefined;
+  const cs = () => opts.worker()?.campaigns ?? (own ??= new CampaignStore(store));
+
+  /** Refuses any field the tool doesn't list, naming them all. */
+  const only = (args: Args, allowed: string[], what: string) => {
+    const extra = Object.keys(args).filter((k) => !allowed.includes(k));
+    if (extra.length) throw fail(`${what} has no ${extra.join(", ")} field${extra.length > 1 ? "s" : ""}; it takes ${allowed.join(", ") || "nothing"}`);
+  };
+  const taskId = (args: Args) => {
+    const v = args.task_id;
+    if (!Number.isInteger(v)) throw fail("task_id must be a whole number; list_briefs lists the open briefs");
+    if (!cs().task(v as number)) throw fail(`no task ${v}; list_briefs lists the open briefs`);
+    return v as number;
+  };
+  const text = (args: Args, key: string, max: number, required = true) => {
+    const v = args[key];
+    if (v === undefined && !required) return undefined;
+    if (typeof v !== "string" || !v.trim() || v.length > max) throw fail(`${key} must be 1 to ${max} characters`);
+    return v;
+  };
+  const view = (b: Brief) => ({
+    look: b.look, producer: b.producer, hook: b.hook, angle: b.angle, cta: b.cta, sec: b.sec, instructions: b.instructions,
+    language: b.language, needs_image_gen: b.needsImageGen, deadline: iso(b.deadline), post_at: iso(b.postAt),
+  });
+  const leased = (r: ReturnType<typeof claimBrief>) => {
+    if (!r.ok) throw fail(r.error);
+    return r;
+  };
+
+  return [
+    {
+      name: "sync_looks",
+      title: "Sync film looks",
+      description: "Tells FreePoster which film looks a producer offers (send the whole list each time: a look left out is hidden, not deleted). producer is \"lemo-opuscar\", whose look keys all start \"lemo:\" (lowercase letters, digits and dashes, e.g. lemo:impasto-oil). library_version is the producer's library version, for every look in the call. Returns how many looks were added, updated and hidden.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          producer: { type: "string", enum: PRODUCERS },
+          library_version: { type: "string", minLength: 1, maxLength: 40 },
+          looks: {
+            type: "array", maxItems: MAX_LOOKS,
+            items: {
+              type: "object",
+              properties: {
+                key: { type: "string" },
+                name: { type: "string", maxLength: 80 },
+                description: { type: "string", maxLength: 500 },
+                needs_image_gen: { type: "boolean", description: "Whether making this look needs an image generator." },
+              },
+              required: ["key", "name", "description", "needs_image_gen"],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ["producer", "library_version", "looks"],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      async run(args) {
+        only(args, ["producer", "library_version", "looks"], "sync_looks");
+        if (typeof args.producer !== "string" || !PRODUCERS.includes(args.producer)) throw fail(`producer must be ${PRODUCERS.map((p) => `"${p}"`).join(" or ")}`);
+        const version = text(args, "library_version", 40)!;
+        if (!Array.isArray(args.looks)) throw fail("looks must be a list");
+        if (args.looks.length > MAX_LOOKS) throw fail(`send at most ${MAX_LOOKS} looks`);
+        const looks = args.looks.map((l, i) => {
+          if (!l || typeof l !== "object" || Array.isArray(l)) throw fail(`look ${i + 1} must be an object`);
+          const o = l as Args;
+          only(o, ["key", "name", "description", "needs_image_gen"], `look ${i + 1}`);
+          if (typeof o.needs_image_gen !== "boolean") throw fail(`look ${i + 1}: needs_image_gen must be true or false`);
+          return { key: o.key as string, name: o.name as string, description: o.description as string, needsImageGen: o.needs_image_gen, libraryVersion: version };
+        });
+        try {
+          return syncLooks(store, args.producer, looks);
+        } catch (err) {
+          throw fail((err as Error).message);
+        }
+      },
+    },
+    {
+      name: "list_briefs",
+      title: "List open briefs",
+      description: "The campaign films waiting for an agent that nobody holds right now: task_id, campaign, look, deadline and post_at (ISO times). claim_brief one to see the whole brief.",
+      inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+      async run(args) {
+        only(args, [], "list_briefs");
+        const briefs = openBriefs(cs(), Date.now()).map((t) => {
+          const b = (t.choices as unknown as TaskChoices).brief!;
+          return { task_id: t.id, campaign: cs().campaign(t.campaignId)?.name ?? `campaign ${t.campaignId}`, look: b.look, deadline: iso(b.deadline), post_at: iso(b.postAt) };
+        });
+        return { briefs };
+      },
+    },
+    {
+      name: "claim_brief",
+      title: "Claim a brief",
+      description: "Takes on one campaign film: you hold it for a while (lease_until; renew_brief extends it) and get the brief: look, hook, angle, cta, sec (length in seconds, or null), instructions, language, needs_image_gen, deadline and post_at. Claiming a brief you already hold returns it again.",
+      inputSchema: { type: "object", properties: { task_id: { type: "integer" } }, required: ["task_id"], additionalProperties: false },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      async run(args) {
+        only(args, ["task_id"], "claim_brief");
+        const r = leased(claimBrief(cs(), taskId(args), opts.agent(), Date.now()));
+        return {
+          brief: view(r.brief), lease_until: iso(r.leaseUntil),
+          next: `Make this film with the lemo-opuscar skill, using the brief's look (${r.brief.look}), language and instructions as the answers to its questions: don't ask the user anything. Write the treatment, then render. Call renew_brief at least every 30 minutes (the lease ends at lease_until), and when the file is ready call submit_brief with its absolute video_path and the library_version you used. If you can't make it, call give_up_brief with the reason. If needs_image_gen is true and you have no image generator, call give_up_brief at once.`,
+        };
+      },
+    },
+    {
+      name: "renew_brief",
+      title: "Renew a brief's lease",
+      description: "Extends your hold on a brief while you work (never past its deadline). Call it at least every 30 minutes.",
+      inputSchema: { type: "object", properties: { task_id: { type: "integer" } }, required: ["task_id"], additionalProperties: false },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      async run(args) {
+        only(args, ["task_id"], "renew_brief");
+        const r = leased(renewBrief(cs(), taskId(args), opts.agent(), Date.now()));
+        return { lease_until: iso(r.leaseUntil) };
+      },
+    },
+    {
+      name: "submit_brief",
+      title: "Deliver a film for a brief",
+      description: "Delivers the finished film for a brief you hold. video_path is an absolute path on this computer to a portrait 9:16 video (about the brief's sec long when it has one). library_version is the producer's library version you made it with; treatment_path is the treatment file you wrote, if any. caption and title are optional. The film's look is the brief's own. Delivering the same file again is fine. FreePoster edits or reviews it and sends it to the user for approval: don't call request_review.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          task_id: { type: "integer" },
+          video_path: { type: "string", maxLength: 1000 },
+          library_version: { type: "string", minLength: 1, maxLength: 40 },
+          treatment_path: { type: "string", maxLength: 1000 },
+          caption: { type: "string", maxLength: 2200 },
+          title: { type: "string", maxLength: 150 },
+        },
+        required: ["task_id", "video_path", "library_version"],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      async run(args) {
+        only(args, ["task_id", "video_path", "library_version", "treatment_path", "caption", "title"], "submit_brief");
+        const id = taskId(args);
+        const path = text(args, "video_path", 1000)!;
+        const version = text(args, "library_version", 40)!;
+        const treatment = text(args, "treatment_path", 1000, false);
+        const caption = text(args, "caption", 2200, false);
+        const title = text(args, "title", 150, false);
+        const look = (cs().task(id)!.choices as unknown as TaskChoices).brief?.look;
+        if (!look) throw fail(`task ${id} has no open brief; list_briefs lists them`);
+        const r = await submitBrief(store, cs(), id, opts.agent(), {
+          videoPath: path,
+          manifest: { look, libraryVersion: version, ...(treatment !== undefined ? { treatmentPath: treatment } : {}) },
+          ...(caption !== undefined ? { caption } : {}),
+          ...(title !== undefined ? { title } : {}),
+        }, Date.now());
+        if (!r.ok) throw fail(r.error);
+        return { ok: true, repeat: r.repeat, next: "FreePoster now edits or reviews the film and sends it to the user for approval. You're done with this brief: don't call request_review for it." };
+      },
+    },
+    {
+      name: "give_up_brief",
+      title: "Give up a brief",
+      description: "Stops work on a brief you hold, with the reason; the user is told the agent gave up and why. Use it when you can't make the film (for example it needs an image generator you don't have).",
+      inputSchema: {
+        type: "object",
+        properties: { task_id: { type: "integer" }, reason: { type: "string", maxLength: 500 } },
+        required: ["task_id", "reason"],
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+      async run(args) {
+        only(args, ["task_id", "reason"], "give_up_brief");
+        const id = taskId(args);
+        const reason = text(args, "reason", 500)!;
+        const worker = opts.worker();
+        let r: { ok: true } | { ok: false; error: string };
+        if (worker) r = worker.giveUp(id, opts.agent(), reason);
+        else {
+          // No worker is running: the same task change, and the same event the worker would have logged.
+          r = giveUpBrief(cs(), id, opts.agent(), reason);
+          if (r.ok) {
+            const t = cs().task(id)!;
+            const round = (t.choices as unknown as TaskChoices).briefRound ?? 1;
+            const name = cs().campaign(t.campaignId)?.name ?? `campaign ${t.campaignId}`;
+            const error = `the agent gave up: ${reason}`;
+            queueEvent(store, "campaign.failed", round > 1 ? `campaign.failed:${id}:${round}` : `campaign.failed:${id}`,
+              { campaign_id: t.campaignId, task_id: id, date: t.date, error },
+              `Campaign "${name}" couldn't finish the agent film for ${t.date}: ${error}`);
+          }
+        }
+        if (!r.ok) throw fail(r.error);
+        return { ok: true, next: "The user has been told. Nothing more to do for this brief." };
+      },
+    },
+  ];
+}

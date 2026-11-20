@@ -71,7 +71,7 @@ test("MCP handshake and tool list", async () => {
   assert.equal(note.statusCode, 202);
 
   const names = (await rpc("tools/list")).body.result.tools.map((t: any) => t.name);
-  assert.deepEqual(names.sort(), ["add_editing_style", "add_library_entry", "audit_reviews", "cancel_post", "cancel_production", "create_edit", "describe_production_tools", "get_analytics", "get_campaign", "get_edit", "get_post", "get_production", "get_review", "get_tiktok_creator_info", "get_video_metrics", "list_accounts", "list_campaigns", "list_editing_styles", "list_events", "list_library", "list_posts", "list_reviews", "publish_video", "request_review", "reschedule_post", "retry_job", "revise_edit", "revise_production", "start_production", "stop_campaigns", "transcribe_media", "update_campaign", "wait_for_events"]);
+  assert.deepEqual(names.sort(), ["add_editing_style", "add_library_entry", "audit_reviews", "cancel_post", "cancel_production", "claim_brief", "create_edit", "describe_production_tools", "get_analytics", "get_campaign", "get_edit", "get_post", "get_production", "get_review", "get_tiktok_creator_info", "get_video_metrics", "give_up_brief", "list_accounts", "list_briefs", "list_campaigns", "list_editing_styles", "list_events", "list_library", "list_posts", "list_reviews", "publish_video", "renew_brief", "request_review", "reschedule_post", "retry_job", "revise_edit", "revise_production", "start_production", "stop_campaigns", "submit_brief", "sync_looks", "transcribe_media", "update_campaign", "wait_for_events"]);
   // Agents have no way to approve: only the user does, on a review (review.test.ts).
   assert.ok(!names.some((n: string) => /approve|decide|accept/.test(n)), "no approve tool");
   assert.equal((await rpc("nope")).body.error.code, -32601);
@@ -433,4 +433,96 @@ test("retry_job (and the window's Retry) re-queue a failed campaign job held whi
   assert.equal(store.job(job.id)!.nextRunAt, Number.MAX_SAFE_INTEGER, "and the window's Retry");
   assert.deepEqual(published, []);
   await app.close();
+});
+
+
+/** A campaign task waiting on an agent's film, its brief due in an hour. */
+function briefTask(cs: CampaignStore, sec: number | null = null) {
+  const campaignId = cs.create({ name: "Films", text: "", accountSetId: null, defaultPostTimes: [] });
+  const brief = {
+    look: "lemo:impasto", producer: "lemo-opuscar", hook: "Stop scrolling", angle: "A calm one", cta: { text: "Get the guide", url: null },
+    sec, instructions: "Keep it quiet", language: "en", needsImageGen: false, deadline: Date.now() + 3_600_000, postAt: null,
+  };
+  const taskId = cs.addTask({ campaignId, date: "2026-11-20", dayIndex: 0, instructionIndex: 0, kind: "make", state: "awaiting_agent", choices: { brief, offers: 0, briefRound: 1, instruction: { kind: "make", look: "lemo:impasto" } } as never })!;
+  return { campaignId, taskId };
+}
+
+test("agent tools are listed", async () => {
+  const { rpc } = setup();
+  const tools = (await rpc("tools/list")).body.result.tools;
+  for (const name of ["sync_looks", "list_briefs", "claim_brief", "renew_brief", "submit_brief", "give_up_brief"]) {
+    const t = tools.find((x: any) => x.name === name);
+    assert.ok(t, name);
+    assert.equal(t.inputSchema.additionalProperties, false, `${name} is strict`);
+    assert.ok(!("holder" in t.inputSchema.properties), "the agent never names the holder");
+  }
+  const { EVENT_GUIDE } = await import("../src/mcp.ts");
+  assert.match(EVENT_GUIDE, /brief\.requested or brief\.expired: call claim_brief/);
+});
+
+test("claim_brief through MCP uses the client name as holder", async () => {
+  const { rpc, call, worker } = setup({ campaigns: true });
+  await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "codex", version: "1" } });
+  const { taskId } = briefTask(worker!.campaigns);
+  const open = (await call("list_briefs")).structuredContent;
+  assert.deepEqual(open.briefs.map((b: any) => [b.task_id, b.look]), [[taskId, "lemo:impasto"]]);
+  const got = (await call("claim_brief", { task_id: taskId })).structuredContent;
+  assert.equal(got.brief.look, "lemo:impasto");
+  assert.match(got.brief.deadline, /^\d{4}-\d\d-\d\dT/);
+  assert.match(got.lease_until, /^\d{4}-\d\d-\d\dT/);
+  assert.match(got.next, /renew_brief/);
+  assert.match(got.next, /give_up_brief/);
+  assert.equal((worker!.campaigns.task(taskId)!.choices as any).lease.holder, "codex");
+  assert.equal((await call("renew_brief", { task_id: taskId })).isError, undefined);
+  assert.equal((await call("list_briefs")).structuredContent.briefs.length, 0, "a leased brief isn't open");
+});
+
+test("submit_brief refuses an unknown task_id with a helpful error", async () => {
+  const { call } = setup({ campaigns: true });
+  const r = await call("submit_brief", { task_id: 999, video_path: "C:/nope.mp4", library_version: "1" });
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /list_briefs/);
+});
+
+test("submit_brief delivers the file for the brief's own look", async () => {
+  const { rpc, call, worker, dir } = setup({ campaigns: true });
+  await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "codex", version: "1" } });
+  const { taskId } = briefTask(worker!.campaigns);
+  await call("claim_brief", { task_id: taskId });
+  const video = verticalSilent(dir);
+  const r = (await call("submit_brief", { task_id: taskId, video_path: video, library_version: "3", look: "lemo:other" })).isError;
+  assert.equal(r, true, "an unknown field is refused");
+  const ok = (await call("submit_brief", { task_id: taskId, video_path: video, library_version: "3", caption: "hi" })).structuredContent;
+  assert.equal(ok.ok, true);
+  assert.equal(ok.repeat, false);
+  assert.match(ok.next, /request_review/);
+  assert.deepEqual((worker!.campaigns.task(taskId)!.choices as any).delivery.manifest, { look: "lemo:impasto", libraryVersion: "3" });
+});
+
+test("sync_looks refuses an unknown field", async () => {
+  const { call } = setup();
+  const look = { key: "lemo:a", name: "A", description: "d", needs_image_gen: false };
+  const r = await call("sync_looks", { producer: "lemo-opuscar", library_version: "1", looks: [look], extra: 1 });
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /extra/);
+  const inner = await call("sync_looks", { producer: "lemo-opuscar", library_version: "1", looks: [{ ...look, colour: "red" }] });
+  assert.equal(inner.isError, true);
+  const bad = await call("sync_looks", { producer: "other", library_version: "1", looks: [look] });
+  assert.equal(bad.isError, true);
+  const ok = await call("sync_looks", { producer: "lemo-opuscar", library_version: "1", looks: [look] });
+  assert.deepEqual(ok.structuredContent, { added: 1, updated: 0, hidden: 0 });
+});
+
+test("give_up_brief tells the user", async () => {
+  for (const campaigns of [true, false]) {
+    const { rpc, call, worker, store } = setup({ campaigns });
+    await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "codex", version: "1" } });
+    const { taskId } = briefTask(worker?.campaigns ?? new CampaignStore(store));
+    await call("claim_brief", { task_id: taskId });
+    const r = await call("give_up_brief", { task_id: taskId, reason: "no image generator" });
+    assert.equal(r.isError, undefined, JSON.stringify(r));
+    const events = (await call("list_events")).structuredContent.events.filter((e: any) => e.event_type === "campaign.failed");
+    assert.equal(events.length, 1, `worker running: ${campaigns}`);
+    assert.match(events[0].summary, /the agent gave up: no image generator/);
+  }
 });

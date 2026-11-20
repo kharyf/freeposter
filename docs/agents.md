@@ -110,3 +110,22 @@ freeposter production 12 --watch
 The installed app ships the CLI in `%LOCALAPPDATA%\Programs\FreePoster\resources\app.asar.unpacked\cli\`. Add that folder to your PATH, or from a source checkout run `npm run cli -- <command>`. `freeposter help` lists the commands. It needs Node 24 or later on PATH.
 
 `freeposter audit` (or the `audit_reviews` tool) checks every published post: each one an agent asked for was approved by you before it was made, and every account uploaded the exact file you approved.
+
+## 6. Making campaign films
+
+A campaign row can ask your agent to make the film, in one of the looks of the lemo-opuscar skill. FreePoster writes a **brief** and your agent makes the film; FreePoster then edits or reviews it and sends it to you on Telegram like any other campaign video. The agent never posts, schedules or labels anything, and `request_review` keeps refusing these videos.
+
+Once, and again whenever the skill's library changes, the agent tells FreePoster which looks it offers:
+
+- `sync_looks` (`producer: "lemo-opuscar"`, `library_version`, `looks`: each with `key` like `lemo:impasto-oil`, `name`, `description`, `needs_image_gen`). Send the whole list: a look left out is hidden, not deleted, so videos already labelled with it keep their name.
+
+When a brief is due, FreePoster logs `brief.requested` (a film is wanted) or `brief.expired` (the agent holding it ran out of time and it's offered again). The agent then:
+
+1. **Claims** it with `claim_brief` (`task_id`; `list_briefs` shows the open ones). The brief is the look, hook, angle, cta (`text`, `url`), `sec` (length in seconds, or null), `instructions`, `language`, `needs_image_gen`, `deadline` and `post_at`. The claim is a lease of up to two hours under the name your MCP client gave, never past the deadline. A brief can be offered twice; after that the task fails.
+2. **Makes the film** with the lemo-opuscar skill, using the brief's look, language and instructions as the answers to the skill's questions. It doesn't ask you anything. If `needs_image_gen` is true and the agent has no image generator, it calls `give_up_brief` at once.
+3. **Renews** with `renew_brief` at least every 30 minutes while it works; a lease that runs out frees the brief.
+4. **Delivers** with `submit_brief` (`task_id`, `video_path`, `library_version`, optionally `treatment_path`, `caption`, `title`). The film is the brief's look; the agent doesn't choose it. Delivering the same file again is harmless.
+
+The file must be portrait 9:16, pass FreePoster's usual video checks, and last within 20% (at least 2 seconds) of the brief's `sec` when it has one. A video that fails comes back as an error saying why, and the agent can fix and deliver again before the deadline. The deadline is 30 minutes before the post time, so you have time to review; a brief with no post time is due within a day. If nothing arrives by then, the slot is skipped.
+
+If it can't make the film, the agent calls `give_up_brief` with a reason: the task fails and you get a Telegram message saying the agent gave up and why.

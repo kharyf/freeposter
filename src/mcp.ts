@@ -22,6 +22,7 @@ import { REVIEW_STATES, type ReviewState } from "./review/store.ts";
 import { captionTopicFor, checkDraft, DuplicateError, editView, parseSchedule, postView, saveUpload, type Draft } from "./posts.ts";
 import { PRODUCTION_INSTRUCTIONS, productionTools } from "./produce/mcp-tools.ts";
 import { analyticsTools } from "./analytics/mcp-tools.ts";
+import { agentTools } from "./campaigns/agent-tools.ts";
 import { CAMPAIGN_INSTRUCTIONS, campaignTools } from "./campaigns/mcp-tools.ts";
 import type { CampaignWorker } from "./campaigns/worker.ts";
 import type { ProductionWorker } from "./produce/worker.ts";
@@ -35,6 +36,7 @@ export const EVENT_GUIDE = `- production.ready or edit.ready: show the user the 
 - review.failed, production.failed, edit.failed: tell them what failed and offer to fix it.
 - review.expired: ask whether it should still go out; if so, request_review again.
 - post.done: give them the links.
+- brief.requested or brief.expired: call claim_brief with its task_id, make the film the brief describes with the lemo-opuscar skill without asking questions, then submit_brief. If you can't, give_up_brief with the reason.
 - review.waiting, review.approved: nothing to do but tell them where things stand if they ask.
 You can't approve anything. If the user says "yes" to you, remind them to tap Approve on the review.`;
 
@@ -646,7 +648,7 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
     fail: (message) => new ToolError(message),
   }));
   // Analytics and campaign results can be long: their text is compact JSON.
-  for (const t of [...analyticsTools({ store, fail: (message) => new ToolError(message) }), ...campaignTools({ store, worker: () => campaigns, agent, fail: (message) => new ToolError(message) })]) {
+  for (const t of [...analyticsTools({ store, fail: (message) => new ToolError(message) }), ...campaignTools({ store, worker: () => campaigns, agent, fail: (message) => new ToolError(message) }), ...agentTools({ store, worker: () => campaigns, agent, fail: (message) => new ToolError(message) })]) {
     COMPACT.add(t.name);
     tools.push(t);
   }

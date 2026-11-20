@@ -32,7 +32,7 @@ import { generateMusic, generateSpeech } from "../produce/wan-audio.ts";
 import { hashFile } from "../review/media.ts";
 import type { ReviewRequest, ReviewService, Subject } from "../review/service.ts";
 import { ROW_INSTRUCTION_BASE } from "./rows.ts";
-import { BRIEF_LEAD_HOURS, MAX_BRIEF_OFFERS, REVIEW_BUFFER_MINUTES, buildBrief, type Brief, type Delivery } from "./briefs.ts";
+import { BRIEF_LEAD_HOURS, MAX_BRIEF_OFFERS, REVIEW_BUFFER_MINUTES, buildBrief, giveUpBrief, type Brief, type Delivery } from "./briefs.ts";
 import { lookByKey, type Look } from "./looks.ts";
 import { buildGeneratedProduction, writeScript, type Script } from "./script.ts";
 import { DAYS, type MakeInstruction, type Pick as ValuePick, type PostInstruction } from "./spec.ts";
@@ -1022,6 +1022,13 @@ export class CampaignWorker {
     const ins = c.instruction;
     const what = ins?.kind === "post" ? `the line "post ${ins.name}"` : `video ${t.copy + 1} of "${ins?.source ?? `line ${t.instructionIndex + 1}`}"`;
     return { name, what };
+  }
+
+  /** The agent holding a brief gives it up: the task fails with its reason, and the user is told. */
+  giveUp(taskId: number, holder: string, reason: string): { ok: true } | { ok: false; error: string } {
+    const r = giveUpBrief(this.campaigns, taskId, holder, reason);
+    if (r.ok) this.tell(this.campaigns.task(taskId)!, "campaign.failed", `the agent gave up: ${reason}`);
+    return r;
   }
 
   private tell(t: CampaignTask, type: "campaign.failed" | "campaign.missed", error: string) {
