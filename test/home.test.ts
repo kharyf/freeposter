@@ -69,6 +69,14 @@ test("the window has a Campaigns tab, its panel and the Autorun warning", async 
   assert.ok(res.body.includes(`id="autorun-warning"`), "the dialog that says what Autorun may and may not do");
 });
 
+test("the Campaigns tab names a task waiting for the agent's film and counts it as making", () => {
+  const html = readFileSync(join(import.meta.dirname, "..", "public", "index.html"), "utf8");
+  const read = (name: string) => new Function(`return ${new RegExp(`const ${name} = ([\\s\\S]*?);\\r?\\n`).exec(html)![1]}`)();
+  assert.equal(read("CP_STATE_WORD").awaiting_agent, "waiting for the agent's film");
+  const making = (read("CP_COUNTS") as [string, string[]][]).find(([word]) => word === "making")!;
+  assert.ok(making[1].includes("awaiting_agent"));
+});
+
 test("the window's own script parses (a syntax slip would leave every tab blank)", () => {
   const html = readFileSync(join(import.meta.dirname, "..", "public", "index.html"), "utf8");
   const scripts = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]);

@@ -2680,9 +2680,9 @@ function keepFocus(render) {
 }
 
 const CP_DAYS = [["sun", "Sun"], ["mon", "Mon"], ["tue", "Tue"], ["wed", "Wed"], ["thu", "Thu"], ["fri", "Fri"], ["sat", "Sat"]];
-const CP_COUNTS = [["making", ["queued", "scripting", "rendering", "editing"]], ["waiting for approval", ["reviewing"]], ["scheduled", ["scheduled"]],
+const CP_COUNTS = [["making", ["queued", "awaiting_agent", "scripting", "rendering", "editing"]], ["waiting for approval", ["reviewing"]], ["scheduled", ["scheduled"]],
   ["posted", ["posted"]], ["kept", ["kept"]], ["missed", ["missed"]], ["failed", ["failed"]]];
-const CP_STATE_WORD = { queued: "waiting to start", scripting: "writing the script", rendering: "making the video", editing: "editing",
+const CP_STATE_WORD = { queued: "waiting to start", awaiting_agent: "waiting for the agent's film", scripting: "writing the script", rendering: "making the video", editing: "editing",
   reviewing: "waiting for approval", scheduled: "scheduled", posted: "posted", kept: "kept in the library", missed: "missed", failed: "failed" };
 const CP_LIB = [["hook", "Hooks"], ["angle", "Angles"], ["cta", "CTAs"], ["type", "Types"]];
 const CP_KIND_WORD = { hook: "hook", angle: "angle", cta: "CTA" };
