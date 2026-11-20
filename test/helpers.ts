@@ -4,6 +4,15 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../src/db.ts";
+import { config } from "../src/config.ts";
+import { CampaignWorker } from "../src/campaigns/worker.ts";
+import { mcpTools } from "../src/mcp.ts";
+import type { Publisher } from "../src/platforms/base.ts";
+import { publishers as real } from "../src/platforms/index.ts";
+import { ProductionStore } from "../src/produce/store.ts";
+import { ReviewService } from "../src/review/service.ts";
+import { Runner } from "../src/runner.ts";
+import { buildServer } from "../src/server.ts";
 import type { NewAccount, Platform } from "../src/types.ts";
 
 export const tmp = () => mkdtempSync(join(tmpdir(), "freeposter-test-"));
@@ -78,3 +87,45 @@ export function multipart(fields: Record<string, string>, file?: { name: string;
   parts.push(Buffer.from(`--${boundary}--\r\n`));
   return { payload: Buffer.concat(parts), headers: { "content-type": `multipart/form-data; boundary=${boundary}` } };
 }
+
+const HOST = { host: `localhost:${config.port}` };
+
+/** An MCP server over a fresh store, with X publishing faked; campaigns: true adds the campaign worker. */
+export function mcpFixture(opts: { campaigns?: boolean } = {}) {
+  const dir = tmp();
+  const store = newStore();
+  const published: string[] = [];
+  const fakeX: Publisher = {
+    ...real.x,
+    async publish(ctx) {
+      published.push(ctx.post.caption);
+      return { url: "https://x.com/xuser/status/42" };
+    },
+  };
+  const publishers = { ...real, x: fakeX } as Record<Platform, Publisher>;
+  const runner = new Runner(store, publishers, dir);
+  const reviews = new ReviewService(store, { publishers, runner, dir: tmp() });
+  const ps = new ProductionStore(store);
+  const worker = opts.campaigns
+    ? new CampaignWorker({ store, reviews, ai: null, productions: { productions: ps, createStaged: async () => { throw new Error("not in this test"); }, borrowGpu: async () => null } })
+    : undefined;
+  const app = buildServer(store, runner, publishers, {}, undefined, undefined, undefined, { service: reviews }, worker);
+  let id = 0;
+  /** One JSON-RPC request to /mcp. */
+  const rpc = async (method: string, params?: unknown, headers: Record<string, string> = {}) => {
+    const res = await app.inject({ method: "POST", url: "/mcp", headers: { ...HOST, ...headers }, payload: { jsonrpc: "2.0", id: ++id, method, params } });
+    return { status: res.statusCode, body: res.body ? res.json() : undefined };
+  };
+  const call = async (name: string, args: Record<string, unknown> = {}) => (await rpc("tools/call", { name, arguments: args })).body.result;
+  /** Runs the review's preparation (the exact file, the checks) to the end. */
+  const prepared = async (id: number) => {
+    await reviews.tick();
+    return reviews.reviews.get(id)!;
+  };
+  /** The user's Approve button in the window. */
+  const approve = async (id: number) => (await app.inject({ method: "POST", url: `/api/reviews/${id}/approve`, headers: HOST })).json();
+  /** The real tool list, built with the same deps the server uses. */
+  const toolsForTest = () => mcpTools(store, runner, publishers, reviews, undefined, () => ({}), worker);
+  return { dir, store, app, rpc, call, published, reviews, prepared, approve, worker, toolsForTest };
+}
+

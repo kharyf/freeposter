@@ -3,60 +3,16 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { test } from "node:test";
 import { config } from "../src/config.ts";
-import type { Publisher } from "../src/platforms/base.ts";
-import { publishers as real } from "../src/platforms/index.ts";
 import { queueEvent } from "../src/notify.ts";
 import { AnalyticsStore } from "../src/analytics/store.ts";
 import { syncLooks } from "../src/campaigns/looks.ts";
 import { CampaignStore } from "../src/campaigns/store.ts";
-import { CampaignWorker } from "../src/campaigns/worker.ts";
-import { ProductionStore } from "../src/produce/store.ts";
-import { ReviewService } from "../src/review/service.ts";
-import { Runner } from "../src/runner.ts";
-import { buildServer } from "../src/server.ts";
-import type { Platform } from "../src/types.ts";
-import { account, json, mockFetch, newStore, tmp, verticalSilent } from "./helpers.ts";
+import { account, json, mockFetch, mcpFixture, newStore, verticalSilent } from "./helpers.ts";
 
 const HOST = { host: `localhost:${config.port}` };
 
-function setup(opts: { campaigns?: boolean } = {}) {
-  const dir = tmp();
-  const store = newStore();
-  const published: string[] = [];
-  const fakeX: Publisher = {
-    ...real.x,
-    async publish(ctx) {
-      published.push(ctx.post.caption);
-      return { url: "https://x.com/xuser/status/42" };
-    },
-  };
-  const publishers = { ...real, x: fakeX } as Record<Platform, Publisher>;
-  const runner = new Runner(store, publishers, dir);
-  const reviews = new ReviewService(store, { publishers, runner, dir: tmp() });
-  const ps = new ProductionStore(store);
-  const worker = opts.campaigns
-    ? new CampaignWorker({ store, reviews, ai: null, productions: { productions: ps, createStaged: async () => { throw new Error("not in this test"); }, borrowGpu: async () => null } })
-    : undefined;
-  const app = buildServer(store, runner, publishers, {}, undefined, undefined, undefined, { service: reviews }, worker);
-  let id = 0;
-  /** One JSON-RPC request to /mcp. */
-  const rpc = async (method: string, params?: unknown, headers: Record<string, string> = {}) => {
-    const res = await app.inject({ method: "POST", url: "/mcp", headers: { ...HOST, ...headers }, payload: { jsonrpc: "2.0", id: ++id, method, params } });
-    return { status: res.statusCode, body: res.body ? res.json() : undefined };
-  };
-  const call = async (name: string, args: Record<string, unknown> = {}) => (await rpc("tools/call", { name, arguments: args })).body.result;
-  /** Runs the review's preparation (the exact file, the checks) to the end. */
-  const prepared = async (id: number) => {
-    await reviews.tick();
-    return reviews.reviews.get(id)!;
-  };
-  /** The user's Approve button in the window. */
-  const approve = async (id: number) => (await app.inject({ method: "POST", url: `/api/reviews/${id}/approve`, headers: HOST })).json();
-  return { dir, store, app, rpc, call, published, reviews, prepared, approve, worker };
-}
-
 test("MCP handshake and tool list", async () => {
-  const { app, rpc } = setup();
+  const { app, rpc } = mcpFixture();
   const init = await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "1" } });
   assert.equal(init.status, 200);
   assert.equal(init.body.result.protocolVersion, "2025-06-18");
@@ -82,7 +38,7 @@ test("MCP handshake and tool list", async () => {
 });
 
 test("MCP refuses other websites and rebound hosts", async () => {
-  const { app, rpc } = setup();
+  const { app, rpc } = mcpFixture();
   assert.equal((await rpc("ping", undefined, { origin: "https://evil.example" })).status, 403);
   assert.equal((await rpc("ping", undefined, { host: "evil.example:4400" })).status, 403);
   assert.equal((await rpc("ping", undefined, { origin: `http://localhost:${config.port}` })).status, 200);
@@ -91,7 +47,7 @@ test("MCP refuses other websites and rebound hosts", async () => {
 });
 
 test("an agent asks to publish; nothing posts until the user approves, and then exactly the approved file goes", async () => {
-  const { dir, store, app, call, published, prepared, approve } = setup();
+  const { dir, store, app, call, published, prepared, approve } = mcpFixture();
   const x = store.upsertAccount(account("x"));
   const video = verticalSilent(dir);
 
@@ -143,7 +99,7 @@ test("an agent asks to publish; nothing posts until the user approves, and then 
 });
 
 test("an agent asks for a scheduled post; once approved it can be moved and cancelled", async () => {
-  const { dir, store, app, call, prepared, approve } = setup();
+  const { dir, store, app, call, prepared, approve } = mcpFixture();
   const x = store.upsertAccount(account("x"));
   const at = new Date(Date.now() + 3 * 3_600_000).toISOString();
   let r = await call("publish_video", { video_path: verticalSilent(dir), account_ids: [x.id], caption: "later", schedule_at: at });
@@ -167,7 +123,7 @@ test("an agent asks for a scheduled post; once approved it can be moved and canc
 });
 
 test("TikTok posts need a privacy level the account offers", async () => {
-  const { dir, store, app, call } = setup();
+  const { dir, store, app, call } = mcpFixture();
   const tt = store.upsertAccount(account("tiktok"));
   const fetch = mockFetch((url) => {
     assert.match(url, /creator_info/);
@@ -190,7 +146,7 @@ test("TikTok posts need a privacy level the account offers", async () => {
 });
 
 test("an agent makes an edit but can't publish it until the user approves its review", async () => {
-  const { dir, store, call, published, prepared, approve } = setup();
+  const { dir, store, call, published, prepared, approve } = mcpFixture();
   const xAcct = store.upsertAccount(account("x"));
   const video = verticalSilent(dir);
   const made = await call("create_edit", { video_path: video, settings: { punchIn: false } });
@@ -224,7 +180,7 @@ test("an agent makes an edit but can't publish it until the user approves its re
 });
 
 test("revise_edit replaces an edit after a redo; the old one can't be reviewed or revised again", async () => {
-  const { dir, store, call } = setup();
+  const { dir, store, call } = mcpFixture();
   const x = store.upsertAccount(account("x"));
   const video = verticalSilent(dir);
   const editId = (await call("create_edit", { video_path: video })).structuredContent.id;
@@ -246,7 +202,7 @@ test("revise_edit replaces an edit after a redo; the old one can't be reviewed o
 });
 
 test("prompts: check_freeposter and handle_redo, ready for agents that offer them", async () => {
-  const { app, rpc } = setup();
+  const { app, rpc } = mcpFixture();
   const list = (await rpc("prompts/list")).body.result.prompts;
   assert.deepEqual(list.map((p: any) => p.name).sort(), ["check_freeposter", "handle_redo"]);
   const check = (await rpc("prompts/get", { name: "check_freeposter" })).body.result;
@@ -259,7 +215,7 @@ test("prompts: check_freeposter and handle_redo, ready for agents that offer the
 });
 
 test("list_events and wait_for_events: any agent follows what happens without a webhook", async () => {
-  const { app, call, store } = setup();
+  const { app, call, store } = mcpFixture();
   queueEvent(store, "edit.ready", "edit.ready:1", { edit_id: 1 }, "Edit 1 is ready.");
   const first = (await call("list_events")).structuredContent;
   assert.deepEqual(first.events.map((e: any) => [e.event_type, e.edit_id, e.summary]), [["edit.ready", 1, "Edit 1 is ready."]]);
@@ -281,7 +237,7 @@ test("list_events and wait_for_events: any agent follows what happens without a 
 });
 
 test("list_reviews filters by state; get_review on a redo marks it picked up", async () => {
-  const { app, call, store, reviews } = setup();
+  const { app, call, store, reviews } = mcpFixture();
   assert.deepEqual((await call("list_reviews", { needs_agent: true })).structuredContent.reviews, []);
   assert.equal((await call("list_reviews", { state: "nope" })).isError, true);
   const r = reviews.reviews.create({ subjectKind: "file", subjectId: null, revision: 1, sourcePath: "x.mp4", expiresAt: Date.now() + 3_600_000, requestedVia: "agent",
@@ -317,7 +273,7 @@ function campaign(store: ReturnType<typeof newStore>) {
 }
 
 test("Autorun tools: changes need Autorun and a reason, and are made in the MCP client's name", async () => {
-  const { app, rpc, call, store } = setup({ campaigns: true });
+  const { app, rpc, call, store } = mcpFixture({ campaigns: true });
   await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "codex", version: "1" } });
   const { cs, id, row } = campaign(store);
   const off = await call("update_campaign", { campaign_id: id, rows: [row(2)], reason: "fewer, better posts" });
@@ -367,7 +323,7 @@ test("Autorun tools: changes need Autorun and a reason, and are made in the MCP 
 });
 
 test("stop_campaigns turns the kill switch on; no tool turns it off", async () => {
-  const { app, rpc, call, store } = setup({ campaigns: true });
+  const { app, rpc, call, store } = mcpFixture({ campaigns: true });
   const cs = new CampaignStore(store);
   assert.equal(cs.killed(), false);
   const r = await call("stop_campaigns");
@@ -379,7 +335,7 @@ test("stop_campaigns turns the kill switch on; no tool turns it off", async () =
 });
 
 test("get_analytics gives scores and label comparisons; get_video_metrics gives one post's snapshots", async () => {
-  const { app, call, store } = setup();
+  const { app, call, store } = mcpFixture();
   const a = new AnalyticsStore(store);
   const acct = store.upsertAccount(account("youtube", { expiresAt: null }));
   const posts: number[] = [];
@@ -410,7 +366,7 @@ test("get_analytics gives scores and label comparisons; get_video_metrics gives 
 });
 
 test("get_analytics compares look and producer", async () => {
-  const { app, call, store } = setup();
+  const { app, call, store } = mcpFixture();
   const a = new AnalyticsStore(store);
   syncLooks(store, "lemo-opuscar", [{ key: "lemo:ukiyo-e", name: "Ukiyo-e", description: "", needsImageGen: false, libraryVersion: "1" }]);
   const acct = store.upsertAccount(account("youtube", { expiresAt: null }));
@@ -436,7 +392,7 @@ test("get_analytics compares look and producer", async () => {
 });
 
 test("retry_job (and the window's Retry) re-queue a failed campaign job held while campaigns are stopped", async () => {
-  const { app, call, store, published } = setup({ campaigns: true });
+  const { app, call, store, published } = mcpFixture({ campaigns: true });
   const cs = new CampaignStore(store);
   const acct = store.upsertAccount(account("x"));
   const now = Date.now();
@@ -475,7 +431,7 @@ function briefTask(cs: CampaignStore, sec: number | null = null) {
 }
 
 test("agent tools are listed", async () => {
-  const { rpc } = setup();
+  const { rpc } = mcpFixture();
   const tools = (await rpc("tools/list")).body.result.tools;
   for (const name of ["sync_looks", "list_briefs", "claim_brief", "renew_brief", "submit_brief", "give_up_brief"]) {
     const t = tools.find((x: any) => x.name === name);
@@ -492,7 +448,7 @@ test("agent tools are listed", async () => {
 });
 
 test("claim_brief through MCP uses the client name as holder and returns a claim token", async () => {
-  const { rpc, call, worker } = setup({ campaigns: true });
+  const { rpc, call, worker } = mcpFixture({ campaigns: true });
   await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "codex", version: "1" } });
   const { taskId } = briefTask(worker!.campaigns);
   const open = (await call("list_briefs")).structuredContent;
@@ -520,14 +476,14 @@ test("claim_brief through MCP uses the client name as holder and returns a claim
 });
 
 test("submit_brief refuses an unknown task_id with a helpful error", async () => {
-  const { call } = setup({ campaigns: true });
+  const { call } = mcpFixture({ campaigns: true });
   const r = await call("submit_brief", { task_id: 999, video_path: "C:/nope.mp4", library_version: "1" });
   assert.equal(r.isError, true);
   assert.match(r.content[0].text, /list_briefs/);
 });
 
 test("submit_brief delivers the file for the brief's own look", async () => {
-  const { rpc, call, worker, dir } = setup({ campaigns: true });
+  const { rpc, call, worker, dir } = mcpFixture({ campaigns: true });
   await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "codex", version: "1" } });
   const { taskId } = briefTask(worker!.campaigns);
   const { claim_token } = (await call("claim_brief", { task_id: taskId })).structuredContent;
@@ -542,7 +498,7 @@ test("submit_brief delivers the file for the brief's own look", async () => {
 });
 
 test("sync_looks refuses an unknown field", async () => {
-  const { call } = setup();
+  const { call } = mcpFixture();
   const look = { key: "lemo:a", name: "A", description: "d", needs_image_gen: false };
   const r = await call("sync_looks", { producer: "lemo-opuscar", library_version: "1", looks: [look], extra: 1 });
   assert.equal(r.isError, true);
@@ -557,7 +513,7 @@ test("sync_looks refuses an unknown field", async () => {
 
 test("give_up_brief tells the user", async () => {
   for (const campaigns of [true, false]) {
-    const { rpc, call, worker, store } = setup({ campaigns });
+    const { rpc, call, worker, store } = mcpFixture({ campaigns });
     await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "codex", version: "1" } });
     const { taskId } = briefTask(worker?.campaigns ?? new CampaignStore(store));
     const { claim_token } = (await call("claim_brief", { task_id: taskId })).structuredContent;

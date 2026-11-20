@@ -8,6 +8,7 @@ import { createReadStream, readFileSync, statSync, unlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { isAbsolute, join } from "node:path";
 import { pipeline } from "node:stream/promises";
+import { ToolError } from "./api/errors.ts";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { accountSets, defaultSetId, setToken, sharedFrom } from "./accounts.ts";
 import { codeDir, config, isConfigured } from "./config.ts";
@@ -86,8 +87,7 @@ const PROMPTS = [
 /** Epoch ms → ISO 8601; agents read and write times this way. */
 const iso = (ms: number | null | undefined) => (ms === null || ms === undefined ? null : new Date(ms).toISOString());
 
-/** An error the agent caused and can fix: reported as a tool result with isError, which the model reads. */
-export class ToolError extends Error {}
+export { ToolError };
 
 // ---- argument readers: the schemas below tell clients the shapes; these make sure of them ----
 
