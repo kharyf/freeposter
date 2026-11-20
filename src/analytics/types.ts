@@ -44,4 +44,10 @@ export interface VideoLabels {
   labelledBy: "campaign" | "transcript" | "ai" | "user";
   /** the length its campaign table row gave, in seconds (absent or null when none did) */
   lengthSec?: number | null;
+  /** what made the video, when something other than FreePoster did ("lemo-opuscar"); absent or null otherwise */
+  producer?: string | null;
+  /** the film look it was made in, as a look key ("lemo:ukiyo-e") */
+  look?: string | null;
+  /** the version of that look's style at the time */
+  lookVersion?: string | null;
 }

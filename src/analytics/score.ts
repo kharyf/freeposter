@@ -5,7 +5,7 @@ import { AGES, type Snapshot, type VideoLabels } from "./types.ts";
 export type ScoreAge = "24h" | "72h" | "7d" | "30d";
 /** the ages the API and tab expose; "30d" is only for the backtest, which passes it to scoreVideos */
 export const SCORE_AGES: ScoreAge[] = ["24h", "72h", "7d"];
-export type LabelDimension = "hook" | "angle" | "cta" | "style" | "type" | "source";
+export type LabelDimension = "hook" | "angle" | "cta" | "style" | "type" | "source" | "look" | "producer";
 
 const BASELINE_SIZE = 30;
 const MIN_BASELINE = 8;
@@ -198,6 +198,8 @@ function keysFor(l: VideoLabels, dim: LabelDimension): string[] {
     case "style": return l.styleId ? [l.styleId] : [];
     case "type": return [...new Set(l.types)].map(String);
     case "source": return [l.source];
+    case "look": return l.look ? [l.look] : [];
+    case "producer": return l.producer ? [l.producer] : [];
   }
 }
 

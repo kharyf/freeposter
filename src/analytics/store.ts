@@ -17,6 +17,9 @@ CREATE TABLE IF NOT EXISTS video_labels (
   cta_text TEXT,
   campaign_id INTEGER,
   campaign_task_id INTEGER,
+  producer TEXT,
+  look TEXT,
+  look_version TEXT,
   types TEXT NOT NULL DEFAULT '[]',
   labelled_by TEXT NOT NULL,
   created_at INTEGER NOT NULL
@@ -46,6 +49,7 @@ const toLabels = (r: any): VideoLabels => ({
   postId: r.post_id, source: r.source, styleId: r.style_id, hookId: r.hook_id, hookText: r.hook_text,
   angleId: r.angle_id, angleText: r.angle_text, ctaId: r.cta_id, ctaText: r.cta_text, campaignId: r.campaign_id,
   campaignTaskId: r.campaign_task_id, types: JSON.parse(r.types), labelledBy: r.labelled_by, lengthSec: r.length_sec ?? null,
+  producer: r.producer ?? null, look: r.look ?? null, lookVersion: r.look_version ?? null,
 });
 
 const toSnapshot = (r: any): Snapshot => {
@@ -72,6 +76,9 @@ export class AnalyticsStore {
     store.db.exec(SCHEMA);
     const columns = store.db.prepare("PRAGMA table_info(video_labels)").all() as { name: string }[];
     if (!columns.some((c) => c.name === "length_sec")) store.db.exec("ALTER TABLE video_labels ADD COLUMN length_sec INTEGER");
+    for (const column of ["producer", "look", "look_version"]) {
+      if (!columns.some((c) => c.name === column)) store.db.exec(`ALTER TABLE video_labels ADD COLUMN ${column} TEXT`);
+    }
   }
 
   get db() {
@@ -83,14 +90,16 @@ export class AnalyticsStore {
   /** Insert or replace the labels of a post (the user correcting one replaces it). */
   setLabels(l: VideoLabels) {
     this.db
-      .prepare(`INSERT INTO video_labels (post_id, source, style_id, hook_id, hook_text, angle_id, angle_text, cta_id, cta_text, campaign_id, campaign_task_id, types, labelled_by, length_sec, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      .prepare(`INSERT INTO video_labels (post_id, source, style_id, hook_id, hook_text, angle_id, angle_text, cta_id, cta_text, campaign_id, campaign_task_id, types, labelled_by, length_sec, producer, look, look_version, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (post_id) DO UPDATE SET source = excluded.source, style_id = excluded.style_id, hook_id = excluded.hook_id,
                   hook_text = excluded.hook_text, angle_id = excluded.angle_id, angle_text = excluded.angle_text, cta_id = excluded.cta_id,
                   cta_text = excluded.cta_text, campaign_id = excluded.campaign_id, campaign_task_id = excluded.campaign_task_id,
-                  types = excluded.types, labelled_by = excluded.labelled_by, length_sec = COALESCE(excluded.length_sec, video_labels.length_sec)`)
+                  types = excluded.types, labelled_by = excluded.labelled_by, length_sec = COALESCE(excluded.length_sec, video_labels.length_sec),
+                  producer = COALESCE(excluded.producer, video_labels.producer), look = COALESCE(excluded.look, video_labels.look),
+                  look_version = COALESCE(excluded.look_version, video_labels.look_version)`)
       .run(l.postId, l.source, l.styleId, l.hookId, l.hookText, l.angleId, l.angleText, l.ctaId, l.ctaText, l.campaignId,
-        l.campaignTaskId, JSON.stringify(l.types), l.labelledBy, l.lengthSec ?? null, Date.now());
+        l.campaignTaskId, JSON.stringify(l.types), l.labelledBy, l.lengthSec ?? null, l.producer ?? null, l.look ?? null, l.lookVersion ?? null, Date.now());
   }
 
   labels(postId: number): VideoLabels | undefined {

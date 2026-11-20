@@ -203,3 +203,17 @@ test("identical values give a zero-width interval", () => {
   assert.equal(r[0]!.hi, 50);
   assert.equal(r[0]!.median, 50);
 });
+
+test("compareLabels groups by look and producer", () => {
+  const scores = [1, 2, 3, 4, 5].map((postId) => ({ postId, perPlatform: {}, provisional: {}, overall: { "24h": postId * 10 } }));
+  const labels = [
+    label(3, { look: "lemo:ukiyo-e", producer: "lemo-opuscar" }), label(4, { look: "lemo:ukiyo-e", producer: "lemo-opuscar" }),
+    label(5, { look: "lemo:ukiyo-e", producer: "lemo-opuscar" }), label(2, { look: "lemo:watercolor-brush", producer: "lemo-opuscar" }),
+    label(1, { look: null, producer: null }),
+  ];
+  const byLook = compareLabels(scores, labels, "look", "24h");
+  assert.deepEqual(byLook.map((r) => r.key), ["lemo:ukiyo-e", "lemo:watercolor-brush"]);
+  assert.equal(byLook[0]!.n, 3);
+  assert.equal(byLook[0]!.enough, true);
+  assert.deepEqual(compareLabels(scores, labels, "producer", "24h").map((r) => r.key), ["lemo-opuscar"]);
+});

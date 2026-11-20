@@ -38,7 +38,7 @@ test("duePolls returns only polls whose next time has passed and are not done", 
 
 test("labels round-trip and setLabels replaces", () => {
   const a = new AnalyticsStore(newStore());
-  const l: VideoLabels = { postId: 7, source: "generated", styleId: "s", hookId: 1, hookText: "h", angleId: null, angleText: null, ctaId: 2, ctaText: "c", campaignId: 3, campaignTaskId: 4, types: [1, 2], labelledBy: "campaign", lengthSec: 30 };
+  const l: VideoLabels = { postId: 7, source: "generated", styleId: "s", hookId: 1, hookText: "h", angleId: null, angleText: null, ctaId: 2, ctaText: "c", campaignId: 3, campaignTaskId: 4, types: [1, 2], labelledBy: "campaign", lengthSec: 30, producer: null, look: null, lookVersion: null };
   a.setLabels(l);
   assert.deepEqual(a.labels(7), l);
   a.setLabels({ ...l, hookText: "fixed", labelledBy: "user", lengthSec: undefined });
@@ -46,4 +46,26 @@ test("labels round-trip and setLabels replaces", () => {
   assert.equal(a.labels(7)?.lengthSec, 30, "a relabel that says no length keeps the campaign's");
   assert.equal(a.allLabels().length, 1);
   assert.equal(a.labels(8), undefined);
+});
+
+test("labels keep producer, look and look version", () => {
+  const a = new AnalyticsStore(newStore());
+  const base: VideoLabels = { postId: 11, source: "generated", styleId: null, hookId: null, hookText: null, angleId: null, angleText: null, ctaId: null, ctaText: null, campaignId: null, campaignTaskId: null, types: [], labelledBy: "campaign" };
+  a.setLabels({ ...base, producer: "lemo-opuscar", look: "lemo:ukiyo-e", lookVersion: "abc123" });
+  const got = a.labels(11)!;
+  assert.deepEqual([got.producer, got.look, got.lookVersion], ["lemo-opuscar", "lemo:ukiyo-e", "abc123"]);
+  a.setLabels({ ...base, postId: 12 });
+  const bare = a.labels(12)!;
+  assert.deepEqual([bare.producer, bare.look, bare.lookVersion], [null, null, null]);
+});
+
+test("an older video_labels table gains the look columns", () => {
+  const s = newStore();
+  s.db.exec("DROP TABLE IF EXISTS video_labels");
+  s.db.exec(`CREATE TABLE video_labels (post_id INTEGER PRIMARY KEY, source TEXT NOT NULL, style_id TEXT, hook_id INTEGER, hook_text TEXT,
+    angle_id INTEGER, angle_text TEXT, cta_id INTEGER, cta_text TEXT, campaign_id INTEGER, campaign_task_id INTEGER,
+    types TEXT NOT NULL DEFAULT '[]', labelled_by TEXT NOT NULL, created_at INTEGER NOT NULL)`);
+  new AnalyticsStore(s);
+  const names = (s.db.prepare("PRAGMA table_info(video_labels)").all() as { name: string }[]).map((c) => c.name);
+  for (const c of ["producer", "look", "look_version"]) assert.ok(names.includes(c), c);
 });

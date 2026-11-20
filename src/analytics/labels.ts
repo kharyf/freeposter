@@ -80,6 +80,7 @@ export async function labelRecorded(deps: LabelDeps, postId: number, transcript:
     angleId: matchAngle(spoken, angles), angleText: null,
     ctaId: cta?.id ?? null, ctaText,
     campaignId: null, campaignTaskId: null, types: [], labelledBy: "transcript",
+    producer: null, look: null, lookVersion: null,
   };
   if (labels.angleId === null && angles.length && deps.ai && spoken) {
     try {
@@ -168,7 +169,7 @@ function bareLabels(store: Store, postId: number): VideoLabels {
   return {
     postId, source: fromProduction(store, postId) ? "generated" : "recorded", styleId: store.driveFileForPost(postId)?.choice?.styleId ?? null,
     hookId: null, hookText: null, angleId: null, angleText: null, ctaId: null, ctaText: null, campaignId: null, campaignTaskId: null,
-    types: [], labelledBy: "transcript",
+    types: [], labelledBy: "transcript", producer: null, look: null, lookVersion: null,
   };
 }
 

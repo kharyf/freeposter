@@ -11,7 +11,7 @@ import { AnalyticsStore } from "./store.ts";
 import type { Source, VideoLabels } from "./types.ts";
 import { labelNames, selectVideos } from "./view.ts";
 
-const DIMENSIONS: LabelDimension[] = ["hook", "angle", "cta", "style", "type", "source"];
+const DIMENSIONS: LabelDimension[] = ["hook", "angle", "cta", "style", "type", "source", "look", "producer"];
 const intIn = (v: unknown, min: number, max: number): number | null => {
   const n = typeof v === "string" && /^-?\d+$/.test(v) ? Number(v) : typeof v === "number" ? v : NaN;
   return Number.isInteger(n) && n >= min && n <= max ? n : null;
