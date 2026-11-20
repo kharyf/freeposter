@@ -15,6 +15,11 @@ export function levenshtein(a: string, b: string): number {
   return prev[b.length];
 }
 
+/** The args without optional properties that are null: ops read null as absent, and validate() skips them. */
+export function dropNulls(args: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(args).filter(([, v]) => v !== null));
+}
+
 /** Checks args against the subset of JSON Schema the tools use; the ops' own readers still run after. */
 export function validate(schema: JsonSchema, args: unknown, path = ""): void {
   const name = path || "arguments";
@@ -48,10 +53,10 @@ export function validate(schema: JsonSchema, args: unknown, path = ""): void {
       if (typeof args !== "object" || args === null || Array.isArray(args)) throw new ToolError(`${name} must be an object`);
       const given = args as Record<string, unknown>;
       const known = props(schema);
-      for (const key of (schema.required ?? []) as string[]) if (given[key] === undefined) throw new ToolError(`${at(path, key)} is required`);
+      for (const key of (schema.required ?? []) as string[]) if (given[key] === undefined || given[key] === null) throw new ToolError(`${at(path, key)} is required`);
       for (const [key, value] of Object.entries(given)) {
         if (Object.hasOwn(known, key)) {
-          if (value !== undefined) validate(known[key], value, at(path, key));
+          if (value !== undefined && value !== null) validate(known[key], value, at(path, key));
         } else if (schema.additionalProperties === false) {
           const near = Object.keys(known).map((k) => [k, levenshtein(key, k)] as const).filter(([, d]) => d <= 3).sort((a, b) => a[1] - b[1])[0];
           throw new ToolError(`unknown argument ${at(path, key)}${near ? `; did you mean ${at(path, near[0])}?` : ""}`);

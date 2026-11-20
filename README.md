@@ -93,6 +93,8 @@ http://localhost:4400/mcp
 claude mcp add --transport http freeposter http://localhost:4400/mcp
 ```
 
+Agents with a shell can skip MCP: `GET /agent/v1` lists every op and `POST /agent/v1/<op>` runs one, or use the `freeposter` CLI. Over MCP the default is lean (two tools, `fp` and `fp_help`); add `?profile=full` for every tool typed, or `?tools=a,b,c` for a few.
+
 The app's **AI agents** panel shows the setup line for each agent. It works the same with any agent: they hear what happened through FreePoster's event feed (`list_events`, `wait_for_events`), with an optional webhook for agents that run all the time. Prefer a terminal? Run `freeposter help`. Analytics and campaign tools: `get_analytics`, `get_video_metrics`, `list_campaigns`, `get_campaign`, `update_campaign`, `list_library`, `add_library_entry`, `stop_campaigns`. See [docs/agents.md](docs/agents.md) for the event feed, webhooks and reviews on Telegram, and [docs/hermes.md](docs/hermes.md) for Hermes Agent.
 
 <img src="docs/assets/divider.svg" width="100%" height="6" alt="">

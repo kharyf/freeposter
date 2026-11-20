@@ -76,14 +76,15 @@ export function parseRows(raw: unknown, vocab: Vocabulary): { ok: true; value: R
     };
     const hook = pick(r.hook, "hook", vocab.hooks), angle = pick(r.angle, "angle", vocab.angles), cta = pick(r.cta, "cta", vocab.ctas);
     const agentRow = r.origin === "agent";
-    const style = r.style === null && agentRow ? null : typeof r.style === "string" ? vocab.styles.find((s) => s.id.toLowerCase() === (r.style as string).toLowerCase())?.id : undefined;
+    const style = (r.style === null || r.style === undefined) && agentRow ? null : typeof r.style === "string" ? vocab.styles.find((s) => s.id.toLowerCase() === (r.style as string).toLowerCase())?.id : undefined;
     if (style === undefined) problem(`style must be one of the editing styles (${vocab.styles.map((s) => s.id).join(", ")})`);
-    if (r.type !== null && !(typeof r.type === "number" && vocab.types.some((t) => t.id === r.type))) problem(`no video type with id ${String(r.type)}`);
-    if (r.time !== null && !(typeof r.time === "string" && TIME.test(r.time))) problem('time must be a 24-hour "HH:MM" time, or null');
+    // Compacted results drop null and empty fields, so a missing one reads as null (text: "").
+    if (r.type !== null && r.type !== undefined && !(typeof r.type === "number" && vocab.types.some((t) => t.id === r.type))) problem(`no video type with id ${String(r.type)}`);
+    if (r.time !== null && r.time !== undefined && !(typeof r.time === "string" && TIME.test(r.time))) problem('time must be a 24-hour "HH:MM" time, or null');
     let days: Day[] = [];
     if (!Array.isArray(r.days) || r.days.some((d) => !DAYS.includes(d as Day))) problem(`days must be a list of ${DAYS.join(", ")}`);
     else days = DAYS.filter((d) => (r.days as unknown[]).includes(d)); // Sunday first, each once
-    if (r.sec !== null && !int(r.sec, SEC_MIN, SEC_MAX)) problem(`length must be a whole number of seconds from ${SEC_MIN} to ${SEC_MAX}, or null`);
+    if (r.sec !== null && r.sec !== undefined && !int(r.sec, SEC_MIN, SEC_MAX)) problem(`length must be a whole number of seconds from ${SEC_MIN} to ${SEC_MAX}, or null`);
     if (r.origin !== "create" && r.origin !== "drive" && r.origin !== "agent") problem('origin must be "create", "drive" or "agent"');
     // Rows saved before looks existed have no look field; that reads as no look.
     let look: string | null = null;
@@ -93,7 +94,8 @@ export function parseRows(raw: unknown, vocab: Vocabulary): { ok: true; value: R
       else look = r.look;
     }
     let text = "";
-    if (typeof r.text !== "string" || r.text.length > ROW_TEXT_MAX) problem(`text must be text of at most ${ROW_TEXT_MAX} characters`);
+    if (r.text === undefined) text = "";
+    else if (typeof r.text !== "string" || r.text.length > ROW_TEXT_MAX) problem(`text must be text of at most ${ROW_TEXT_MAX} characters`);
     else text = r.text;
     if (r.origin === "drive" && text.includes("_")) problem("a Drive file name is the part before the first underscore, so it can't contain one");
     value.push({

@@ -52,8 +52,9 @@ platforms:
                    "post.done", "test"]
           prompt: |
             FreePoster says ({event_type}): {summary}
-            Handle it as FreePoster's MCP instructions say for this event, using the freeposter tools
-            (get_production, get_edit, get_review, get_post, request_review, revise_edit, revise_production).
+            Read fp_help topic "events" once to see how to handle this event, then call the ops through
+            fp(op, args) (get_production, get_edit, get_review, get_post, request_review, revise_edit,
+            revise_production). If your Hermes uses ?profile=full, those are separate typed tools instead.
             Don't send me the video yourself: FreePoster sends it for review. You can't approve anything;
             if I say "yes" here, remind me to tap Approve on the review.
           deliver: telegram

@@ -54,9 +54,12 @@ test("list_accounts with one account stays under 400 chars", async () => {
 test("list_accounts leaves out the caption limits and labels, and lists only platforms still to connect", async () => {
   const { store, call } = mcpFixture();
   store.upsertAccount(account("x"));
-  const r = (await call("list_accounts")).structuredContent;
+  const x = config.credentials.x, saved = { ...x };
+  Object.assign(x, { id: "id", secret: "secret" }); // configured and connected: nothing left to do
+  let r: any;
+  try { r = (await call("list_accounts")).structuredContent; } finally { Object.assign(x, saved); }
   assert.equal(r.captionLimits, undefined);
-  assert.ok(!r.platforms.some((p: any) => p.platform === "x"), "x has an account");
+  assert.ok(!r.platforms.some((p: any) => p.platform === "x"), "x is configured and has an account");
   for (const p of r.platforms) {
     assert.ok(p.platform && p.label === undefined);
     assert.ok(Object.keys(p).every((k) => ["platform", "configured", "connect_url"].includes(k)), JSON.stringify(p));

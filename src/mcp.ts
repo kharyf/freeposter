@@ -12,7 +12,7 @@ import { ToolError, type Tool } from "./api/errors.ts";
 import { EVENT_GUIDE, GUIDES } from "./api/guides.ts";
 import { trustedRequest } from "./api/guard.ts";
 import { ApiError, guideText, indexText, noGuide, opDoc, runBatch, runOp } from "./api/routes.ts";
-import { validate } from "./api/schema.ts";
+import { dropNulls, validate } from "./api/schema.ts";
 import { parseFields } from "./api/compact.ts";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { accountSets, defaultSetId, setToken, sharedFrom } from "./accounts.ts";
@@ -225,7 +225,7 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
           // A Drive filename picks a set by its filename_token: Name_11.1.26_5.30.pm_Basic_PersonalBrand.
           account_sets: sets.map((s) => ({ id: s.id, name: s.name, filename_token: setToken(s.name), default: s.id === defaultSet, account_ids: s.accountIds })),
           // Only what is left to connect: platforms with an account are done, and the rest is in the FreePoster window.
-          platforms: PLATFORMS.filter((p) => !store.accounts().some((a) => a.platform === p)).map((p) => ({
+          platforms: PLATFORMS.filter((p) => !isConfigured(p) || !store.accounts().some((a) => a.platform === p)).map((p) => ({
             platform: p,
             configured: isConfigured(p) || undefined,
             connect_url: isConfigured(p) ? `${config.baseUrl}/connect/${p}` : null,
@@ -280,7 +280,7 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
     {
       name: "request_review",
       title: "Ask the user to review a video",
-      description: "Sends a ready production (production_id), a ready edit (edit_id) or a video file (video_path) to the user for review, with the accounts, caption, title and schedule it would post with. FreePoster makes the exact file that will be uploaded, writes the caption if it's blank, and sends it to the user on Telegram (and the FreePoster window) with Approve, Reject and Redo. Only the user's Approve posts it. Returns the review at once (state preparing, then pending); follow it with get_review or wait_for_events. A new request for the same edit or production replaces an open one. For a production, fields left out come from its spec's post section.",
+      description: "Sends a video to the user for review: a ready production (production_id), a ready edit (edit_id) or a video file (video_path), with the accounts, caption, title and schedule it would post with. FreePoster makes the exact file that will be uploaded, writes the caption if it's blank, and sends it to the user on Telegram (and the FreePoster window) with Approve, Reject and Redo. Only the user's Approve posts it. Returns the review at once (state preparing, then pending); follow it with get_review or wait_for_events. A new request for the same edit or production replaces an open one. For a production, fields left out come from its spec's post section.",
       inputSchema: {
         type: "object",
         properties: {
@@ -778,7 +778,7 @@ function gatewayTools(tools: Tool[]): Tool[] {
   const failed = (err: unknown) => (err instanceof ApiError ? new ToolError(err.message) : err);
   const callProps = {
     op: { type: "string", description: "Op name." },
-    args: { anyOf: [{ type: "object" }, { type: "string" }], description: "Op arguments (object or JSON string)." },
+    args: { type: "object", description: "Op arguments (an object; a JSON string of one also works)." },
     fields: { type: "string", description: "Comma-separated result fields to keep." },
   };
   return [
@@ -886,7 +886,7 @@ export function registerMcp(app: FastifyInstance, tools: Tool[], setAgent: (name
         try {
           const isGateway = gateway.includes(tool);
           if (!isGateway) validate(tool.inputSchema, args);
-          const result = await tool.run(args);
+          const result = await tool.run(isGateway ? args : dropNulls(args));
           // The gateway tools answer in text only (a guide is plain text, a result compact JSON); named tools also carry structuredContent.
           if (isGateway) return reply({ content: [{ type: "text", text: typeof result === "string" ? result : JSON.stringify(result) }] });
           return reply({ content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result });

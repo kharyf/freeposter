@@ -5,7 +5,7 @@ import { compact, parseFields, pick } from "./compact.ts";
 import { ToolError, type Tool } from "./errors.ts";
 import { GUIDES, GUIDE_TOPICS } from "./guides.ts";
 import { trustedRequest } from "./guard.ts";
-import { levenshtein, renderDoc, signature, summary, validate } from "./schema.ts";
+import { dropNulls, levenshtein, renderDoc, signature, summary, validate } from "./schema.ts";
 
 export class ApiError extends Error {
   status: number;
@@ -26,7 +26,7 @@ function unknownOp(tools: Tool[], name: string): ApiError {
 export async function runOp(tools: Tool[], name: string, args: unknown, fields?: string[]): Promise<unknown> {
   const tool = tools.find((t) => t.name === name);
   if (!tool) throw unknownOp(tools, name);
-  const given = args ?? {};
+  const given = args && typeof args === "object" && !Array.isArray(args) ? dropNulls(args as Record<string, unknown>) : args ?? {};
   try {
     validate(tool.inputSchema, given);
   } catch (err) {

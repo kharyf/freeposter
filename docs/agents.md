@@ -45,6 +45,8 @@ By default the server is **lean**: it lists just two tools, `fp(op, args)` and `
 | `/mcp?profile=full` | every tool with its full schema and the full instructions |
 | `/mcp?tools=claim_brief,submit_brief` | exactly those tools, typed (an unknown name is refused, listing the valid ones) |
 
+In lean mode every op sits behind the one `fp` tool, so a client's per-tool permission ("always allow") covers all of them; nothing posts without your tap on Approve either way, and `?profile=full` keeps a permission prompt per op.
+
 Every tool can be called by name on every profile, listed or not. What each costs a session (characters, about 4 per token):
 
 | Profile | Instructions + tool list | About |
