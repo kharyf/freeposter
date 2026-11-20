@@ -103,6 +103,9 @@ export interface TaskChoices {
   delivery?: Delivery;
 }
 
+/** Whether a task's video is an agent film (an Agent row: a make line with a look). */
+const isAgentFilm = (c: TaskChoices) => c.instruction?.kind === "make" && Boolean(c.instruction.look);
+
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 /** States a task is still being worked on in. */
 const ACTIVE: TaskState[] = ["queued", "awaiting_agent", "scripting", "rendering", "editing", "reviewing", "scheduled"];
@@ -227,6 +230,7 @@ export class CampaignWorker {
     this.write = deps.writeScript ?? writeScript;
     this.dir = deps.dir ?? join(dataDir, "campaigns");
     this.reviews.ownedByCampaign = (s) => this.owns(s);
+    this.reviews.agentFilm = (r) => this.agentFilmReview(r.id);
   }
 
   start(intervalMs = 15_000) {
@@ -637,13 +641,51 @@ export class CampaignWorker {
     await this.requestReview(this.campaigns.task(t.id)!, c);
   }
 
+  /** The look a brief already out was made in: it keeps it, even one hidden or gone since. */
+  private briefLook(old: Brief): Look {
+    return lookByKey(this.store, old.look)
+      ?? { key: old.look, producer: old.producer, name: old.look, description: "", needsImageGen: old.needsImageGen, libraryVersion: "", hidden: true };
+  }
+
+  /**
+   * The user asked for a redo of an agent film: a new round of its brief, for the same slot, with the note added
+   * to its instructions, unclaimed and with its offers back. Past the brief's deadline the slot is missed instead.
+   */
+  private redoFilm(t: CampaignTask, c: TaskChoices, note: string | null, reason: string | null) {
+    const now = this.now();
+    const old = c.brief;
+    if (!old) return this.fail(t.id, "its brief is missing");
+    const briefRound = (c.briefRound ?? 1) + 1;
+    this.setChoices(t.id, { briefRound });
+    const postAt = old.postAt;
+    if (postAt !== null && now >= postAt - REVIEW_BUFFER_MINUTES * 60_000) return this.missBrief(t, postAt - REVIEW_BUFFER_MINUTES * 60_000);
+    const look = this.briefLook(old);
+    const ask = note?.trim() || (reason && reason !== "none" ? reason : "make a new film");
+    const fresh = buildBrief(this.store, c, look, postAt, now);
+    const brief: Brief = { ...fresh, instructions: [old.instructions, `Redo: ${ask}`].filter(Boolean).join("\n") };
+    const current = this.campaigns.task(t.id)!;
+    // Told first, as a first brief is: a crash before the task is written tells it again under the same key.
+    this.announceBrief(current, brief, look.name, briefRound);
+    this.setChoices(t.id, { brief, offers: 0, lease: undefined, delivery: undefined, briefRound });
+    this.campaigns.updateTask(t.id, { state: "awaiting_agent", editId: null, reviewId: null, error: null });
+    log(t, `redo asked: a new brief (round ${briefRound}), due by ${new Date(brief.deadline).toLocaleString()}`);
+  }
+
+  /** Whether a review is of an agent film a campaign task is making. */
+  private agentFilmReview(reviewId: number): boolean {
+    const rows = this.store.db.prepare("SELECT id FROM campaign_tasks WHERE review_id = ?").all(reviewId) as { id: number }[];
+    return rows.some((r) => {
+      const t = this.campaigns.task(r.id);
+      return t !== undefined && isAgentFilm(t.choices as unknown as TaskChoices);
+    });
+  }
+
   /** A retried agent film with no film left to take on: a fresh brief, unclaimed, with its offers back, told again. */
   private freshBrief(t: CampaignTask, c: TaskChoices, round: number): Partial<TaskChoices> {
     const now = this.now();
     const old = c.brief!;
     // It keeps its look, even one hidden since.
-    const look: Look = lookByKey(this.store, old.look)
-      ?? { key: old.look, producer: old.producer, name: old.look, description: "", needsImageGen: old.needsImageGen, libraryVersion: "", hidden: true };
+    const look = this.briefLook(old);
     let postAt = c.postTime === null ? null : localAt(t.date, c.postTime);
     // Its slot is too close to make now: it's wanted within a day, and placed like any later approval (the user
     // asked for this retry, as a retried WanGP video that misses its slot posts at the next free time).
@@ -730,6 +772,9 @@ export class CampaignWorker {
       case "rejected":
         return this.fail(t.id, "you rejected it in review; nothing was posted", false);
       case "redo":
+        // An agent film's redo is a new film: the agent gets a fresh brief with the user's note.
+        if (isAgentFilm(c)) return this.redoFilm(t, c, r.note, r.reason);
+      // falls through
       case "superseded": {
         // A redo makes a newer edit (the agent's revise_edit): review that one. (A _RAW file has no edit to redo.)
         const latest = t.editId === null ? null : this.store.latestRevision(t.editId);

@@ -7,7 +7,7 @@ import type { AiService } from "../src/ai/router.ts";
 import type { Question } from "../src/ai/providers.ts";
 import { checkBudget } from "../src/ai/budget.ts";
 import { AnalyticsStore } from "../src/analytics/store.ts";
-import { claimBrief, submitBrief } from "../src/campaigns/briefs.ts";
+import { claimBrief, openBriefs, submitBrief } from "../src/campaigns/briefs.ts";
 import { syncLooks } from "../src/campaigns/looks.ts";
 import type { Script } from "../src/campaigns/script.ts";
 import { DAYS, type CompiledCampaign, type Day, type MakeInstruction, type PostInstruction } from "../src/campaigns/spec.ts";
@@ -923,6 +923,80 @@ test("brief events say FreePoster handles them when the launcher is on", async (
   const exp = JSON.parse(s.events("brief.expired")[0].body);
   assert.equal(exp.handled_by, "freeposter");
   assert.match(exp.summary, /FreePoster is starting Claude/);
+});
+
+/** The task's review is made ready and the user asks for a redo with a note. */
+async function redoReview(s: ReturnType<typeof agentSetup>, note: string) {
+  const t = s.cs.task(s.task.id)!;
+  assert.equal(t.state, "reviewing", t.error ?? "");
+  await s.reviews.tick();
+  const out = await s.reviews.redo(t.reviewId!, { via: "window", reason: null, note });
+  assert.ok(out.ok, out.message);
+  return t.reviewId!;
+}
+
+test("Redo on an agent film opens a new brief round with the note", async () => {
+  const s = agentSetup();
+  await s.deliver();
+  await s.tick();
+  const reviewId = await redoReview(s, "make the waves slower");
+  const ev = s.store.eventByKey(`review.redo:${reviewId}`)!;
+  const body = JSON.parse(ev.body);
+  assert.equal(body.handled_by, "freeposter", "no agent is asked to revise an edit");
+  assert.match(body.summary, /FreePoster asked the agent for a new film/);
+  s.clock.now = at(2026, 11, 17, 13);
+  await s.tick();
+  const t = s.cs.task(s.task.id)!;
+  const c = t.choices as any;
+  assert.equal(t.state, "awaiting_agent", t.error ?? "");
+  assert.equal(t.reviewId, null);
+  assert.equal(t.editId, null);
+  assert.equal(c.briefRound, 2);
+  assert.equal(c.offers, 0);
+  assert.equal(c.lease, undefined);
+  assert.equal(c.delivery, undefined);
+  assert.match(c.brief.instructions, /Redo: make the waves slower$/);
+  assert.equal(c.brief.postAt, at(2026, 11, 17, 18));
+  assert.equal(c.brief.deadline, at(2026, 11, 17, 17, 30));
+  assert.ok(s.store.eventByKey(`brief.requested:${t.id}:2`), "the new round is announced");
+  assert.deepEqual(openBriefs(s.cs, s.clock.now).map((x) => x.id), [t.id]);
+});
+
+test("a Redo on an agent film past its deadline misses the slot", async () => {
+  const s = agentSetup();
+  await s.deliver();
+  await s.tick();
+  await redoReview(s, "again");
+  s.clock.now = at(2026, 11, 17, 17, 40);
+  await s.tick();
+  const t = s.cs.task(s.task.id)!;
+  assert.equal(t.state, "missed", t.error ?? "");
+  assert.equal(s.events("brief.requested").length, 1, "no new brief past the deadline");
+});
+
+test("an agent film goes brief, claim, submit, Redo, a new round, claim, submit, approve, place, with its labels", async () => {
+  const s = agentSetup();
+  await s.deliver();
+  await s.tick();
+  await redoReview(s, "warmer colours");
+  await s.tick();
+  assert.equal(s.cs.task(s.task.id)!.state, "awaiting_agent");
+  const token = claimed(s.cs, s.task.id, "agent-2", s.clock.now);
+  const out = await submitBrief(s.store, s.cs, s.task.id, token, { videoPath: clips[7], manifest: { look: LOOK.key, libraryVersion: "1.5.0" }, caption: "Woodblock week https://example.com/plan" }, s.clock.now);
+  assert.ok(out.ok, out.ok ? "" : out.error);
+  await s.tick();
+  const reviewing = s.cs.task(s.task.id)!;
+  assert.equal(reviewing.state, "reviewing", reviewing.error ?? "");
+  assert.equal(s.reviews.reviews.get(reviewing.reviewId!)!.sourcePath, clips[7], "the new film is reviewed");
+  const r = await s.approve(s.task.id);
+  await s.tick();
+  const t = s.cs.task(s.task.id)!;
+  assert.equal(t.state, "scheduled", t.error ?? "");
+  assert.equal(s.store.post(r.postId!)!.scheduledAt, at(2026, 11, 17, 18));
+  const labels = new AnalyticsStore(s.store).labels(r.postId!)!;
+  assert.equal(labels.producer, "lemo-opuscar");
+  assert.equal(labels.look, LOOK.key);
+  assert.equal(labels.lookVersion, "1.5.0");
 });
 
 test("an agent row never runs the script writer", async () => {

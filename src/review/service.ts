@@ -118,6 +118,11 @@ export class ReviewService {
    * only from its campaign, so it can never be approved, and posted, twice.
    */
   ownedByCampaign: (s: Subject) => boolean = () => false;
+  /**
+   * Whether this review is of a campaign's agent film (the campaign worker answers). Its redo is FreePoster's: the
+   * worker asks the agent for a new film, so no agent is asked to revise anything.
+   */
+  agentFilm: (r: Review) => boolean = () => false;
   timer: NodeJS.Timeout | undefined;
   private typeStore: CampaignStore | undefined;
 
@@ -520,7 +525,13 @@ export class ReviewService {
       log(r.id, `couldn't redo it automatically: ${(err as Error).message}`);
     }
     const asked = `The user wants ${this.label(r).toLowerCase()} redone (review ${r.id})${d.reason ? `: ${d.reason}` : ""}${d.note ? `. Note: "${d.note}"` : ""}.`;
-    if (done) {
+    const film = !done && this.agentFilm(decided);
+    if (film) {
+      done = "FreePoster asked the agent for a new film";
+      log(r.id, done);
+      this.event(decided, "review.redo", `${asked} FreePoster asked the agent for a new film, with the note; it comes back to them for review. Nothing for you to do.`,
+        { reason: d.reason ?? null, note: d.note ?? null, at_sec: atSec, context, handled_by: "freeposter" });
+    } else if (done) {
       log(r.id, done);
       this.event(decided, "review.redo", `${asked} FreePoster is redoing it itself (${done}); the new version comes back to them for review. Nothing for you to do.`,
         { reason: d.reason ?? null, note: d.note ?? null, at_sec: atSec, context, handled_by: "freeposter" });
