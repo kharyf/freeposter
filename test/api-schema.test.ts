@@ -2,6 +2,7 @@ import "./isolated-home.ts"; // first: keeps uploads out of the real data/ folde
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { renderDoc, signature, summary, validate } from "../src/api/schema.ts";
+import { compact, parseFields, pick } from "../src/api/compact.ts";
 import { mcpFixture } from "./helpers.ts";
 
 test("validate enforces the subset FreePoster's schemas use", () => {
@@ -41,4 +42,23 @@ test("every real tool has a signature and a doc under 4,000 chars", () => {
     assert.ok(signature(t.name, t.inputSchema).startsWith(t.name));
     assert.ok(renderDoc(t).length < 4000, `${t.name} doc is ${renderDoc(t).length} chars`);
   }
+});
+
+test("compact drops empties but keeps meaning", () => {
+  assert.deepEqual(compact({ a: null, b: "", c: 0, d: false, e: [], f: [{ g: null, h: 1 }] }), { c: 0, d: false, e: [], f: [{ h: 1 }] });
+});
+test("pick projects through arrays", () => {
+  const v = { accounts: [{ id: 1, name: "n", platform: "x" }], pendingJobs: 2 };
+  assert.deepEqual(pick(v, ["accounts.id", "accounts.platform"]), { accounts: [{ id: 1, platform: "x" }] });
+  assert.deepEqual(pick([{ a: 1, b: 2 }], ["a"]), [{ a: 1 }]);
+  assert.deepEqual(pick(v, ["nope"]), {});
+});
+test("pick with no fields returns the value unchanged", () => {
+  const v = { a: 1, b: [2] };
+  assert.equal(pick(v, []), v);
+});
+test("parseFields accepts a comma string or an array", () => {
+  assert.deepEqual(parseFields("a,b.c"), ["a", "b.c"]);
+  assert.deepEqual(parseFields(["a", "b.c"]), ["a", "b.c"]);
+  assert.equal(parseFields(undefined), undefined);
 });
