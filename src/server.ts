@@ -14,7 +14,8 @@ import { findClaude } from "./claude.ts";
 import { codeDir, config, dataDir, envFile, isConfigured, isLocalUrl, needsRedirectPage, redirectUri, saveSettings, setting, SETTINGS, type SettingKey } from "./config.ts";
 import { randomToken } from "./crypto.ts";
 import type { SignIn, Store } from "./db.ts";
-import { registerMcp, trustedRequest } from "./mcp.ts";
+import { mcpTools, registerMcp, trustedRequest } from "./mcp.ts";
+import { registerAgentApi } from "./api/routes.ts";
 import { registerAnalyticsRoutes } from "./analytics/routes.ts";
 import { registerCampaignRoutes } from "./campaigns/routes.ts";
 import type { CampaignWorker } from "./campaigns/worker.ts";
@@ -1025,7 +1026,12 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
 
   registerAnalyticsRoutes(app, store);
   registerCampaignRoutes(app, store, campaigns);
-  registerMcp(app, store, runner, publishers, reviews, producer, reviewChannel, campaigns);
+  // The server is stateless, so the agent's name for the Autorun log is the latest one an agent gave (MCP initialize, or the API's x-freeposter-agent header).
+  let agentName = "agent";
+  const setAgent = (n: string) => { agentName = n; };
+  const tools = mcpTools(store, runner, publishers, reviews, producer, reviewChannel, campaigns, () => agentName);
+  registerMcp(app, tools, setAgent);
+  registerAgentApi(app, tools, setAgent);
 
   return app;
 }

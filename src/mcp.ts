@@ -8,7 +8,8 @@ import { createReadStream, readFileSync, statSync, unlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { isAbsolute, join } from "node:path";
 import { pipeline } from "node:stream/promises";
-import { ToolError } from "./api/errors.ts";
+import { ToolError, type Tool } from "./api/errors.ts";
+import { EVENT_GUIDE, GUIDES } from "./api/guides.ts";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { accountSets, defaultSetId, setToken, sharedFrom } from "./accounts.ts";
 import { codeDir, config, isConfigured } from "./config.ts";
@@ -21,25 +22,14 @@ import { EVENT_TYPES, eventView, nextEvent } from "./notify.ts";
 import type { ReviewService, ReviewRequest } from "./review/service.ts";
 import { REVIEW_STATES, type ReviewState } from "./review/store.ts";
 import { captionTopicFor, checkDraft, DuplicateError, editView, parseSchedule, postView, saveUpload, type Draft } from "./posts.ts";
-import { PRODUCTION_INSTRUCTIONS, productionTools } from "./produce/mcp-tools.ts";
+import { productionTools } from "./produce/mcp-tools.ts";
 import { analyticsTools } from "./analytics/mcp-tools.ts";
 import { agentTools } from "./campaigns/agent-tools.ts";
-import { CAMPAIGN_INSTRUCTIONS, campaignTools } from "./campaigns/mcp-tools.ts";
+import { campaignTools } from "./campaigns/mcp-tools.ts";
 import type { CampaignWorker } from "./campaigns/worker.ts";
 import type { ProductionWorker } from "./produce/worker.ts";
 import type { Runner } from "./runner.ts";
 import { PLATFORMS, type Platform, type TikTokOptions } from "./types.ts";
-
-/** What an agent should do with each event: in the instructions, and in the check_freeposter prompt. */
-export const EVENT_GUIDE = `- production.ready or edit.ready: show the user the preview if they haven't seen it, then call request_review with the accounts and caption you agreed on, unless the summary says FreePoster sends it for review itself (videos from the user's Drive folder, with drive_file, and campaign videos, with campaign_task_id: request_review refuses those). Don't send the video yourself.
-- review.redo: if handled_by is "freeposter", tell the user in one line what FreePoster is changing. Otherwise call get_review, make the change with revise_edit or revise_production, and tell them in one line what you changed.
-- review.rejected: acknowledge it and ask whether they want something different.
-- review.failed, production.failed, edit.failed: tell them what failed and offer to fix it.
-- review.expired: ask whether it should still go out; if so, request_review again.
-- post.done: give them the links.
-- brief.requested or brief.expired: if handled_by is "freeposter", don't claim it: FreePoster is starting Claude for it, so just tell the user in one line. Otherwise call claim_brief with its task_id (keep the claim_token it returns for renew_brief, submit_brief and give_up_brief), make the film the brief describes with the lemo-opuscar skill without asking questions, then submit_brief. If you can't, give_up_brief with the reason.
-- review.waiting, review.approved: nothing to do but tell them where things stand if they ask.
-You can't approve anything. If the user says "yes" to you, remind them to tap Approve on the review.`;
 
 /** The app's version, for serverInfo. */
 const VERSION = (() => {
@@ -49,22 +39,7 @@ const VERSION = (() => {
 /** Newest first; an initialize asking for any of these gets it back, anything else gets the newest. */
 export const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"];
 
-const INSTRUCTIONS = `FreePoster publishes one short vertical video to the user's TikTok, Instagram Reels, Facebook Page Reels, X and YouTube Shorts accounts through each platform's official API. It runs on the user's computer, so video_path is a path on this computer.
-
-Start with list_accounts to get account ids. You can't post anything yourself: request_review (or publish_video, which does the same) sends the video, with its caption and accounts, to the user for review. FreePoster makes the exact file that will be uploaded, writes a blank caption, and sends it to them on Telegram with Approve, Reject and Redo buttons (and shows it in the FreePoster window). Only their tap on Approve (or the window's button) posts it; nothing you say or call can, including the user saying "yes" to you in chat: if they do, tell them to tap Approve on the review. Once approved, the review's post_id is a normal post: follow it with get_post until every job is "published" (with the post's url) or "failed" (with the platform's reason).
-
-Posting is public and hard to undo: only ask to post what the user asked for, to the accounts they chose. For TikTok, call get_tiktok_creator_info first and let the user pick the privacy level from privacy_level_options; TikTok requires that choice to be the user's, never a default. Use dry_run to check a post without asking for a review. With no caption, the user's AI provider writes the title and caption from the video before the review is sent, so the user sees the text they approve.
-
-Videos the user drops in their Drive folder are edited in the editing style their filename names (or the default one). list_editing_styles shows the styles; when the user wants a new one, agree its name and steps with them and call add_editing_style.
-
-create_edit makes an edited cut (pauses and filler words cut, captions, speaker framing, even sound) in the background; follow it with get_edit, then request_review with its edit_id. When the user asks for a redo, get_review says why, at what time in the video, the source time and the words said there; make the change with revise_edit (edits) or revise_production (productions), and the new version comes back to them for review.
-
-FreePoster tells you what happens through its event log, so you never have to guess or poll each thing: production.ready / production.failed, edit.ready / edit.failed, review.waiting / approved / rejected / redo / failed / expired, and post.done, each with a one-sentence summary you can pass on. wait_for_events waits (up to about a minute per call) and returns them as they happen; list_events returns what you haven't read yet, so call it whenever the user comes back to you. list_reviews with needs_agent shows redos waiting for you. How to handle each event:
-${EVENT_GUIDE}
-
-${PRODUCTION_INSTRUCTIONS}
-
-${CAMPAIGN_INSTRUCTIONS}`;
+const INSTRUCTIONS = [GUIDES.rules, GUIDES.events, GUIDES.production, GUIDES.campaigns].join("\n\n");
 
 /** Prompts: ready-made requests the user can pick in agents that offer them (often as slash commands). */
 const PROMPTS = [
@@ -87,7 +62,10 @@ const PROMPTS = [
 /** Epoch ms → ISO 8601; agents read and write times this way. */
 const iso = (ms: number | null | undefined) => (ms === null || ms === undefined ? null : new Date(ms).toISOString());
 
-export { ToolError };
+export { ToolError, EVENT_GUIDE };
+export type { Tool };
+import { trustedRequest } from "./api/guard.ts";
+export { trustedRequest };
 
 // ---- argument readers: the schemas below tell clients the shapes; these make sure of them ----
 
@@ -159,15 +137,6 @@ const POST_PROPS = {
 
 /** Tools whose text result is compact JSON rather than indented. */
 const COMPACT = new Set<string>();
-
-interface Tool {
-  name: string;
-  title: string;
-  description: string;
-  inputSchema: Record<string, unknown>;
-  annotations: Record<string, boolean>;
-  run(args: Args): Promise<unknown>;
-}
 
 export function mcpTools(store: Store, runner: Runner, publishers: Record<Platform, Publisher>, reviews: ReviewService, producer?: ProductionWorker, reviewChannel: () => Record<string, unknown> = () => ({}), campaigns?: CampaignWorker, agent: () => string = () => "agent"): Tool[] {
   const view = (p: Parameters<typeof postView>[1]) => {
@@ -766,22 +735,8 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
 
 const rpcError = (id: unknown, code: number, message: string) => ({ jsonrpc: "2.0", id: id ?? null, error: { code, message } });
 
-/** A local agent, or this app's own page; never another website the user happens to have open. */
-export function trustedRequest(req: FastifyRequest): string | null {
-  const origin = req.headers.origin;
-  const own = [`http://localhost:${config.port}`, `http://127.0.0.1:${config.port}`, `http://[::1]:${config.port}`, config.baseUrl];
-  if (origin && !own.includes(origin)) return `origin ${origin} may not use FreePoster's MCP server`;
-  // DNS rebinding: a page on evil.example resolving to 127.0.0.1 still sends Host: evil.example.
-  const host = req.headers.host ?? "";
-  const ownHosts = [`localhost:${config.port}`, `127.0.0.1:${config.port}`, `[::1]:${config.port}`, new URL(config.baseUrl).host];
-  if (!ownHosts.includes(host)) return `host ${host} is not FreePoster`;
-  return null;
-}
-
-export function registerMcp(app: FastifyInstance, store: Store, runner: Runner, publishers: Record<Platform, Publisher>, reviews: ReviewService, producer?: ProductionWorker, reviewChannel?: () => Record<string, unknown>, campaigns?: CampaignWorker) {
+export function registerMcp(app: FastifyInstance, tools: Tool[], setAgent: (name: string) => void) {
   // The server is stateless, so the agent's name for the Autorun log is the clientInfo.name of the latest initialize.
-  let agentName = "agent";
-  const tools = mcpTools(store, runner, publishers, reviews, producer, reviewChannel, campaigns, () => agentName);
 
   async function handle(msg: any): Promise<object | null> {
     if (!msg || typeof msg !== "object" || msg.jsonrpc !== "2.0" || typeof msg.method !== "string") {
@@ -793,7 +748,7 @@ export function registerMcp(app: FastifyInstance, store: Store, runner: Runner, 
     switch (msg.method) {
       case "initialize": {
         const name = params.clientInfo?.name;
-        if (typeof name === "string" && name.trim()) agentName = name.trim().slice(0, 100);
+        if (typeof name === "string" && name.trim()) setAgent(name.trim().slice(0, 100));
         return reply({
           protocolVersion: PROTOCOL_VERSIONS.includes(params.protocolVersion) ? params.protocolVersion : PROTOCOL_VERSIONS[0],
           capabilities: { tools: { listChanged: false }, prompts: { listChanged: false } },

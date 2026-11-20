@@ -1,6 +1,10 @@
 type Obj = Record<string, unknown>;
 
-const isObject = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
+const isObject = (v: unknown): v is Obj => {
+  if (typeof v !== "object" || v === null) return false;
+  const proto = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
+};
 
 /** Drops null, undefined and "" from objects, recursively; keeps false, 0, [] and {}. */
 export function compact<T>(value: T): T {

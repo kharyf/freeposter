@@ -5,7 +5,7 @@ export type JsonSchema = Record<string, unknown>;
 const props = (s: JsonSchema) => (s.properties ?? {}) as Record<string, JsonSchema>;
 const at = (path: string, key: string) => (path ? `${path}.${key}` : key);
 
-function levenshtein(a: string, b: string): number {
+export function levenshtein(a: string, b: string): number {
   let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
   for (let i = 1; i <= a.length; i++) {
     const row = [i];
@@ -50,7 +50,7 @@ export function validate(schema: JsonSchema, args: unknown, path = ""): void {
       const known = props(schema);
       for (const key of (schema.required ?? []) as string[]) if (given[key] === undefined) throw new ToolError(`${at(path, key)} is required`);
       for (const [key, value] of Object.entries(given)) {
-        if (known[key]) {
+        if (Object.hasOwn(known, key)) {
           if (value !== undefined) validate(known[key], value, at(path, key));
         } else if (schema.additionalProperties === false) {
           const near = Object.keys(known).map((k) => [k, levenshtein(key, k)] as const).filter(([, d]) => d <= 3).sort((a, b) => a[1] - b[1])[0];

@@ -62,3 +62,14 @@ test("parseFields accepts a comma string or an array", () => {
   assert.deepEqual(parseFields(["a", "b.c"]), ["a", "b.c"]);
   assert.equal(parseFields(undefined), undefined);
 });
+
+test("validate reports inherited names like constructor as unknown", () => {
+  const s = { type: "object", properties: { a: { type: "integer" } }, additionalProperties: false };
+  assert.throws(() => validate(s, JSON.parse('{"constructor":1}')), /unknown argument constructor/);
+  assert.throws(() => validate(s, JSON.parse('{"toString":1}')), /unknown argument toString/);
+});
+
+test("compact leaves non-plain objects such as Date alone", () => {
+  const d = new Date(0);
+  assert.equal(compact({ when: d }).when, d);
+});
