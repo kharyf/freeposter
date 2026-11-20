@@ -15,8 +15,9 @@
 // WanGP speech and music aren't production shots, so they borrow the production worker's GPU lane (borrowGpu): they
 // run only while no GPU shot is running, one at a time, and no GPU shot starts while they run.
 // One task failing never stops another: each step is caught per task, and a failure is told to the user.
-import { existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { defaultSetId, defaultTikTok, setAccounts } from "../accounts.ts";
 import { OverBudget } from "../ai/budget.ts";
 import type { AiService } from "../ai/router.ts";
@@ -602,7 +603,10 @@ export class CampaignWorker {
   /** brief.requested, once per round of the task's brief. */
   private announceBrief(t: CampaignTask, brief: Brief, lookName: string, round: number) {
     const { name, what } = this.describe(t);
-    const posts = brief.postAt === null ? "a video to keep" : `posting ${new Date(brief.postAt).toLocaleString()}`;
+    // No post time on a video meant to post (a retry too late for its slot) posts at the next free time.
+    const keeping = (t.choices as unknown as TaskChoices).postTime === null;
+    const posts = brief.postAt !== null ? `posting ${new Date(brief.postAt).toLocaleString()}`
+      : keeping ? "a video to keep" : "posting at the next free time once approved";
     const launching = this.launching();
     const next = launching ? "FreePoster is starting Claude on this computer to make it; don't claim it" : `call claim_brief with task_id ${t.id}`;
     queueEvent(this.store, "brief.requested", `brief.requested:${t.id}:${round}`,
@@ -742,8 +746,10 @@ export class CampaignWorker {
       : delivery ? { caption: delivery.caption ?? "", title: delivery.title ?? "" } : this.scriptOf(t);
     if (!text) return this.fail(t.id, "its script is missing");
     // An agent's film with no style is reviewed as it was delivered.
+    // An agent's film goes under its look's name (or the kept video's), not its bare file name.
+    const filmName = delivery ? lookByKey(this.store, delivery.manifest.look)?.name ?? c.libraryName ?? delivery.manifest.look : undefined;
     const subject: Subject = file?.choice?.raw ? { kind: "file", path: file.sourcePath!, name: file.choice.name }
-      : delivery && t.editId === null ? { kind: "file", path: delivery.path } : { kind: "edit", id: t.editId! };
+      : delivery && t.editId === null ? { kind: "file", path: delivery.path, name: filmName } : { kind: "edit", id: t.editId! };
     const keep = t.kind !== "post" && c.libraryName ? c.libraryName : undefined;
     const planned = c.postTime ? localAt(t.date, c.postTime) : null;
     const q: ReviewRequest = {
@@ -1269,7 +1275,17 @@ export class CampaignWorker {
    */
   owns(s: Subject): boolean {
     if (s.kind === "file") {
-      return this.store.db.prepare("SELECT 1 FROM campaign_tasks WHERE json_extract(choices, '$.delivery.path') = ? LIMIT 1").get(s.path) !== undefined;
+      const films = this.store.db.prepare(
+        "SELECT json_extract(choices, '$.delivery.path') AS path, json_extract(choices, '$.delivery.hash') AS hash FROM campaign_tasks WHERE json_extract(choices, '$.delivery.path') IS NOT NULL",
+      ).all() as { path: string; hash: string | null }[];
+      if (!films.length) return false;
+      // The same path however it's written (relative, "..", or another case on Windows), or the same film copied.
+      const key = (p: string) => (process.platform === "win32" ? resolve(p).toLowerCase() : resolve(p));
+      const want = key(s.path);
+      if (films.some((f) => key(f.path) === want)) return true;
+      if (!existsSync(s.path) || !statSync(s.path).isFile()) return false;
+      const hash = createHash("sha256").update(readFileSync(s.path)).digest("hex");
+      return films.some((f) => f.hash === hash);
     }
     return campaignTaskFor(this.store, s.kind, s.id) !== null;
   }

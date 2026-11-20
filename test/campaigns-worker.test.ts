@@ -1266,6 +1266,51 @@ test("an agent's delivered film can't be sent for review another way", async () 
   );
 });
 
+test("a late retry's brief, with no slot left, isn't announced as a video to keep", async () => {
+  const s = agentSetup();
+  const film = join(tmp(), "late.mp4");
+  copyFileSync(clips[2], film);
+  await s.deliver({ clip: film });
+  s.worker.fail(s.task.id, "something broke");
+  rmSync(film);
+  s.clock.now = at(2026, 11, 17, 17, 45); // past the slot's deadline: wanted within a day, placed like a later approval
+  assert.equal(s.worker.retryTask(s.task.id), null);
+  const c = s.cs.task(s.task.id)!.choices as any;
+  assert.equal(c.brief.postAt, null);
+  const summary = JSON.parse(s.store.eventByKey(`brief.requested:${s.task.id}:2`)!.body).summary;
+  assert.doesNotMatch(summary, /a video to keep/);
+  assert.match(summary, /posting at the next free time once approved/);
+});
+
+test("an agent's film with no style is reviewed under its look's name", async () => {
+  const s = setup();
+  syncLooks(s.store, "lemo-opuscar", [LOOK]);
+  const plain = s.cs.addEntry({ kind: "cta", name: "follow", text: "Follow for more" });
+  const id = tableCampaign(s, [tableRow(s, { origin: "agent", style: null, look: LOOK.key, time: "18:00", sec: 5, cta: { pick: "named", id: plain } })]);
+  s.worker.materialize();
+  const [t] = s.cs.tasksOn(id, "2026-11-17");
+  s.clock.now = at(2026, 11, 17, 12);
+  await s.tick();
+  const token = claimed(s.cs, t.id, "agent-1", s.clock.now);
+  // No caption: the review writes one, and is told what the video is.
+  const out = await submitBrief(s.store, s.cs, t.id, token, { videoPath: clips[2], manifest: { look: LOOK.key, libraryVersion: "1.4.0" } }, s.clock.now);
+  assert.ok(out.ok, out.ok ? "" : out.error);
+  await s.tick();
+  const r = s.reviews.reviews.get(s.cs.task(t.id)!.reviewId!)!;
+  assert.equal(r.draft.captionTopic, LOOK.name, "the look's name, not the bare file name");
+});
+
+test("a delivered film is recognised by its content, or its path written another way", async () => {
+  const s = agentSetup();
+  await s.deliver();
+  const copy = join(tmp(), "copy.mp4");
+  copyFileSync(clips[2], copy);
+  assert.equal(s.worker.owns({ kind: "file", path: copy }), true, "the same film under another name");
+  if (process.platform === "win32") assert.equal(s.worker.owns({ kind: "file", path: clips[2].toUpperCase() }), true);
+  assert.equal(s.worker.owns({ kind: "file", path: join(clips[2], "..", ".", "clip2.mp4") }), true, "the same path, not normalized");
+  assert.equal(s.worker.owns({ kind: "file", path: clips[3] }), false);
+});
+
 test("a post line posts a kept agent film as it was delivered, labelled with its look", async () => {
   const s = setup();
   syncLooks(s.store, "lemo-opuscar", [LOOK]);
