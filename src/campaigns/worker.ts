@@ -32,7 +32,7 @@ import { generateMusic, generateSpeech } from "../produce/wan-audio.ts";
 import { hashFile } from "../review/media.ts";
 import type { ReviewRequest, ReviewService, Subject } from "../review/service.ts";
 import { ROW_INSTRUCTION_BASE } from "./rows.ts";
-import { BRIEF_LEAD_HOURS, MAX_BRIEF_OFFERS, REVIEW_BUFFER_MINUTES, buildBrief, giveUpBrief, type Brief, type Delivery } from "./briefs.ts";
+import { BRIEF_LEAD_HOURS, LAUNCH_PREF, MAX_BRIEF_OFFERS, REVIEW_BUFFER_MINUTES, buildBrief, giveUpBrief, type Brief, type Delivery, type Lease } from "./briefs.ts";
 import { lookByKey, type Look } from "./looks.ts";
 import { buildGeneratedProduction, writeScript, type Script } from "./script.ts";
 import { DAYS, type MakeInstruction, type Pick as ValuePick, type PostInstruction } from "./spec.ts";
@@ -94,7 +94,7 @@ export interface TaskChoices {
   /** an agent film: what the agent is asked to make */
   brief?: Brief;
   /** the agent that has claimed the brief, until the time given */
-  lease?: { holder: string; until: number };
+  lease?: Lease;
   /** how many times the brief has been claimed */
   offers?: number;
   /** which brief this is: 1, then one more for each retry, so each round's events are told afresh */
@@ -579,13 +579,23 @@ export class CampaignWorker {
     log(t, `brief for a ${key} film, due by ${new Date(brief.deadline).toLocaleString()}`);
   }
 
+  /** Whether FreePoster starts Claude itself for open briefs (the launcher is on), so no other agent should claim them. */
+  private launching(): boolean {
+    return this.store.pref<boolean>(LAUNCH_PREF) === true;
+  }
+
   /** brief.requested, once per round of the task's brief. */
   private announceBrief(t: CampaignTask, brief: Brief, lookName: string, round: number) {
     const { name, what } = this.describe(t);
     const posts = brief.postAt === null ? "a video to keep" : `posting ${new Date(brief.postAt).toLocaleString()}`;
+    const launching = this.launching();
+    const next = launching ? "FreePoster is starting Claude on this computer to make it; don't claim it" : `call claim_brief with task_id ${t.id}`;
     queueEvent(this.store, "brief.requested", `brief.requested:${t.id}:${round}`,
-      { campaign_id: t.campaignId, task_id: t.id, campaign_task_id: t.id, look: brief.look, deadline: new Date(brief.deadline).toISOString(), post_at: brief.postAt === null ? null : new Date(brief.postAt).toISOString() },
-      `Campaign "${name}" wants a ${lookName} (${brief.look}) film for ${what} (${posts}), delivered by ${new Date(brief.deadline).toLocaleString()}: call claim_brief with task_id ${t.id}`);
+      {
+        campaign_id: t.campaignId, task_id: t.id, campaign_task_id: t.id, look: brief.look, deadline: new Date(brief.deadline).toISOString(), post_at: brief.postAt === null ? null : new Date(brief.postAt).toISOString(),
+        ...(launching ? { handled_by: "freeposter" } : {}),
+      },
+      `Campaign "${name}" wants a ${lookName} (${brief.look}) film for ${what} (${posts}), delivered by ${new Date(brief.deadline).toLocaleString()}: ${next}`);
   }
 
   /** No film by the deadline: the slot is skipped. */
@@ -608,9 +618,13 @@ export class CampaignWorker {
     if (!c.lease || c.lease.until > now) return;
     const offers = c.offers ?? 0;
     const last = offers >= MAX_BRIEF_OFFERS;
+    const launching = this.launching();
+    const next = last ? "it has no offers left"
+      : launching ? "FreePoster is starting Claude on this computer for it again; don't claim it"
+      : `call claim_brief with task_id ${t.id} to take it on`;
     queueEvent(this.store, "brief.expired", `brief.expired:${t.id}:${c.briefRound ?? 1}:${offers}`,
-      { campaign_id: t.campaignId, task_id: t.id, campaign_task_id: t.id, look: c.brief.look, holder: c.lease.holder, offers },
-      `${c.lease.holder}'s lease on the brief for task ${t.id} ran out without a film; ${last ? "it has no offers left" : `call claim_brief with task_id ${t.id} to take it on`}`);
+      { campaign_id: t.campaignId, task_id: t.id, campaign_task_id: t.id, look: c.brief.look, holder: c.lease.holder, offers, ...(launching ? { handled_by: "freeposter" } : {}) },
+      `${c.lease.holder}'s lease on the brief for task ${t.id} ran out without a film; ${next}`);
     if (last) return this.fail(t.id, `no agent delivered after ${MAX_BRIEF_OFFERS} tries`);
     this.setChoices(t.id, { lease: undefined });
   }
@@ -1024,9 +1038,9 @@ export class CampaignWorker {
     return { name, what };
   }
 
-  /** The agent holding a brief gives it up: the task fails with its reason, and the user is told. */
-  giveUp(taskId: number, holder: string, reason: string): { ok: true } | { ok: false; error: string } {
-    const r = giveUpBrief(this.campaigns, taskId, holder, reason);
+  /** The agent holding a brief (by its claim token) gives it up: the task fails with its reason, and the user is told. */
+  giveUp(taskId: number, token: string, reason: string): { ok: true } | { ok: false; error: string } {
+    const r = giveUpBrief(this.campaigns, taskId, token, reason, this.now());
     if (r.ok) this.tell(this.campaigns.task(taskId)!, "campaign.failed", `the agent gave up: ${reason}`);
     return r;
   }

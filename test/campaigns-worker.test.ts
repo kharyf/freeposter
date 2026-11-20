@@ -848,6 +848,12 @@ test("Stop Campaign holds only its own posts and starts nothing new for it; Star
 
 const HOUR = 3_600_000;
 const LOOK = { key: "lemo:ukiyo-e", name: "Ukiyo-e", description: "woodblock prints", needsImageGen: false, libraryVersion: "1.4.0" };
+/** Claims a brief and returns the claim token. */
+const claimed = (cs: CampaignStore, id: number, holder: string, now: number) => {
+  const r = claimBrief(cs, id, holder, now);
+  assert.ok(r.ok, r.ok ? "" : r.error);
+  return r.token;
+};
 
 /** An Agent row on Tuesday at 18:00, 5 seconds long (clips[2] is 5 s), in the ukiyo-e look. */
 function agentSetup(extra: Partial<Row> = {}) {
@@ -861,8 +867,8 @@ function agentSetup(extra: Partial<Row> = {}) {
     s.clock.now = at(2026, 11, 17, 12);
     await s.tick();
     assert.equal(s.cs.task(t.id)!.state, "awaiting_agent", s.cs.task(t.id)!.error ?? "");
-    assert.ok(claimBrief(s.cs, t.id, "agent-1", s.clock.now).ok);
-    const out = await submitBrief(s.store, s.cs, t.id, "agent-1", {
+    const token = claimed(s.cs, t.id, "agent-1", s.clock.now);
+    const out = await submitBrief(s.store, s.cs, t.id, token, {
       videoPath: opts.clip ?? clips[2], manifest: { look: LOOK.key, libraryVersion: "1.4.0" },
       ...(opts.caption !== undefined ? { caption: opts.caption } : {}),
     }, s.clock.now);
@@ -895,6 +901,28 @@ test("an agent row waits until six hours before its slot, then posts a brief", a
   assert.equal(body.deadline, new Date(at(2026, 11, 17, 17, 30)).toISOString());
   assert.equal(body.post_at, new Date(at(2026, 11, 17, 18)).toISOString());
   assert.match(body.summary, new RegExp(`call claim_brief with task_id ${t.id}$`));
+});
+
+test("brief events say FreePoster handles them when the launcher is on", async () => {
+  const off = agentSetup();
+  off.clock.now = at(2026, 11, 17, 12);
+  await off.tick();
+  assert.equal(JSON.parse(off.events("brief.requested")[0].body).handled_by, undefined, "launcher off: an agent claims it");
+
+  const s = agentSetup();
+  s.store.setPref("agent.launch.enabled", true);
+  s.clock.now = at(2026, 11, 17, 12);
+  await s.tick();
+  const req = JSON.parse(s.events("brief.requested")[0].body);
+  assert.equal(req.handled_by, "freeposter");
+  assert.match(req.summary, /FreePoster is starting Claude/);
+  assert.doesNotMatch(req.summary, /call claim_brief/);
+  claimed(s.cs, s.task.id, "claude-code", s.clock.now);
+  s.clock.now += 121 * 60_000;
+  await s.tick();
+  const exp = JSON.parse(s.events("brief.expired")[0].body);
+  assert.equal(exp.handled_by, "freeposter");
+  assert.match(exp.summary, /FreePoster is starting Claude/);
 });
 
 test("an agent row never runs the script writer", async () => {
@@ -1011,7 +1039,7 @@ test("a claimed brief survives a new worker instance", async () => {
   const s = agentSetup();
   s.clock.now = at(2026, 11, 17, 12);
   await s.tick();
-  assert.ok(claimBrief(s.cs, s.task.id, "agent-1", s.clock.now).ok);
+  const token = claimed(s.cs, s.task.id, "agent-1", s.clock.now);
   // the app restarts mid-render: a fresh worker on the same database
   const worker = new CampaignWorker({ store: s.store, productions: s.worker.productions, reviews: s.reviews, ai: null, now: () => s.clock.now, dir: tmp() });
   s.clock.now += 30 * 60_000;
@@ -1020,7 +1048,7 @@ test("a claimed brief survives a new worker instance", async () => {
   assert.equal(t.state, "awaiting_agent");
   assert.equal((t.choices as any).lease.holder, "agent-1", "still claimed");
   assert.equal(claimBrief(s.cs, t.id, "agent-2", s.clock.now).ok, false, "nobody else can take it");
-  const out = await submitBrief(s.store, s.cs, t.id, "agent-1", { videoPath: clips[2], manifest: { look: LOOK.key, libraryVersion: "1.4.0" } }, s.clock.now);
+  const out = await submitBrief(s.store, s.cs, t.id, token, { videoPath: clips[2], manifest: { look: LOOK.key, libraryVersion: "1.4.0" } }, s.clock.now);
   assert.ok(out.ok, out.ok ? "" : out.error);
   await worker.tick(); await worker.idle();
   assert.equal(s.cs.task(t.id)!.state, "reviewing", s.cs.task(t.id)!.error ?? "");
@@ -1125,8 +1153,8 @@ test("a post line posts a kept agent film as it was delivered, labelled with its
   s.worker.materialize();
   const [make, post] = s.cs.tasksOn(id, "2026-11-17");
   await s.tick();
-  assert.ok(claimBrief(s.cs, make.id, "agent-1", s.clock.now).ok);
-  const out = await submitBrief(s.store, s.cs, make.id, "agent-1", { videoPath: clips[2], manifest: { look: LOOK.key, libraryVersion: "1.4.0" } }, s.clock.now);
+  const token = claimed(s.cs, make.id, "agent-1", s.clock.now);
+  const out = await submitBrief(s.store, s.cs, make.id, token, { videoPath: clips[2], manifest: { look: LOOK.key, libraryVersion: "1.4.0" } }, s.clock.now);
   assert.ok(out.ok, out.ok ? "" : out.error);
   await s.tick();
   await s.approve(make.id);

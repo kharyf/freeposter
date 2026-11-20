@@ -36,7 +36,7 @@ export const EVENT_GUIDE = `- production.ready or edit.ready: show the user the 
 - review.failed, production.failed, edit.failed: tell them what failed and offer to fix it.
 - review.expired: ask whether it should still go out; if so, request_review again.
 - post.done: give them the links.
-- brief.requested or brief.expired: call claim_brief with its task_id, make the film the brief describes with the lemo-opuscar skill without asking questions, then submit_brief. If you can't, give_up_brief with the reason.
+- brief.requested or brief.expired: if handled_by is "freeposter", don't claim it: FreePoster is starting Claude for it, so just tell the user in one line. Otherwise call claim_brief with its task_id (keep the claim_token it returns for renew_brief, submit_brief and give_up_brief), make the film the brief describes with the lemo-opuscar skill without asking questions, then submit_brief. If you can't, give_up_brief with the reason.
 - review.waiting, review.approved: nothing to do but tell them where things stand if they ask.
 You can't approve anything. If the user says "yes" to you, remind them to tap Approve on the review.`;
 

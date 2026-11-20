@@ -1,5 +1,6 @@
 // Briefs: what an agent film waits as. A task for an agent holds a brief; an agent claims it under a time-limited
 // lease and delivers a finished video file, which is checked here before the worker takes it on.
+import { randomUUID } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import type { Store } from "../db.ts";
@@ -15,6 +16,8 @@ export const LEASE_MINUTES = 120;
 /** The time kept between a delivery and its post time for the review. */
 export const REVIEW_BUFFER_MINUTES = 30;
 export const MAX_BRIEF_OFFERS = 2;
+/** The pref that turns on the local launcher (FreePoster starts Claude itself for each open brief). */
+export const LAUNCH_PREF = "agent.launch.enabled";
 
 const MIN = 60_000;
 const DAY = 24 * 3_600_000;
@@ -43,7 +46,19 @@ export interface Delivery {
   deliveredAt: number;
 }
 
-type Leased = { ok: true; brief: Brief; leaseUntil: number } | { ok: false; error: string };
+/**
+ * A claim on a brief. The token is the claim's own identity: only whoever holds it may renew, deliver or give up, so
+ * two agents under one client name can never both hold it. The holder (the MCP client's name) is shown and logged.
+ */
+export interface Lease {
+  holder: string;
+  until: number;
+  token: string;
+  /** when this claim was taken (a renewal keeps it) */
+  claimedAt: number;
+}
+
+type Leased = { ok: true; brief: Brief; leaseUntil: number; token: string } | { ok: false; error: string };
 
 const fail = (error: string) => ({ ok: false as const, error });
 const choicesOf = (t: CampaignTask) => t.choices as unknown as TaskChoices;
@@ -69,12 +84,22 @@ export function buildBrief(store: Store, c: TaskChoices, look: Look, postAt: num
 
 const leaseLive = (c: TaskChoices, now: number) => Boolean(c.lease && c.lease.until > now);
 
-/** Briefs an agent could claim now: no lease, or one that has run out. */
+/** Briefs an agent could claim now: no lease, or one that has run out, and never while its campaign is stopped. */
 export function openBriefs(cs: CampaignStore, now: number): CampaignTask[] {
+  if (cs.killed()) return [];
   return cs.tasksIn(["awaiting_agent"]).filter((t) => {
     const c = choicesOf(t);
-    return c.brief && !c.delivery && !leaseLive(c, now);
+    return c.brief && !c.delivery && !leaseLive(c, now) && cs.campaign(t.campaignId)?.enabled === true;
   });
+}
+
+const OTHER_CLAIM = "this brief is claimed under another claim; call claim_brief to get your own";
+
+/** Why this token can't act on the task's lease now, or null when it holds a live one. */
+function notHeld(c: TaskChoices, taskId: number, token: string, now: number): string | null {
+  if (!c.lease || !token || c.lease.token !== token) return OTHER_CLAIM;
+  if (!leaseLive(c, now)) return `your lease on task ${taskId} has run out; claim it again`;
+  return null;
 }
 
 /** Why a task can't be worked on, or null when it has an open brief. */
@@ -84,46 +109,52 @@ function refusal(cs: CampaignStore, t: CampaignTask | undefined, taskId: number)
   return null;
 }
 
-function lease(cs: CampaignStore, t: CampaignTask, holder: string, now: number, offers: number): Leased {
+function lease(cs: CampaignStore, t: CampaignTask, l: Omit<Lease, "until">, now: number, offers: number): Leased {
   const brief = choicesOf(t).brief!;
   const until = Math.min(now + LEASE_MINUTES * MIN, brief.deadline);
-  cs.updateTask(t.id, { choices: { ...t.choices, lease: { holder, until }, offers } });
-  return { ok: true, brief, leaseUntil: until };
+  cs.updateTask(t.id, { choices: { ...t.choices, lease: { ...l, until }, offers } });
+  return { ok: true, brief, leaseUntil: until, token: l.token };
 }
 
-export function claimBrief(cs: CampaignStore, taskId: number, holder: string, now: number): Leased {
+/**
+ * Takes a brief under a new claim, whose token is returned. While a claim is live, only its own token claims again
+ * (and gets the same lease back); anyone else, under any name, is refused.
+ */
+export function claimBrief(cs: CampaignStore, taskId: number, holder: string, now: number, token?: string): Leased {
   const t = cs.task(taskId);
   const why = refusal(cs, t, taskId);
   if (why) return fail(why);
   const c = choicesOf(t!);
   if (leaseLive(c, now)) {
-    if (c.lease!.holder !== holder) return fail(`claimed by ${c.lease!.holder} until ${iso(c.lease!.until)}`);
-    return { ok: true, brief: c.brief!, leaseUntil: c.lease!.until };
+    if (!token || c.lease!.token !== token) return fail(`claimed by ${c.lease!.holder} until ${iso(c.lease!.until)}`);
+    return { ok: true, brief: c.brief!, leaseUntil: c.lease!.until, token };
   }
   if (c.brief!.deadline <= now) return fail(`the deadline for task ${taskId} has passed`);
   const offers = c.offers ?? 0;
   if (offers >= MAX_BRIEF_OFFERS) return fail(`no offers left for task ${taskId}`);
-  return lease(cs, t!, holder, now, offers + 1);
+  return lease(cs, t!, { holder, token: randomUUID(), claimedAt: now }, now, offers + 1);
 }
 
-/** The holder's lease runs another stretch, never past the brief's deadline. */
-export function renewBrief(cs: CampaignStore, taskId: number, holder: string, now: number): Leased {
+/** The claim's lease runs another stretch, never past the brief's deadline. */
+export function renewBrief(cs: CampaignStore, taskId: number, token: string, now: number): Leased {
   const t = cs.task(taskId);
   const why = refusal(cs, t, taskId);
   if (why) return fail(why);
   const c = choicesOf(t!);
-  if (!leaseLive(c, now) || c.lease!.holder !== holder) return fail(`you do not hold a lease on task ${taskId}`);
-  return lease(cs, t!, holder, now, c.offers ?? 1);
+  const held = notHeld(c, taskId, token, now);
+  if (held) return fail(held);
+  const { holder, claimedAt } = c.lease!;
+  return lease(cs, t!, { holder, token, claimedAt: claimedAt ?? now }, now, c.offers ?? 1);
 }
 
 /** Whether a delivery may be written now (the task, its campaign, deadline, lease and file's uniqueness); the refusal if not. */
-function checkSubmit(cs: CampaignStore, t: CampaignTask | undefined, taskId: number, holder: string, hash: string, now: number) {
+function checkSubmit(cs: CampaignStore, t: CampaignTask | undefined, taskId: number, token: string, hash: string, now: number) {
   const why = refusal(cs, t, taskId);
   if (why) return fail(why);
   const c = choicesOf(t!);
   if (c.brief!.deadline < now) return fail(`the deadline for task ${taskId} has passed`);
-  if (!leaseLive(c, now)) return fail(`your lease on task ${taskId} has run out; claim it again`);
-  if (c.lease!.holder !== holder) return fail(`claimed by ${c.lease!.holder} until ${iso(c.lease!.until)}`);
+  const held = notHeld(c, taskId, token, now);
+  if (held) return fail(held);
   for (const other of cs.tasksIn(["awaiting_agent", "editing", "reviewing", "scheduled", "posted", "kept"])) {
     if (other.id !== taskId && choicesOf(other).delivery?.hash === hash) return fail(`this file was already delivered for task ${other.id}`);
   }
@@ -131,7 +162,7 @@ function checkSubmit(cs: CampaignStore, t: CampaignTask | undefined, taskId: num
 }
 
 export async function submitBrief(
-  _store: Store, cs: CampaignStore, taskId: number, holder: string,
+  _store: Store, cs: CampaignStore, taskId: number, token: string,
   input: { videoPath: string; manifest: Delivery["manifest"]; caption?: string; title?: string }, now: number,
 ): Promise<{ ok: true; repeat: boolean } | { ok: false; error: string }> {
   const t = cs.task(taskId);
@@ -144,7 +175,7 @@ export async function submitBrief(
   const done = choicesOf(t).delivery;
   if (done) return done.hash === hash ? { ok: true, repeat: true } : fail(`task ${taskId} already has a delivery`);
 
-  const early = checkSubmit(cs, t, taskId, holder, hash, now);
+  const early = checkSubmit(cs, t, taskId, token, hash, now);
   if (early) return early;
   const brief = choicesOf(t).brief!;
 
@@ -165,7 +196,7 @@ export async function submitBrief(
   // The task may have moved on while the file was read: check again, then write without waiting.
   const fresh = cs.task(taskId);
   if (fresh && choicesOf(fresh).delivery?.hash === hash) return { ok: true, repeat: true };
-  const late = checkSubmit(cs, fresh, taskId, holder, hash, now);
+  const late = checkSubmit(cs, fresh, taskId, token, hash, now);
   if (late) return late;
   const delivery: Delivery = {
     path, hash, durationSec: p.durationSec, manifest: input.manifest,
@@ -178,12 +209,12 @@ export async function submitBrief(
   return { ok: true, repeat: false };
 }
 
-/** The holder stops: the task fails with the agent's reason. */
-export function giveUpBrief(cs: CampaignStore, taskId: number, holder: string, reason: string): { ok: true } | { ok: false; error: string } {
+/** The claim's holder stops while its lease is live: the task fails with the agent's reason. */
+export function giveUpBrief(cs: CampaignStore, taskId: number, token: string, reason: string, now: number): { ok: true } | { ok: false; error: string } {
   const t = cs.task(taskId);
   if (!t || t.state !== "awaiting_agent" || !choicesOf(t).brief) return fail(`task ${taskId} has no open brief`);
-  const c = choicesOf(t);
-  if (!c.lease || c.lease.holder !== holder) return fail(`you do not hold a lease on task ${taskId}`);
+  const held = notHeld(choicesOf(t), taskId, token, now);
+  if (held) return fail(held);
   cs.updateTask(taskId, { state: "failed", error: `the agent gave up: ${reason}` });
   return { ok: true };
 }

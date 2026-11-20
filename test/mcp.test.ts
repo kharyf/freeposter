@@ -457,10 +457,14 @@ test("agent tools are listed", async () => {
     assert.ok(!("holder" in t.inputSchema.properties), "the agent never names the holder");
   }
   const { EVENT_GUIDE } = await import("../src/mcp.ts");
-  assert.match(EVENT_GUIDE, /brief\.requested or brief\.expired: call claim_brief/);
+  assert.match(EVENT_GUIDE, /brief\.requested or brief\.expired: if handled_by is "freeposter", don't claim it/);
+  assert.match(EVENT_GUIDE, /Otherwise call claim_brief/);
+  for (const name of ["renew_brief", "submit_brief", "give_up_brief"]) {
+    assert.ok(tools.find((x: any) => x.name === name).inputSchema.required.includes("claim_token"), `${name} needs the claim token`);
+  }
 });
 
-test("claim_brief through MCP uses the client name as holder", async () => {
+test("claim_brief through MCP uses the client name as holder and returns a claim token", async () => {
   const { rpc, call, worker } = setup({ campaigns: true });
   await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "codex", version: "1" } });
   const { taskId } = briefTask(worker!.campaigns);
@@ -472,8 +476,18 @@ test("claim_brief through MCP uses the client name as holder", async () => {
   assert.match(got.lease_until, /^\d{4}-\d\d-\d\dT/);
   assert.match(got.next, /renew_brief/);
   assert.match(got.next, /give_up_brief/);
+  assert.match(got.claim_token, /^[0-9a-f-]{36}$/);
   assert.equal((worker!.campaigns.task(taskId)!.choices as any).lease.holder, "codex");
-  assert.equal((await call("renew_brief", { task_id: taskId })).isError, undefined);
+  // Another client under the same name doesn't get it, and can't renew it without the token.
+  const twin = await call("claim_brief", { task_id: taskId });
+  assert.equal(twin.isError, true);
+  assert.match(twin.content[0].text, /claimed by codex until/);
+  const noToken = await call("renew_brief", { task_id: taskId });
+  assert.equal(noToken.isError, true);
+  assert.match(noToken.content[0].text, /claimed under another claim; call claim_brief to get your own/);
+  const mine = (await call("claim_brief", { task_id: taskId, claim_token: got.claim_token })).structuredContent;
+  assert.equal(mine.claim_token, got.claim_token, "claiming with the token is idempotent");
+  assert.equal((await call("renew_brief", { task_id: taskId, claim_token: got.claim_token })).isError, undefined);
   assert.equal((await call("list_briefs")).structuredContent.briefs.length, 0, "a leased brief isn't open");
 });
 
@@ -488,11 +502,11 @@ test("submit_brief delivers the file for the brief's own look", async () => {
   const { rpc, call, worker, dir } = setup({ campaigns: true });
   await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "codex", version: "1" } });
   const { taskId } = briefTask(worker!.campaigns);
-  await call("claim_brief", { task_id: taskId });
+  const { claim_token } = (await call("claim_brief", { task_id: taskId })).structuredContent;
   const video = verticalSilent(dir);
-  const r = (await call("submit_brief", { task_id: taskId, video_path: video, library_version: "3", look: "lemo:other" })).isError;
+  const r = (await call("submit_brief", { task_id: taskId, claim_token, video_path: video, library_version: "3", look: "lemo:other" })).isError;
   assert.equal(r, true, "an unknown field is refused");
-  const ok = (await call("submit_brief", { task_id: taskId, video_path: video, library_version: "3", caption: "hi" })).structuredContent;
+  const ok = (await call("submit_brief", { task_id: taskId, claim_token, video_path: video, library_version: "3", caption: "hi" })).structuredContent;
   assert.equal(ok.ok, true);
   assert.equal(ok.repeat, false);
   assert.match(ok.next, /request_review/);
@@ -518,8 +532,8 @@ test("give_up_brief tells the user", async () => {
     const { rpc, call, worker, store } = setup({ campaigns });
     await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "codex", version: "1" } });
     const { taskId } = briefTask(worker?.campaigns ?? new CampaignStore(store));
-    await call("claim_brief", { task_id: taskId });
-    const r = await call("give_up_brief", { task_id: taskId, reason: "no image generator" });
+    const { claim_token } = (await call("claim_brief", { task_id: taskId })).structuredContent;
+    const r = await call("give_up_brief", { task_id: taskId, claim_token, reason: "no image generator" });
     assert.equal(r.isError, undefined, JSON.stringify(r));
     const events = (await call("list_events")).structuredContent.events.filter((e: any) => e.event_type === "campaign.failed");
     assert.equal(events.length, 1, `worker running: ${campaigns}`);

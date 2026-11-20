@@ -8,11 +8,11 @@ import { lastWords, planEnv, type ProgramRun } from "../ai/cli.ts";
 import { findClaude } from "../claude.ts";
 import { codeDir, config, dataDir } from "../config.ts";
 import type { Store } from "../db.ts";
-import { LEASE_MINUTES, openBriefs } from "./briefs.ts";
+import { LAUNCH_PREF, LEASE_MINUTES, openBriefs } from "./briefs.ts";
 import type { CampaignStore } from "./store.ts";
 import type { Productions } from "./worker.ts";
 
-export const ENABLED_PREF = "agent.launch.enabled";
+export const ENABLED_PREF = LAUNCH_PREF;
 export const STATUS_PREF = "agent.launch.status";
 const MIN = 60_000;
 
