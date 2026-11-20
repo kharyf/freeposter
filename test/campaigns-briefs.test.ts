@@ -143,3 +143,46 @@ test("give up fails the task with the agent's reason", () => {
   assert.equal(t.state, "failed");
   assert.equal(t.error, "the agent gave up: no image model");
 });
+
+test("concurrent submits of one file: the same task repeats, another task is refused", async () => {
+  const { cs, store, id, add } = setup();
+  const id2 = add(2);
+  claimBrief(cs, id, "A", T0);
+  claimBrief(cs, id2, "A", T0);
+  const [a, b] = await Promise.all([
+    submitBrief(store, cs, id, "A", { videoPath: portrait30, manifest }, T0 + MIN),
+    submitBrief(store, cs, id, "A", { videoPath: portrait30, manifest }, T0 + MIN),
+  ]);
+  assert.ok(a.ok && b.ok && a.repeat !== b.repeat, JSON.stringify([a, b]));
+  const { cs: cs2, store: store2, id: i1, add: add2 } = setup();
+  const i2 = add2(2);
+  claimBrief(cs2, i1, "A", T0);
+  claimBrief(cs2, i2, "A", T0);
+  const rs = await Promise.all([i1, i2].map((i) => submitBrief(store2, cs2, i, "A", { videoPath: portrait30, manifest }, T0 + MIN)));
+  assert.equal(rs.filter((r) => r.ok).length, 1, JSON.stringify(rs));
+  assert.match(rs.find((r) => !r.ok)!.ok === false ? (rs.find((r) => !r.ok) as { error: string }).error : "", /already delivered for task/);
+});
+
+test("a give-up, stop or kill during the check stops the delivery", async () => {
+  const s = setup();
+  claimBrief(s.cs, s.id, "A", T0);
+  const p = submitBrief(s.store, s.cs, s.id, "A", { videoPath: portrait30, manifest }, T0 + MIN);
+  giveUpBrief(s.cs, s.id, "A", "changed my mind");
+  const r = await p;
+  assert.ok(!r.ok);
+  assert.equal(ch(s.cs, s.id).delivery, undefined);
+  const s2 = setup();
+  claimBrief(s2.cs, s2.id, "A", T0);
+  const p2 = submitBrief(s2.store, s2.cs, s2.id, "A", { videoPath: portrait30, manifest }, T0 + MIN);
+  s2.cs.setEnabled(s2.campaignId, false);
+  const r2 = await p2;
+  assert.ok(!r2.ok && /campaign is stopped/.test(r2.error));
+  assert.equal(ch(s2.cs, s2.id).delivery, undefined);
+});
+
+test("a holder submitting after its lease expired but before the deadline is refused", async () => {
+  const { cs, store, id } = setup();
+  claimBrief(cs, id, "A", T0);
+  const r = await submitBrief(store, cs, id, "A", { videoPath: portrait30, manifest }, T0 + 121 * MIN);
+  assert.ok(!r.ok && /lease/.test(r.error));
+});

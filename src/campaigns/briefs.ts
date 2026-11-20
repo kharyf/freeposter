@@ -116,6 +116,20 @@ export function renewBrief(cs: CampaignStore, taskId: number, holder: string, no
   return lease(cs, t!, holder, now, c.offers ?? 1);
 }
 
+/** Whether a delivery may be written now (the task, its campaign, deadline, lease and file's uniqueness); the refusal if not. */
+function checkSubmit(cs: CampaignStore, t: CampaignTask | undefined, taskId: number, holder: string, hash: string, now: number) {
+  const why = refusal(cs, t, taskId);
+  if (why) return fail(why);
+  const c = choicesOf(t!);
+  if (c.brief!.deadline < now) return fail(`the deadline for task ${taskId} has passed`);
+  if (!leaseLive(c, now)) return fail(`your lease on task ${taskId} has run out; claim it again`);
+  if (c.lease!.holder !== holder) return fail(`claimed by ${c.lease!.holder} until ${iso(c.lease!.until)}`);
+  for (const other of cs.tasksIn(["awaiting_agent", "editing", "reviewing", "scheduled", "posted", "kept"])) {
+    if (other.id !== taskId && choicesOf(other).delivery?.hash === hash) return fail(`this file was already delivered for task ${other.id}`);
+  }
+  return null;
+}
+
 export async function submitBrief(
   _store: Store, cs: CampaignStore, taskId: number, holder: string,
   input: { videoPath: string; manifest: Delivery["manifest"]; caption?: string; title?: string }, now: number,
@@ -130,17 +144,9 @@ export async function submitBrief(
   const done = choicesOf(t).delivery;
   if (done) return done.hash === hash ? { ok: true, repeat: true } : fail(`task ${taskId} already has a delivery`);
 
-  const why = refusal(cs, t, taskId);
-  if (why) return fail(why);
-  const c = choicesOf(t);
-  const brief = c.brief!;
-  if (brief.deadline < now) return fail(`the deadline for task ${taskId} has passed`);
-  if (!leaseLive(c, now)) return fail(`your lease on task ${taskId} has run out; claim it again`);
-  if (c.lease!.holder !== holder) return fail(`claimed by ${c.lease!.holder} until ${iso(c.lease!.until)}`);
-
-  for (const other of cs.tasksIn(["awaiting_agent", "editing", "reviewing", "scheduled", "posted", "kept"])) {
-    if (other.id !== taskId && choicesOf(other).delivery?.hash === hash) return fail(`this file was already delivered for task ${other.id}`);
-  }
+  const early = checkSubmit(cs, t, taskId, holder, hash, now);
+  if (early) return early;
+  const brief = choicesOf(t).brief!;
 
   let p;
   try { p = await probe(path); } catch (err) { return fail((err as Error).message); }
@@ -156,16 +162,18 @@ export async function submitBrief(
     }
   }
 
-  // The task may have moved on while the file was read.
+  // The task may have moved on while the file was read: check again, then write without waiting.
   const fresh = cs.task(taskId);
-  if (!fresh || choicesOf(fresh).delivery || choicesOf(fresh).lease?.holder !== holder) return fail(`task ${taskId} changed while the film was checked; try again`);
+  if (fresh && choicesOf(fresh).delivery?.hash === hash) return { ok: true, repeat: true };
+  const late = checkSubmit(cs, fresh, taskId, holder, hash, now);
+  if (late) return late;
   const delivery: Delivery = {
     path, hash, durationSec: p.durationSec, manifest: input.manifest,
     ...(input.caption !== undefined ? { caption: input.caption } : {}),
     ...(input.title !== undefined ? { title: input.title } : {}),
     deliveredAt: now,
   };
-  const { lease: _released, ...rest } = fresh.choices as Record<string, unknown>;
+  const { lease: _released, ...rest } = fresh!.choices as Record<string, unknown>;
   cs.updateTask(taskId, { choices: { ...rest, delivery } });
   return { ok: true, repeat: false };
 }
