@@ -4,7 +4,7 @@ import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { format } from "node:util";
 import { startApp, type RunningApp } from "./app.ts";
-import { codeDir, config, dataDir, packaged } from "./config.ts";
+import { appLabel, codeDir, config, dataDir, packaged } from "./config.ts";
 
 // The installed app has no console, so its output goes to a log file next to the data.
 if (packaged) {
@@ -19,9 +19,11 @@ if (packaged) {
 const origin = `http://localhost:${config.port}`;
 const icon = nativeImage.createFromPath(join(codeDir, "icon.png"));
 // Taskbar grouping and notifications under FreePoster's own name; must match appId in scripts/build-app.ts,
-// the id the installer gives the Start menu shortcut.
-app.setAppUserModelId("com.freeposter.app");
-app.setPath("userData", join(dataDir, "window")); // keep Chromium's files out of the settings folder
+// the id the installer gives the Start menu shortcut. A source checkout groups apart from the installed app.
+app.setAppUserModelId(packaged ? "com.freeposter.app" : "com.freeposter.app.dev");
+// Keep Chromium's files out of the settings folder. The single-instance lock follows this folder, so the
+// installed app and a source checkout (different data folders) run at the same time.
+app.setPath("userData", join(dataDir, "window"));
 
 let window: BrowserWindow | undefined;
 let tray: Tray | undefined;
@@ -61,7 +63,7 @@ function openOutside(url: string) {
 
 function createWindow(query = "") {
   window = new BrowserWindow({
-    title: "FreePoster",
+    title: appLabel,
     icon,
     width: 1280,
     height: 880,
@@ -73,6 +75,11 @@ function createWindow(query = "") {
     webPreferences: { contextIsolation: true, sandbox: true },
   });
   window.once("ready-to-show", () => window!.show());
+  // The page names the window; a source checkout says so, so it's never mistaken for the installed app.
+  if (!packaged) window.on("page-title-updated", (event, title) => {
+    event.preventDefault();
+    window!.setTitle(`${title} (dev)`);
+  });
   window.webContents.setWindowOpenHandler(({ url }) => {
     openOutside(url);
     return { action: "deny" };
@@ -99,15 +106,15 @@ function createWindow(query = "") {
 function showTray() {
   if (tray) return;
   tray = new Tray(icon.resize({ width: 16, height: 16 }));
-  tray.setToolTip("FreePoster: watching Google Drive and posting in the background");
+  tray.setToolTip(`${appLabel}: watching Google Drive and posting in the background`);
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: "Open FreePoster", click: () => show() },
+    { label: `Open ${appLabel}`, click: () => show() },
     { type: "separator" },
     { label: "Quit", click: () => void quit() },
   ]));
   tray.on("click", () => show());
   tray.displayBalloon?.({
-    title: "FreePoster is still running",
+    title: `${appLabel} is still running`,
     content: "Scheduled posts go out on time, and new videos in your Google Drive folder are picked up. Quit from this icon to stop.",
     iconType: "info",
   });
@@ -115,7 +122,7 @@ function showTray() {
   const exitWhenDone = setInterval(() => {
     // Drive needs the user (sign-in revoked, folder gone): say so once, from the tray.
     const error = running?.driveError() ?? null;
-    if (error && error !== shownError) tray?.displayBalloon?.({ title: "FreePoster: Google Drive stopped", content: error, iconType: "warning" });
+    if (error && error !== shownError) tray?.displayBalloon?.({ title: `${appLabel}: Google Drive stopped`, content: error, iconType: "warning" });
     shownError = error;
     if (windowOpen() && window!.isVisible()) return;
     if (!running?.keepAlive()) {
@@ -138,7 +145,7 @@ if (!app.requestSingleInstanceLock()) {
       running = await startApp({ onQuit: () => void quit(), onSignIn: (query) => show(query), showFolder: (path) => void shell.openPath(path) });
     } catch (err) {
       const e = err as NodeJS.ErrnoException;
-      dialog.showErrorBox("FreePoster", e.code === "EADDRINUSE"
+      dialog.showErrorBox(appLabel, e.code === "EADDRINUSE"
         ? `Port ${config.port} is used by another program. Close it, or change PORT in ${join(config.root, ".env")}.`
         : `FreePoster could not start: ${e.message}`);
       return app.exit(1);

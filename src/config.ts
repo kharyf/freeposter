@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseEnv } from "node:util";
@@ -14,33 +14,23 @@ export const packaged = Boolean(process.versions.electron) && !(process as { def
 export const codeDir = import.meta.dirname ? resolve(import.meta.dirname, "..") : __dirname;
 
 /**
- * Settings and data (.env, data/: the database with the connected accounts, and the key that encrypts their tokens)
- * live in one folder per user, however FreePoster is started: the installer, `npm run desktop` or `npm start`.
- * They used to live in the checkout when run from source, so moving between an installed version and a source build
- * (or updating from one to the other) opened an empty database and every account looked disconnected.
- * A per-user folder that doesn't exist yet starts as a copy of the checkout's settings and data, if it has any;
- * the checkout's copy is left as it was.
+ * Two editions live side by side on one computer, each with its own settings, data, port and window:
+ * - the installed app (the one you use): %APPDATA%\FreePoster, port 4400;
+ * - a source checkout (`npm start`, `npm run desktop`, tests): %APPDATA%\FreePoster-dev, port 4401.
+ * So developing never touches the accounts, posts and key the installed app runs on. `npm run dev:copy-home`
+ * makes the development folder a copy of the installed one when real data is needed, on purpose.
  */
-export function homeFolder(userDir: string, legacyDir?: string): string {
-  const hasData = (dir: string) => existsSync(join(dir, ".env")) || existsSync(join(dir, "data", "freeposter.db"));
-  if (legacyDir && resolve(legacyDir) !== resolve(userDir) && !hasData(userDir) && hasData(legacyDir)) {
-    mkdirSync(userDir, { recursive: true });
-    if (existsSync(join(legacyDir, ".env"))) cpSync(join(legacyDir, ".env"), join(userDir, ".env"));
-    // window/ is Chromium's cache, which the app rebuilds.
-    if (existsSync(join(legacyDir, "data"))) cpSync(join(legacyDir, "data"), join(userDir, "data"), {
-      recursive: true,
-      filter: (src) => resolve(src) !== resolve(legacyDir, "data", "window"),
-    });
-  }
-  return userDir;
+export const edition = packaged ? "installed" : "dev";
+export const DEFAULT_PORT = packaged ? 4400 : 4401;
+/** "FreePoster", or "FreePoster (dev)" for a source checkout: window titles, the tray and dialogs. */
+export const appLabel = packaged ? "FreePoster" : "FreePoster (dev)";
+
+/** The settings-and-data folder for an edition. FREEPOSTER_HOME overrides it (tests use it to keep theirs apart). */
+export function homeFor(installed: boolean, env: NodeJS.Dict<string> = process.env): string {
+  return env.FREEPOSTER_HOME?.trim() || join(env.APPDATA || homedir(), installed ? "FreePoster" : "FreePoster-dev");
 }
 
-// FREEPOSTER_HOME overrides it (tests use it to keep their .env and data away from yours).
-const root = process.env.FREEPOSTER_HOME?.trim() || homeFolder(
-  join(process.env.APPDATA || homedir(), "FreePoster"),
-  // Where a source checkout kept them before; the installed app always used the per-user folder.
-  packaged ? undefined : import.meta.dirname ? resolve(import.meta.dirname, "..") : process.cwd(),
-);
+const root = homeFor(packaged);
 
 export const envFile = join(root, ".env");
 export const dataDir = join(root, "data");
@@ -113,7 +103,7 @@ const positive = (raw: string, fallback: number) => {
 };
 
 function build() {
-  const port = Number(setting("PORT", "4400"));
+  const port = Number(setting("PORT", String(DEFAULT_PORT)));
   return {
     root,
     port,

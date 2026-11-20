@@ -360,7 +360,7 @@ test("the AI Providers routes: list, connect, plan, order, disconnect, and OpenR
   res = await app.inject("/connect/openrouter");
   assert.equal(res.statusCode, 302);
   const auth = new URL(res.headers.location as string);
-  assert.equal(auth.searchParams.get("callback_url"), "http://localhost:4400/callback/openrouter");
+  assert.equal(auth.searchParams.get("callback_url"), `${(await import("../src/config.ts")).config.baseUrl}/callback/openrouter`);
   res = await app.inject(`/callback/openrouter?code=good&state=${encodeURIComponent(auth.searchParams.get("state")!)}`);
   assert.equal(res.statusCode, 302);
   assert.match(res.headers.location as string, /connected=OpenRouter/);

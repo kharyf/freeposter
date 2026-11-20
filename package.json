@@ -15,7 +15,8 @@
     "test": "node --import ./test/isolated-home.ts --test \"test/**/*.test.ts\"",
     "typecheck": "tsc",
     "build:app": "node scripts/build-app.ts --package",
-    "checksums": "node scripts/checksums.ts"
+    "checksums": "node scripts/checksums.ts",
+    "dev:copy-home": "node scripts/copy-home.ts"
   },
   "dependencies": {
     "@fastify/multipart": "^9.4.0",

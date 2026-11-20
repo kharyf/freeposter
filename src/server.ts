@@ -11,7 +11,7 @@ import * as openrouter from "./ai/openrouter.ts";
 import { AI_JOBS, PROVIDER_IDS, type AiJob, type ProviderId } from "./ai/providers.ts";
 import type { AiService } from "./ai/router.ts";
 import { findClaude } from "./claude.ts";
-import { codeDir, config, dataDir, envFile, isConfigured, isLocalUrl, needsRedirectPage, redirectUri, saveSettings, setting, SETTINGS, type SettingKey } from "./config.ts";
+import { codeDir, config, dataDir, DEFAULT_PORT, edition, envFile, isConfigured, isLocalUrl, needsRedirectPage, redirectUri, saveSettings, setting, SETTINGS, type SettingKey } from "./config.ts";
 import { randomToken } from "./crypto.ts";
 import type { SignIn, Store } from "./db.ts";
 import { mcpTools, registerMcp, trustedRequest } from "./mcp.ts";
@@ -168,7 +168,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   };
 
   /** Lets a second launch of the desktop app find this one instead of starting another. */
-  app.get("/api/ping", async () => ({ app: "freeposter" }));
+  app.get("/api/ping", async () => ({ app: "freeposter", edition }));
 
   app.get("/api/status", async () => {
     const defaultSet = defaultSetId(store);
@@ -464,7 +464,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
       out[k] = value;
     }
     // The address as it will be after saving; blank means the localhost default.
-    const port = out.PORT !== undefined ? out.PORT || "4400" : String(config.port);
+    const port = out.PORT !== undefined ? out.PORT || String(DEFAULT_PORT) : String(config.port);
     const baseUrl = out.BASE_URL !== undefined ? out.BASE_URL || `http://localhost:${port}` : config.baseUrl;
     if (!isLocalUrl(baseUrl) && !(out.APP_PASSWORD || config.appPassword)) {
       problems.push(`${baseUrl} is reachable from outside; set an app password so only you can post`);

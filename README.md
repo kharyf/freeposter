@@ -105,12 +105,22 @@ Requires Node 24+ and `ffmpeg`/`ffprobe` on PATH.
 
 ```bash
 npm install
-npm start           # http://localhost:4400
-npm run desktop     # same app, in its own window
+npm start           # http://localhost:4401
+npm run desktop     # same app, in its own window, titled "FreePoster (dev)"
 npm run build:app   # builds the Windows installer
 npm test
 node scripts/backtest.ts          # how well 24h/72h scores predict later ones (read-only)
 node scripts/reconcile.ts --n 10  # compares the tab's 7d views with a fresh platform read
 ```
+
+**Using FreePoster while you develop it.** A source checkout is a separate copy from the installed app, so both run at once on one computer:
+
+| | Installed app | Source checkout |
+|---|---|---|
+| Settings and data | `%APPDATA%\FreePoster` | `%APPDATA%\FreePoster-dev` |
+| Address and MCP | `http://localhost:4400` | `http://localhost:4401` |
+| Window | FreePoster | FreePoster (dev) |
+
+Post with the installed app day to day. Update it by installing a newer release, or your own `npm run build:app` from a commit you trust. The checkout starts empty: connect test accounts, or run `npm run dev:copy-home` to copy the installed app's settings, accounts and media into it (`-- --replace` sets an existing development folder aside first). The copy never acts by itself: nothing is left queued to post, campaigns are off, Google Drive and Telegram are disconnected, and the agent webhook is cleared. X and TikTok accounts keep working there until their access token expires, then need reconnecting. Those platforms can rotate refresh tokens, and a refresh in one copy would sign the other out. To point an agent or the CLI at the checkout, use port 4401 (`FREEPOSTER_URL=http://localhost:4401`). `FREEPOSTER_HOME` picks a different folder for either copy.
 
 Releases are built and attested by GitHub Actions: `npm version <x.y.z> && git push --follow-tags`.

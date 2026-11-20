@@ -2,7 +2,7 @@ import "./isolated-home.ts"; // first: config.ts reads FREEPOSTER_HOME when it l
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync } from "node:fs";
 import { test } from "node:test";
-import { config, envFile, reloadConfig } from "../src/config.ts";
+import { config, DEFAULT_PORT, envFile, reloadConfig } from "../src/config.ts";
 import { publishers } from "../src/platforms/index.ts";
 import { Runner } from "../src/runner.ts";
 import { buildServer } from "../src/server.ts";
@@ -56,7 +56,7 @@ test("setup screen saves settings to .env, hides secrets, and enables platforms"
   // a blank address means localhost, which needs no password
   res = await app.inject(put("/api/settings", { values: { BASE_URL: "", PORT: "", APP_PASSWORD: "" } }));
   assert.equal(res.statusCode, 200, res.body);
-  assert.equal(config.baseUrl, "http://localhost:4400");
+  assert.equal(config.baseUrl, `http://localhost:${DEFAULT_PORT}`);
 
   // a public address needs a password, which then guards every page
   res = await app.inject(put("/api/settings", { values: { BASE_URL: "https://me.example.com/" } }));

@@ -124,7 +124,7 @@ test("the window and agents see defaults and sharing; /api/sharing only takes cl
   assert.equal(status.accounts.find((a: any) => a.id === page.id).sharedFrom, ig.id);
 
   const mcp = await app.inject({
-    method: "POST", url: "/mcp", headers: { host: "localhost:4400" },
+    method: "POST", url: "/mcp", headers: { host: `localhost:${(await import("../src/config.ts")).config.port}` },
     payload: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "list_accounts", arguments: {} } },
   });
   const listed = mcp.json().result.structuredContent.accounts;
