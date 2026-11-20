@@ -115,3 +115,21 @@ test("help <topic> prints the guide and help <op> its doc", async () => {
   assert.equal(await main(["help", "get_post"], d.io), 0);
   assert.match(d.out(), /get_post/);
 });
+
+test("--fields projects the generic op and call, and named commands ignore it", async () => {
+  const g = io();
+  assert.equal(await main(["list_accounts", "--fields", "accounts.id"], g.io), 0);
+  assert.deepEqual(Object.keys(JSON.parse(g.out()).accounts[0]), ["id"]);
+  const c = io();
+  assert.equal(await main(["call", "list_accounts", "{}", "--fields", "accounts.id"], c.io), 0);
+  assert.deepEqual(Object.keys(JSON.parse(c.out()).accounts[0]), ["id"]);
+  const named = io();
+  assert.equal(await main(["accounts", "--fields", "accounts.id"], named.io), 0);
+  assert.ok(Object.keys(JSON.parse(named.out()).accounts[0]).length > 1);
+});
+
+test("key=value values are read as JSON when they parse; the usage says so", async () => {
+  const t = io();
+  assert.equal(await main(["help"], t.io), 0);
+  assert.match(t.out(), /read as JSON/);
+});

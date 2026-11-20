@@ -25,9 +25,9 @@ test("signature is compact", () => {
   assert.equal(signature("x", { type: "object", properties: { b: { type: "boolean" }, a: { type: "integer" }, e: { type: "string", enum: ["p", "q"] }, l: { type: "array", items: { type: "integer" } } }, required: ["a"] }), "x a:int b?:bool e?:p|q l?:[int]");
 });
 
-test("summary is the first sentence, cut at 100", () => {
+test("summary is the first sentence, cut at 70", () => {
   assert.equal(summary("Does a thing. Then more."), "Does a thing.");
-  assert.equal(summary("x".repeat(150)).length, 100);
+  assert.equal(summary("x".repeat(150)).length, 70);
   assert.ok(summary("x".repeat(150)).endsWith("…"));
 });
 

@@ -35,7 +35,9 @@ const USAGE = `usage: freeposter <command> [options]
   ops                                        every op, with its arguments
   help [<op|topic>]                          this text, or an op's doc, or a guide (rules events production campaigns limits)
   <op> [key=value ...] [--fields a,b.c]      any op: freeposter get_post post_id=3; --fields keeps only those fields
-  call <tool> [<json arguments>]             any op, with a JSON object of arguments
+                                             values are read as JSON when they parse (caption=123 sends a number);
+                                             to force text or pass objects use call
+  call <op> [<json arguments>] [--fields ..] any op, with a JSON object of arguments
 
   --json   print JSON (the default when output isn't a terminal)
 
@@ -102,10 +104,13 @@ export async function main(argv: string[], io: CliIO): Promise<number> {
     return res;
   };
 
-  /** One op over the agent REST API; the result is already compact. */
-  async function call(name: string, args: Record<string, unknown> = {}): Promise<any> {
-    const fields = typeof flags.fields === "string" && flags.fields ? `?fields=${encodeURIComponent(flags.fields)}` : "";
-    const res = await send(`/${encodeURIComponent(name)}${fields}`, { method: "POST", headers: headers({ "content-type": "application/json" }), body: JSON.stringify(args) });
+  /** --fields, for the commands that pass it on (the generic op and call); named commands and watch loops need whole results. */
+  const projection = typeof flags.fields === "string" && flags.fields ? flags.fields : undefined;
+
+  /** One op over the agent REST API; the result is already compact, and projected onto `fields` when given. */
+  async function call(name: string, args: Record<string, unknown> = {}, fields?: string): Promise<any> {
+    const query = fields ? `?fields=${encodeURIComponent(fields)}` : "";
+    const res = await send(`/${encodeURIComponent(name)}${query}`, { method: "POST", headers: headers({ "content-type": "application/json" }), body: JSON.stringify(args) });
     const body = await res.json().catch(() => null) as any;
     if (!res.ok || body === null) {
       const e = new Exit(EXIT.toolError, body?.error ?? `FreePoster answered ${res.status}`);
@@ -214,7 +219,7 @@ export async function main(argv: string[], io: CliIO): Promise<number> {
         if (!a1) throw new Exit(EXIT.usage, USAGE);
         let args = {};
         if (a2) try { args = JSON.parse(a2); } catch { throw new Exit(EXIT.usage, "the arguments must be a JSON object"); }
-        print(await call(a1, args));
+        print(await call(a1, args, projection));
         return EXIT.ok;
       }
       case "ops": {
@@ -245,7 +250,7 @@ export async function main(argv: string[], io: CliIO): Promise<number> {
           args[pair.slice(0, eq)] = value;
         }
         try {
-          print(await call(cmd, args));
+          print(await call(cmd, args, projection));
         } catch (err) {
           if (err instanceof Exit && err.status === 404) throw new Exit(EXIT.usage, `unknown command ${cmd}\n\n${USAGE}`);
           throw err;

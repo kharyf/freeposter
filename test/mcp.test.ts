@@ -72,7 +72,7 @@ test("an agent asks to publish; nothing posts until the user approves, and then 
   assert.equal(r.isError, undefined, r.content[0].text);
   const reviewId = r.structuredContent.id;
   assert.equal(r.structuredContent.state, "preparing");
-  assert.match(r.structuredContent.next, /don't ask them to say yes/i);
+  assert.equal(r.structuredContent.next, "user decides on the review; follow with get_review or wait_for_events");
   const review = await prepared(reviewId);
   assert.equal(review.state, "pending", review.error ?? "");
   assert.equal((await call("list_posts")).structuredContent.posts.length, 0, "asking posts nothing");
@@ -575,4 +575,31 @@ test("lean profile budget: instructions plus tool schemas stay under 4,000 chara
   const list = await rpc("tools/list");
   const total = init.body.result.instructions.length + JSON.stringify(list.body.result).length;
   assert.ok(total <= 4000, `lean profile is ${total} chars`);
+});
+
+test("a ?tools= subset gets instructions that name its own tools, not fp, and keep every safety sentence", async () => {
+  const { rpc } = mcpFixture({ campaigns: true });
+  const init = await rpc("initialize", { protocolVersion: "2025-06-18" }, {}, "/mcp?tools=claim_brief,submit_brief");
+  const text: string = init.body.result.instructions;
+  assert.ok(!/fp_help|fp\(/.test(text), "no fp or fp_help");
+  assert.match(text, /listed tools/);
+  assert.match(text, /can't post or approve/);
+  assert.match(text, /tap Approve/);
+  assert.match(text, /privacy_level/);
+  assert.match(text, /wait_for_events/);
+  const lean = await rpc("initialize", { protocolVersion: "2025-06-18" });
+  assert.match(lean.body.result.instructions, /fp_help/);
+});
+
+test("fp calls: a bad args string is that item's own 400, and op with calls is refused", async () => {
+  const { call } = mcpFixture();
+  const r = await call("fp", { calls: [{ op: "list_posts", args: "not json" }, { op: "list_posts" }] });
+  assert.equal(r.isError, undefined);
+  const out = JSON.parse(r.content[0].text);
+  assert.equal(out[0].status, 400);
+  assert.match(out[0].error, /args must be an object/);
+  assert.ok(out[1].ok);
+  const both = await call("fp", { op: "list_posts", calls: [{ op: "list_posts" }] });
+  assert.equal(both.isError, true);
+  assert.match(both.content[0].text, /either op or calls/);
 });

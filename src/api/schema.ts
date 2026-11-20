@@ -61,14 +61,15 @@ export function validate(schema: JsonSchema, args: unknown, path = ""): void {
   }
 }
 
-function typeToken(s: JsonSchema): string {
-  if (Array.isArray(s.enum)) return s.enum.join("|");
+/** Enums of up to 4 values are spelled out; with `short`, longer ones render as their base type (renderDoc lists them all). */
+function typeToken(s: JsonSchema, short = false): string {
+  if (Array.isArray(s.enum) && !(short && s.enum.length > 4)) return s.enum.join("|");
   switch (s.type) {
     case "integer": return "int";
     case "number": return "num";
     case "string": return "str";
     case "boolean": return "bool";
-    case "array": return `[${s.items ? typeToken(s.items as JsonSchema) : "any"}]`;
+    case "array": return `[${s.items ? typeToken(s.items as JsonSchema, short) : "any"}]`;
     case "object": return "obj";
     default: return "any";
   }
@@ -79,14 +80,14 @@ export function signature(name: string, schema: JsonSchema): string {
   const required = new Set((schema.required ?? []) as string[]);
   const entries = Object.entries(props(schema));
   const parts = [...entries.filter(([k]) => required.has(k)), ...entries.filter(([k]) => !required.has(k))]
-    .map(([k, s]) => `${k}${required.has(k) ? "" : "?"}:${typeToken(s)}`);
+    .map(([k, s]) => `${k}${required.has(k) ? "" : "?"}:${typeToken(s, true)}`);
   return [name, ...parts].join(" ");
 }
 
-/** The first sentence, cut to 100 characters. */
+/** The first sentence, cut to 70 characters (the index has one line per op, so this is what keeps it small). */
 export function summary(description: string): string {
   const first = description.trim().split(/(?<=[.!?])\s/)[0].replace(/\s+/g, " ");
-  return first.length > 100 ? `${first.slice(0, 99).trimEnd()}…` : first;
+  return first.length > 70 ? `${first.slice(0, 69).trimEnd()}…` : first;
 }
 
 function propLines(s: JsonSchema, indent: string): string[] {

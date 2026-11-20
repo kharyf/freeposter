@@ -45,13 +45,17 @@ export const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"];
 
 const INSTRUCTIONS = [GUIDES.rules, GUIDES.events, GUIDES.production, GUIDES.campaigns].join("\n\n");
 
-/** What lean (and typed-subset) clients are told: the rest is behind fp_help. */
-const leanInstructions = () => `FreePoster posts short vertical videos to the user's TikTok, Instagram, Facebook, X and YouTube accounts. It runs on this computer; paths are local.
-Use fp(op, args) for everything; fp_help() lists ops, fp_help(op) shows one op's args, fp_help(topic) gives a guide. Read fp_help(topic:"rules") before your first post.
-You can't post or approve: request_review sends the video to the user, and only their tap on Approve posts it. If they say "yes" to you, tell them to tap Approve.
-For TikTok, call get_tiktok_creator_info and let the user choose privacy_level.
-News comes from the event log: wait_for_events / list_events; fp_help(topic:"events") says what to do with each event.
-If you can run shell commands, the same ops are at POST ${config.baseUrl}/agent/v1/<op> (or the freeposter CLI), which costs fewer tokens.`;
+/** What lean clients are told: the rest is behind fp_help. A typed subset (?tools=) has no fp, so it is pointed at its own tools; every safety sentence stays. */
+const leanInstructions = (listed?: string[]) => [
+  "FreePoster posts short vertical videos to the user's TikTok, Instagram, Facebook, X and YouTube accounts. It runs on this computer; paths are local.",
+  listed
+    ? `Use the listed tools (${listed.join(", ")}); each says what it takes.`
+    : `Use fp(op, args) for everything; fp_help() lists ops, fp_help(op) shows one op's args, fp_help(topic) gives a guide. Read fp_help(topic:"rules") before your first post.`,
+  `You can't post or approve: request_review sends the video to the user, and only their tap on Approve posts it. If they say "yes" to you, tell them to tap Approve.`,
+  "For TikTok, call get_tiktok_creator_info and let the user choose privacy_level.",
+  `News comes from the event log: wait_for_events / list_events${listed ? "." : `; fp_help(topic:"events") says what to do with each event.`}`,
+  ...(listed ? [] : [`If you can run shell commands, the same ops are at POST ${config.baseUrl}/agent/v1/<op> (or the freeposter CLI), which costs fewer tokens.`]),
+].join("\n");
 
 /** Prompts: ready-made requests the user can pick in agents that offer them (often as slash commands). */
 const PROMPTS = [
@@ -199,7 +203,7 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
     {
       name: "list_accounts",
       title: "List accounts",
-      description: "Lists the connected accounts (with the ids publish_video takes; default marks the accounts in the default account set, where FreePoster posts Drive videos whose name picks no set, and shared_from marks an account Meta shares another account's posts to, which can't be posted to directly) and each platform's video length limits, plus which platforms are set up. Platforms without keys are set up in the FreePoster window; accounts are connected by opening connect_url in a browser.",
+      description: "Lists the connected accounts (with the ids publish_video takes; default marks the accounts in the default account set, where FreePoster posts Drive videos whose name picks no set, and shared_from marks an account Meta shares another account's posts to, which can't be posted to directly) and each platform's video length limits, plus the platforms still to connect (connect_url when configured; otherwise set up in the FreePoster window). Open connect_url in a browser to connect one; caption limits: guide limits. Absent flags mean false or 0.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
       annotations: { readOnlyHint: true, openWorldHint: false },
       async run() {
@@ -213,21 +217,20 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
             name: a.name,
             minDurationSec: publishers[a.platform].minDurationSec,
             maxDurationSec: publishers[a.platform].maxDurationSec(a),
-            needsReconnectSoon: a.refreshExpiresAt !== null && a.refreshExpiresAt - Date.now() < 14 * 86_400_000,
+            needsReconnectSoon: (a.refreshExpiresAt !== null && a.refreshExpiresAt - Date.now() < 14 * 86_400_000) || undefined,
             default: defaults.includes(a.id),
             // Meta shares that account's posts here; publishing to this one is refused.
             shared_from: sharedFrom(store, a)?.id ?? null,
           })),
           // A Drive filename picks a set by its filename_token: Name_11.1.26_5.30.pm_Basic_PersonalBrand.
           account_sets: sets.map((s) => ({ id: s.id, name: s.name, filename_token: setToken(s.name), default: s.id === defaultSet, account_ids: s.accountIds })),
-          platforms: PLATFORMS.map((p) => ({
+          // Only what is left to connect: platforms with an account are done, and the rest is in the FreePoster window.
+          platforms: PLATFORMS.filter((p) => !store.accounts().some((a) => a.platform === p)).map((p) => ({
             platform: p,
-            label: publishers[p].label,
-            configured: isConfigured(p),
+            configured: isConfigured(p) || undefined,
             connect_url: isConfigured(p) ? `${config.baseUrl}/connect/${p}` : null,
           })),
-          captionLimits: { x: `${config.xMaxChars} weighted characters (URLs count 23, most emoji 2)`, tiktok: 2200, instagram: "2200 characters, 30 hashtags", youtube: "title 100 characters; description 5000" },
-          pendingJobs: store.pendingJobCount(),
+          pendingJobs: store.pendingJobCount() || undefined,
         };
       },
     },
@@ -693,7 +696,7 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
         subject, accountIds: ids as number[], caption, title, scheduledAt, tiktok, allowDuplicate: bool(args, "allow_duplicate"), via: "agent",
         expiresInHours: args.expires_in_hours === undefined ? undefined : Number(args.expires_in_hours),
       });
-      return { ...reviews.view(review), next: "The user decides on the review itself (Telegram or the FreePoster window). Follow it with get_review, or wait_for_events for its review.* event. Don't ask them to say yes in chat: that doesn't approve anything." };
+      return { ...reviews.view(review), next: "user decides on the review; follow with get_review or wait_for_events" };
     } catch (err) {
       if (copied) try { unlinkSync(copied); } catch {}
       throw new ToolError((err as Error).message);
@@ -794,10 +797,17 @@ function gatewayTools(tools: Tool[]): Tool[] {
       async run(args) {
         try {
           if (args.calls !== undefined) {
-            const items = Array.isArray(args.calls)
-              ? args.calls.map((c) => (c && typeof c === "object" && !Array.isArray(c) && typeof (c as Args).args === "string" ? { ...c, args: objectArgs((c as Args).args) } : c))
-              : args.calls;
-            return await runBatch(tools, items);
+            if (args.op !== undefined) throw new ApiError(400, "give either op or calls, not both");
+            // A string args that isn't an object fails only its own item, like a batch over POST /agent/v1.
+            if (!Array.isArray(args.calls)) return await runBatch(tools, args.calls);
+            const bad = new Map<number, ApiError>();
+            const items = args.calls.map((c, i) => {
+              if (!c || typeof c !== "object" || Array.isArray(c) || typeof (c as Args).args !== "string") return c;
+              try { return { ...c, args: objectArgs((c as Args).args) }; } catch (err) { bad.set(i, err as ApiError); return null; }
+            });
+            const ran = await runBatch(tools, items.filter((_, i) => !bad.has(i)));
+            let next = 0;
+            return items.map((_, i) => (bad.has(i) ? { error: bad.get(i)!.message, status: bad.get(i)!.status } : ran[next++]));
           }
           if (typeof args.op !== "string") throw new ApiError(400, "op must be a string");
           return (await runOp(tools, args.op, objectArgs(args.args), parseFields(args.fields))) ?? {};
@@ -851,7 +861,7 @@ export function registerMcp(app: FastifyInstance, tools: Tool[], setAgent: (name
           protocolVersion: PROTOCOL_VERSIONS.includes(params.protocolVersion) ? params.protocolVersion : PROTOCOL_VERSIONS[0],
           capabilities: { tools: { listChanged: false }, prompts: { listChanged: false } },
           serverInfo: { name: "freeposter", title: "FreePoster", version: VERSION },
-          instructions: profile.kind === "full" ? INSTRUCTIONS : leanInstructions(),
+          instructions: profile.kind === "full" ? INSTRUCTIONS : leanInstructions(profile.kind === "subset" ? profile.names : undefined),
         });
       }
       case "ping":

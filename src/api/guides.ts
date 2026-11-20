@@ -33,10 +33,10 @@ ${EVENT_GUIDE}`,
   campaigns: CAMPAIGN_INSTRUCTIONS,
   get limits() {
     return [
-    `X: ${config.xMaxChars} weighted characters (URLs count 23, most emoji 2)`,
-    "TikTok: 2200",
-    "Instagram: 2200 characters, 30 hashtags",
-    "YouTube: title 100 characters; description 5000",
-  ].join("\n");
+      `X: ${config.xMaxChars} weighted characters (URLs count 23, most emoji 2)`,
+      "TikTok: 2200",
+      "Instagram: 2200 characters, 30 hashtags",
+      "YouTube: title 100 characters; description 5000",
+    ].join("\n");
   },
 };

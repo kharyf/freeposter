@@ -51,7 +51,15 @@ Every tool can be called by name on every profile, listed or not. What each cost
 |---|---|---|
 | `full` (how it was) | 41,769 chars | 10.4k tokens |
 | lean (default) | 1,988 chars | 0.5k tokens |
-| `?tools=` the five brief tools | 4,656 chars | 1.2k tokens |
+| `?tools=` the five brief tools | 4,403 chars | 1.1k tokens |
+
+The other sizes, measured the same way and held by `test/token-budget.test.ts`:
+
+| What | Size | Budget |
+|---|---|---|
+| `GET /agent/v1` (every op, one line each) | 4,943 chars | 5,000 |
+| `POST /agent/v1/list_accounts` with one account | 335 chars | 400 |
+| any one op's doc (`GET /agent/v1/<op>`) | at most 4,000 chars | 4,000 |
 
 An agent that only runs local commands can use `npx mcp-remote http://localhost:4400/mcp`. If you set an app password, agents send it as HTTP Basic auth (any user name).
 
@@ -135,7 +143,10 @@ freeposter ops                    # every op with its arguments, one line each
 freeposter help claim_brief       # one op's doc; `freeposter help events` prints a guide (rules events production campaigns limits)
 freeposter get_post post_id=3     # any op as key=value (values are read as JSON when they parse, else text)
 freeposter list_reviews needs_agent=true --fields reviews.id,reviews.state
+freeposter call request_review '{"production_id":12,"caption":"123"}'   # a JSON object of arguments
 ```
+
+`--fields` applies to the generic `<op>` form and to `call`; named commands (`events`, `production --watch` and the rest) always print whole results. In `key=value`, values are read as JSON when they parse, so `caption=123` sends the number 123; to force text or pass objects, use `call <op> '<json>'`.
 
 The installed app ships the CLI in `%LOCALAPPDATA%\Programs\FreePoster\resources\app.asar.unpacked\cli\`. Add that folder to your PATH, or from a source checkout run `npm run cli -- <command>`. `freeposter help` lists the commands. It needs Node 24 or later on PATH.
 
