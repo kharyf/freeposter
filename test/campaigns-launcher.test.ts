@@ -4,8 +4,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ProgramRun } from "../src/ai/cli.ts";
-import { LEASE_MINUTES, buildBrief } from "../src/campaigns/briefs.ts";
-import { AgentLauncher } from "../src/campaigns/launcher.ts";
+import { LEASE_MINUTES, buildBrief, claimBrief, openBriefs } from "../src/campaigns/briefs.ts";
+import { AgentLauncher, abortOnStop } from "../src/campaigns/launcher.ts";
 import type { Look } from "../src/campaigns/looks.ts";
 import { CampaignStore } from "../src/campaigns/store.ts";
 import type { TaskChoices } from "../src/campaigns/worker.ts";
@@ -43,8 +43,82 @@ function setup(opts: { enabled?: boolean; claude?: string } = {}) {
     store, campaigns: cs, run, borrowGpu, now: () => clock.now, dataDir: dir,
     find: () => opts.claude ?? "C:\\bin\\claude.exe",
   });
-  return { store, cs, add, launcher, calls, gpu, clock, dir, finish: (r: { code: number | null; stdout: string; stderr: string }) => finish(r) };
+  return { store, cs, add, campaignId, launcher, calls, gpu, clock, dir, finish: (r: { code: number | null; stdout: string; stderr: string }) => finish(r) };
 }
+
+/** A launcher whose Claude runs until it's aborted, and what it was given. */
+function abortable(s: ReturnType<typeof setup>) {
+  const seen: { signal?: AbortSignal } = {};
+  const launcher = new AgentLauncher({
+    store: s.store, campaigns: s.cs, now: () => s.clock.now, dataDir: s.dir, find: () => "claude",
+    borrowGpu: async (fn) => ({ value: await fn() }),
+    run: (_c, _a, _s, o) => new Promise((_resolve, reject) => {
+      seen.signal = o?.signal;
+      o?.signal?.addEventListener("abort", () => reject(new Error("claude was stopped")));
+    }),
+  });
+  return { launcher, seen };
+}
+
+test("the kill switch aborts a running launch", async () => {
+  const s = setup();
+  s.add(1);
+  const { launcher, seen } = abortable(s);
+  const onStop = abortOnStop(launcher);
+  const running = launcher.tick();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(seen.signal?.aborted, false);
+  onStop(null);
+  await running;
+  assert.equal(seen.signal?.aborted, true);
+  assert.match(String(s.store.pref("agent.launch.status")), /^stopped: /);
+});
+
+test("Stop Campaign aborts a running launch only for its own campaign", async () => {
+  const s = setup();
+  s.add(1);
+  const { launcher, seen } = abortable(s);
+  const onStop = abortOnStop(launcher);
+  const running = launcher.tick();
+  await new Promise((r) => setImmediate(r));
+  onStop(s.campaignId + 1);
+  assert.equal(seen.signal?.aborted, false, "another campaign's stop leaves it running");
+  onStop(s.campaignId);
+  await running;
+  assert.equal(seen.signal?.aborted, true);
+  assert.equal(launcher.abort("nothing running"), false);
+});
+
+test("a launch that ends without a film releases the lease it took, and gives the offer back", async () => {
+  const s = setup();
+  const id = s.add(1);
+  const running = s.launcher.tick();
+  await new Promise((r) => setImmediate(r));
+  // Claude claims the brief, then stops without delivering.
+  s.clock.now += MIN;
+  const lease = claimBrief(s.cs, id, "claude-code", s.clock.now);
+  assert.ok(lease.ok);
+  assert.equal((s.cs.task(id)!.choices as any).offers, 1);
+  s.clock.now += MIN;
+  s.finish({ code: 0, stdout: "I couldn't", stderr: "" });
+  await running;
+  const c = s.cs.task(id)!.choices as any;
+  assert.equal(c.lease, undefined, "the run's lease is released");
+  assert.equal(c.offers, 0, "the run's claim didn't use up an offer");
+  assert.deepEqual(openBriefs(s.cs, s.clock.now).map((t) => t.id), [id]);
+  assert.equal(s.store.pref("agent.launch.status"), `finished without a film (task ${id})`);
+});
+
+test("a launch's timeout is the time left to the brief's deadline, at least 5 minutes", async () => {
+  const s = setup();
+  s.add(1);
+  s.clock.now = T0 + 10 * 60 * MIN - 30 * MIN - 2 * MIN; // 2 minutes before the deadline
+  const running = s.launcher.tick();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(s.calls[0].opts?.timeoutMs, 5 * MIN);
+  s.finish({ code: 0, stdout: "", stderr: "" });
+  await running;
+});
 
 test("does nothing when disabled", async () => {
   const s = setup({ enabled: false });
@@ -131,7 +205,7 @@ test("launches once for an open brief and not again while running", async () => 
   assert.ok(!args.join(" ").includes("mcp__freeposter__*"), "only the brief tools, never all of FreePoster's");
   assert.equal(opts?.cwd, join(s.dir, "films"));
   assert.ok(existsSync(join(s.dir, "films")));
-  assert.equal(opts?.timeoutMs, LEASE_MINUTES * MIN);
+  assert.equal(opts?.timeoutMs, 10 * 60 * MIN - 30 * MIN, "the run may last until the brief's deadline");
   assert.equal(opts?.env?.ANTHROPIC_API_KEY, undefined);
   const mcp = JSON.parse(readFileSync(mcpPath, "utf8"));
   assert.deepEqual(mcp.mcpServers.freeposter.type, "http");

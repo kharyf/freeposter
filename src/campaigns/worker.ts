@@ -215,6 +215,11 @@ export class CampaignWorker {
   work = new Map<number, Promise<void>>();
   running: Promise<void> | undefined;
   timer: NodeJS.Timeout | undefined;
+  /**
+   * Called when campaigns stop: a campaign's id (Stop Campaign) or null (the kill switch). The app ends a running
+   * agent launch through it, so this worker never needs the launcher.
+   */
+  onStop: (campaignId: number | null) => void = () => {};
 
   constructor(deps: CampaignWorkerDeps) {
     this.store = deps.store;
@@ -1116,6 +1121,7 @@ export class CampaignWorker {
     let held = 0;
     for (const t of this.campaigns.tasksIn(["scheduled"])) if (t.campaignId === id && t.postId !== null && this.store.holdPost(t.postId) > 0) held++;
     console.log(`campaign ${id}: stopped; ${held} post${held === 1 ? "" : "s"} held`);
+    this.tellStopped(id);
     return held;
   }
 
@@ -1136,7 +1142,17 @@ export class CampaignWorker {
     let held = 0;
     for (const t of this.campaigns.tasksIn(["scheduled"])) if (t.postId !== null && this.store.holdPost(t.postId) > 0) held++;
     console.log(`campaigns: stopped; ${held} post${held === 1 ? "" : "s"} held`);
+    this.tellStopped(null);
     return held;
+  }
+
+  /** Tells onStop, whose failure never undoes the stop. */
+  private tellStopped(campaignId: number | null) {
+    try {
+      this.onStop(campaignId);
+    } catch (err) {
+      console.error(`campaigns: after stopping: ${(err as Error).message}`);
+    }
   }
 
   /**

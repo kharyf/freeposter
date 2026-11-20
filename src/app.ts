@@ -15,7 +15,7 @@ import { sampleFrames } from "./media.ts";
 import { MetricsPoller } from "./analytics/poller.ts";
 import { backfillLabels, onPublished } from "./analytics/labels.ts";
 import { evaluateRules } from "./campaigns/rules.ts";
-import { AgentLauncher } from "./campaigns/launcher.ts";
+import { AgentLauncher, abortOnStop } from "./campaigns/launcher.ts";
 import { CampaignWorker } from "./campaigns/worker.ts";
 import { Notifier } from "./notify.ts";
 import { publishers } from "./platforms/index.ts";
@@ -110,6 +110,8 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
   const campaigns = new CampaignWorker({ store, productions: producer, reviews, ai });
   // Agent films: when the user turns it on, FreePoster starts Claude Code here for each open brief, on the GPU lane.
   const launcher = new AgentLauncher({ store, campaigns: campaigns.campaigns, run: runProgram, borrowGpu: (fn) => producer.borrowGpu(fn) });
+  // Stop Campaign (for the launch's own campaign) and the kill switch end a running launch.
+  campaigns.onStop = abortOnStop(launcher);
   // After each analytics refresh, campaign rules are checked against the new scores (plain code, no AI).
   poller.onRefresh = () => {
     try {

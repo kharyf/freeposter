@@ -999,6 +999,15 @@ test("an agent film goes brief, claim, submit, Redo, a new round, claim, submit,
   assert.equal(labels.lookVersion, "1.5.0");
 });
 
+test("Stop Campaign and the kill switch tell the launcher which campaigns stopped", () => {
+  const s = agentSetup();
+  const seen: (number | null)[] = [];
+  s.worker.onStop = (id) => seen.push(id);
+  s.worker.stopCampaign(s.id);
+  s.worker.stopAll();
+  assert.deepEqual(seen, [s.id, null]);
+});
+
 test("an agent row never runs the script writer", async () => {
   const s = agentSetup();
   await s.deliver();
