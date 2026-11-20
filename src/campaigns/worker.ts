@@ -15,7 +15,7 @@
 // WanGP speech and music aren't production shots, so they borrow the production worker's GPU lane (borrowGpu): they
 // run only while no GPU shot is running, one at a time, and no GPU shot starts while they run.
 // One task failing never stops another: each step is caught per task, and a failure is told to the user.
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { defaultSetId, defaultTikTok, setAccounts } from "../accounts.ts";
 import { OverBudget } from "../ai/budget.ts";
@@ -32,7 +32,8 @@ import { generateMusic, generateSpeech } from "../produce/wan-audio.ts";
 import { hashFile } from "../review/media.ts";
 import type { ReviewRequest, ReviewService, Subject } from "../review/service.ts";
 import { ROW_INSTRUCTION_BASE } from "./rows.ts";
-import type { Brief, Delivery } from "./briefs.ts";
+import { BRIEF_LEAD_HOURS, MAX_BRIEF_OFFERS, REVIEW_BUFFER_MINUTES, buildBrief, type Brief, type Delivery } from "./briefs.ts";
+import { lookByKey, type Look } from "./looks.ts";
 import { buildGeneratedProduction, writeScript, type Script } from "./script.ts";
 import { DAYS, type MakeInstruction, type Pick as ValuePick, type PostInstruction } from "./spec.ts";
 import { CampaignStore, campaignTaskFor, driveFileTaken, mayPostUnseen, type Campaign, type CampaignTask, type LibraryEntry, type LibraryKind, type TaskState } from "./store.ts";
@@ -102,7 +103,7 @@ export interface TaskChoices {
 
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 /** States a task is still being worked on in. */
-const ACTIVE: TaskState[] = ["queued", "scripting", "rendering", "editing", "reviewing", "scheduled"];
+const ACTIVE: TaskState[] = ["queued", "awaiting_agent", "scripting", "rendering", "editing", "reviewing", "scheduled"];
 const PENDING_JOBS = ["queued", "running", "retry", "waiting_quota"];
 /** Campaign reviews wait for the user well past their post time (approved a later day, it takes a later time). */
 const REVIEW_HOURS = 24 * 7;
@@ -115,6 +116,7 @@ const BEST_AGE = "72h";
 /** A rule's tasks number their instructions from here (1000 + the rule's index), apart from the day's own lines. */
 export const RULE_INSTRUCTION_BASE = 1000;
 
+const HOUR = 3_600_000;
 const pad = (n: number) => String(n).padStart(2, "0");
 /** The local calendar day of a time, YYYY-MM-DD. */
 export const dayKey = (ms: number) => {
@@ -426,11 +428,15 @@ export class CampaignWorker {
     switch (t.state) {
       case "queued":
         if (t.kind === "post") return this.findVideo(t);
+        // An agent film is never scripted or rendered here: its brief goes out to an agent.
+        if (c.instruction.kind === "make" && c.instruction.look) return this.offerBrief(t, c);
         if (c.waitUntil !== undefined && this.now() < c.waitUntil) return; // waiting for tomorrow's AI budget
         if (this.stopped(t)) return; // stopped: nothing new starts
         if (c.waitUntil !== undefined) this.setChoices(t.id, { waiting: undefined, waitUntil: undefined });
         this.campaigns.updateTask(t.id, { state: "scripting" });
         return this.spawn(t, () => this.makeScript(t.id));
+      case "awaiting_agent":
+        return this.followBrief(t, c);
       case "scripting":
         // A script left half-written by a restart is written again.
         return this.spawn(t, () => this.makeScript(t.id));
@@ -545,6 +551,84 @@ export class CampaignWorker {
     await this.requestReview(this.campaigns.task(t.id)!, t.choices as unknown as TaskChoices);
   }
 
+  // ---- agent films ----
+
+  /**
+   * An agent film's brief goes out BRIEF_LEAD_HOURS before its slot (a film to keep, at once), never while its
+   * campaign is stopped. Its look must still be in the catalogue then; once the brief is out, it keeps that look.
+   */
+  private offerBrief(t: CampaignTask, c: TaskChoices) {
+    const now = this.now();
+    const postAt = c.postTime === null ? null : localAt(t.date, c.postTime);
+    if (postAt !== null && now < postAt - BRIEF_LEAD_HOURS * HOUR) return;
+    if (this.stopped(t)) return; // stopped: no new brief is offered
+    const key = (c.instruction as MakeInstruction).look!;
+    const look = lookByKey(this.store, key);
+    if (!look || look.hidden) return this.fail(t.id, `look ${key} is no longer in the catalogue`);
+    const brief = buildBrief(this.store, c, look, postAt, now);
+    this.setChoices(t.id, { brief, offers: 0 });
+    this.campaigns.updateTask(t.id, { state: "awaiting_agent", error: null });
+    log(t, `brief for a ${key} film, due by ${new Date(brief.deadline).toLocaleString()}`);
+    const { name, what } = this.describe(t);
+    const posts = postAt === null ? "a video to keep" : `posting ${new Date(postAt).toLocaleString()}`;
+    queueEvent(this.store, "brief.requested", `brief.requested:${t.id}`,
+      { campaign_id: t.campaignId, task_id: t.id, campaign_task_id: t.id, look: key, deadline: new Date(brief.deadline).toISOString(), post_at: postAt === null ? null : new Date(postAt).toISOString() },
+      `Campaign "${name}" wants a ${look.name} (${key}) film for ${what} (${posts}), delivered by ${new Date(brief.deadline).toLocaleString()}: call claim_brief with task_id ${t.id}`);
+  }
+
+  /**
+   * A brief waiting for its film. A delivery is taken on; past the deadline the slot is missed; a lease that ran
+   * out is cleared so another agent can claim it, until MAX_BRIEF_OFFERS claims have all run out.
+   */
+  private async followBrief(t: CampaignTask, c: TaskChoices) {
+    if (c.delivery) return this.takeDelivery(t, c, c.delivery);
+    if (!c.brief) return this.fail(t.id, "its brief is missing");
+    const now = this.now();
+    if (now > c.brief.deadline) {
+      const when = new Date(c.brief.deadline).toLocaleString();
+      this.campaigns.updateTask(t.id, { state: "missed", error: `the agent didn't deliver before ${when}` });
+      this.tell(this.campaigns.task(t.id)!, "campaign.missed", `the agent didn't deliver before ${when}; the slot was skipped`);
+      return;
+    }
+    if (!c.lease || c.lease.until > now) return;
+    const offers = c.offers ?? 0;
+    const last = offers >= MAX_BRIEF_OFFERS;
+    queueEvent(this.store, "brief.expired", `brief.expired:${t.id}:${offers}`,
+      { campaign_id: t.campaignId, task_id: t.id, campaign_task_id: t.id, look: c.brief.look, holder: c.lease.holder, offers },
+      `${c.lease.holder}'s lease on the brief for task ${t.id} ran out without a film; ${last ? "it has no offers left" : `call claim_brief with task_id ${t.id} to take it on`}`);
+    if (last) return this.fail(t.id, `no agent delivered after ${MAX_BRIEF_OFFERS} tries`);
+    this.setChoices(t.id, { lease: undefined });
+  }
+
+  /** The agent's checked film: edited in the task's style, or with no style sent for review as it is. */
+  private async takeDelivery(t: CampaignTask, c: TaskChoices, d: Delivery) {
+    if (!existsSync(d.path)) return this.fail(t.id, `its delivered film ${d.path} is gone`);
+    if (c.style) return this.startEdit(t.id, d.path, c.style);
+    this.campaigns.updateTask(t.id, { state: "reviewing", reviewId: null });
+    await this.requestReview(this.campaigns.task(t.id)!, c);
+  }
+
+  /** A retried agent film with no film left to take on: a fresh brief, unclaimed, with its offers back. */
+  private freshBrief(t: CampaignTask, c: TaskChoices): Partial<TaskChoices> {
+    const now = this.now();
+    const old = c.brief!;
+    // It keeps its look, even one hidden since.
+    const look: Look = lookByKey(this.store, old.look)
+      ?? { key: old.look, producer: old.producer, name: old.look, description: "", needsImageGen: old.needsImageGen, libraryVersion: "", hidden: true };
+    let postAt = c.postTime === null ? null : localAt(t.date, c.postTime);
+    // Its slot is too close to make now: it's wanted within a day, and placed like any later approval.
+    if (postAt !== null && postAt - REVIEW_BUFFER_MINUTES * 60_000 <= now) postAt = null;
+    return { brief: buildBrief(this.store, c, look, postAt, now), offers: 0, lease: undefined, delivery: undefined };
+  }
+
+  /** The agent's film a task's video is (a post line's is its kept video's). */
+  private deliveryOf(t: CampaignTask): Delivery | undefined {
+    const c = t.choices as unknown as TaskChoices;
+    if (c.delivery) return c.delivery;
+    if (c.sourceTaskId) return (this.campaigns.task(c.sourceTaskId)?.choices as unknown as TaskChoices | undefined)?.delivery;
+    return undefined;
+  }
+
   /** The script a task's video was made from (a post line's is its kept video's). */
   private scriptOf(t: CampaignTask): Script | undefined {
     const c = t.choices as unknown as TaskChoices;
@@ -556,12 +640,17 @@ export class CampaignWorker {
   private async requestReview(t: CampaignTask, c: TaskChoices) {
     const accounts = setAccounts(this.store, c.accountSetId ?? defaultSetId(this.store));
     if (!accounts.length) return this.fail(t.id, "the campaign's account set has no accounts to post to");
-    // A held Drive file is captioned by intake; a campaign video by its script.
+    // A held Drive file is captioned by intake; an agent's film by the agent (blank: the review writes one); a
+    // campaign video by its script.
     const file = c.driveId ? this.store.driveFile(c.driveId) : undefined;
     if (c.driveId && file?.state !== "held") return this.fail(t.id, `its Drive file is ${file ? file.state : "gone"} now`);
-    const text = file ? { caption: file.caption ?? "", title: file.title ?? "" } : this.scriptOf(t);
+    const delivery = file ? undefined : this.deliveryOf(t);
+    const text = file ? { caption: file.caption ?? "", title: file.title ?? "" }
+      : delivery ? { caption: delivery.caption ?? "", title: delivery.title ?? "" } : this.scriptOf(t);
     if (!text) return this.fail(t.id, "its script is missing");
-    const subject: Subject = file?.choice?.raw ? { kind: "file", path: file.sourcePath!, name: file.choice.name } : { kind: "edit", id: t.editId! };
+    // An agent's film with no style is reviewed as it was delivered.
+    const subject: Subject = file?.choice?.raw ? { kind: "file", path: file.sourcePath!, name: file.choice.name }
+      : delivery && t.editId === null ? { kind: "file", path: delivery.path } : { kind: "edit", id: t.editId! };
     const keep = t.kind !== "post" && c.libraryName ? c.libraryName : undefined;
     const planned = c.postTime ? localAt(t.date, c.postTime) : null;
     const q: ReviewRequest = {
@@ -583,7 +672,8 @@ export class CampaignWorker {
     const unseen = mayPostUnseen(this.campaigns, c.types ?? []);
     const review = unseen ? await this.reviews.autoApprove(q, c.types) : await this.reviews.request(q);
     this.campaigns.updateTask(t.id, { state: "reviewing", reviewId: review.id });
-    log(t, `${subject.kind === "file" ? `the Drive file ${file!.name}` : `edit ${t.editId}`} sent for review (review ${review.id})${review.auto ? ", approved by its types" : ""}`);
+    const what = subject.kind !== "file" ? `edit ${t.editId}` : file ? `the Drive file ${file.name}` : `the agent's film ${subject.path}`;
+    log(t, `${what} sent for review (review ${review.id})${review.auto ? ", approved by its types" : ""}`);
   }
 
   private followReview(t: CampaignTask, c: TaskChoices) {
@@ -635,9 +725,12 @@ export class CampaignWorker {
     const file = c.driveId ? this.store.driveFile(c.driveId) : undefined;
     if (c.driveId && (file?.state !== "held" || file.postId !== null)) return this.fail(t.id, `its Drive file is ${file ? file.state : "gone"} now; nothing was posted`);
     const src = c.sourceTaskId ? (this.campaigns.task(c.sourceTaskId)?.choices as unknown as TaskChoices | undefined) ?? c : c;
-    // Labels first: the post must carry them before it can publish.
+    // Labels first: the post must carry them before it can publish. A recorded video has no producer; an agent's
+    // film is its look's, at the version it was delivered in.
     this.analytics.setLabels({
       postId, source: c.driveId ? "recorded" : "generated", styleId: c.style,
+      producer: c.driveId ? null : src.brief?.producer ?? "freeposter-wangp",
+      look: src.brief?.look ?? null, lookVersion: src.delivery?.manifest.libraryVersion ?? null,
       hookId: src.hook?.id ?? null, hookText: src.hook?.text ?? null,
       angleId: src.angle?.id ?? null, angleText: src.angle?.text ?? null,
       ctaId: src.cta?.id ?? null, ctaText: src.cta?.text ?? null,
@@ -758,7 +851,14 @@ export class CampaignWorker {
       log(t, `posting ${keptChoices.libraryName} (edit ${keptEdit.id})`);
       return;
     }
-    const video = kept.productionId === null ? null : this.productions.productions.get(kept.productionId)?.outputPath ?? null;
+    // A kept agent film with no style is posted as it was delivered.
+    if (style === null && keptChoices.delivery) {
+      this.campaigns.updateTask(t.id, { state: "reviewing", reviewId: null });
+      log(t, `posting ${keptChoices.libraryName} (the agent's film)`);
+      return;
+    }
+    const made = kept.productionId === null ? null : this.productions.productions.get(kept.productionId)?.outputPath ?? null;
+    const video = made ?? keptChoices.delivery?.path ?? null;
     if (!video) return this.fail(t.id, `${keptChoices.libraryName}'s video is gone`);
     await this.startEdit(t.id, video, style);
   }
@@ -841,6 +941,7 @@ export class CampaignWorker {
         return null;
       }
     }
+    const c = t.choices as unknown as TaskChoices;
     const production = t.productionId === null ? undefined : this.productions.productions.get(t.productionId);
     const edit = t.editId === null ? undefined : this.store.edit(t.editId);
     const patch: Partial<Pick<CampaignTask, "state" | "error" | "productionId" | "editId" | "reviewId" | "postId">> = { error: null, postId: null };
@@ -848,6 +949,12 @@ export class CampaignWorker {
       // Its video is edited and ready: it goes back for approval (a fresh review).
       patch.state = "reviewing";
       patch.reviewId = null;
+    } else if (c.brief) {
+      // An agent film: a delivered film still on disk is taken on again; otherwise an agent is asked again, afresh.
+      patch.state = "awaiting_agent";
+      patch.editId = null;
+      patch.reviewId = null;
+      if (!c.delivery || !existsSync(c.delivery.path)) this.setChoices(id, this.freshBrief(t, c));
     } else if (production && (production.state === "ready" || production.state === "approved") && production.outputPath) {
       // Its video is made: edit it again.
       patch.state = "rendering";
@@ -855,7 +962,7 @@ export class CampaignWorker {
       patch.reviewId = null;
     } else {
       // Nothing usable yet: write the script if it has none, then make the video again.
-      patch.state = (t.choices as unknown as TaskChoices).script ? "rendering" : "queued";
+      patch.state = c.script ? "rendering" : "queued";
       patch.productionId = null;
       patch.editId = null;
       patch.reviewId = null;
@@ -886,11 +993,17 @@ export class CampaignWorker {
     if (notify) this.tell(this.campaigns.task(id)!, "campaign.failed", started ? `${error}. ${started}` : error);
   }
 
-  private tell(t: CampaignTask, type: "campaign.failed" | "campaign.missed", error: string) {
+  /** A task's campaign name and which of its videos it is, for the user. */
+  private describe(t: CampaignTask): { name: string; what: string } {
     const c = t.choices as unknown as TaskChoices;
     const name = c.campaignName ?? this.campaigns.campaign(t.campaignId)?.name ?? `campaign ${t.campaignId}`;
     const ins = c.instruction;
     const what = ins?.kind === "post" ? `the line "post ${ins.name}"` : `video ${t.copy + 1} of "${ins?.source ?? `line ${t.instructionIndex + 1}`}"`;
+    return { name, what };
+  }
+
+  private tell(t: CampaignTask, type: "campaign.failed" | "campaign.missed", error: string) {
+    const { name, what } = this.describe(t);
     const summary = type === "campaign.missed"
       ? `Campaign "${name}" missed ${what} on ${t.date}: ${error}.`
       : `Campaign "${name}" couldn't finish ${what} for ${t.date}: ${error}`;
@@ -1030,11 +1143,14 @@ export class CampaignWorker {
   // ---- whose video it is ----
 
   /**
-   * Whether this video is a campaign's (its production, its edit, or a revision of that edit, in any state): only
-   * the campaign worker's own requests may send it for review, so it can never be approved, and posted, twice.
+   * Whether this video is a campaign's (its production, its edit, a revision of that edit, or an agent's delivered
+   * film, in any state): only the campaign worker's own requests may send it for review, so it can never be
+   * approved, and posted, twice.
    */
   owns(s: Subject): boolean {
-    if (s.kind === "file") return false;
+    if (s.kind === "file") {
+      return this.store.db.prepare("SELECT 1 FROM campaign_tasks WHERE json_extract(choices, '$.delivery.path') = ? LIMIT 1").get(s.path) !== undefined;
+    }
     return campaignTaskFor(this.store, s.kind, s.id) !== null;
   }
 }

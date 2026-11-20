@@ -1,10 +1,14 @@
 import "./isolated-home.ts";
 import assert from "node:assert/strict";
+import { copyFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { before, test } from "node:test";
 import type { AiService } from "../src/ai/router.ts";
 import type { Question } from "../src/ai/providers.ts";
 import { checkBudget } from "../src/ai/budget.ts";
 import { AnalyticsStore } from "../src/analytics/store.ts";
+import { claimBrief, submitBrief } from "../src/campaigns/briefs.ts";
+import { syncLooks } from "../src/campaigns/looks.ts";
 import type { Script } from "../src/campaigns/script.ts";
 import { DAYS, type CompiledCampaign, type Day, type MakeInstruction, type PostInstruction } from "../src/campaigns/spec.ts";
 import type { Row } from "../src/campaigns/rows.ts";
@@ -838,4 +842,305 @@ test("Stop Campaign holds only its own posts and starts nothing new for it; Star
   await s.worker.idle();
   await s.tick();
   assert.equal(s.cs.task(b.id)!.state, "scheduled");
+});
+
+// ---- agent films ----
+
+const HOUR = 3_600_000;
+const LOOK = { key: "lemo:ukiyo-e", name: "Ukiyo-e", description: "woodblock prints", needsImageGen: false, libraryVersion: "1.4.0" };
+
+/** An Agent row on Tuesday at 18:00, 5 seconds long (clips[2] is 5 s), in the ukiyo-e look. */
+function agentSetup(extra: Partial<Row> = {}) {
+  const s = setup();
+  syncLooks(s.store, "lemo-opuscar", [LOOK]);
+  const id = tableCampaign(s, [tableRow(s, { origin: "agent", style: null, look: LOOK.key, time: "18:00", sec: 5, ...extra })]);
+  s.worker.materialize();
+  const [t] = s.cs.tasksOn(id, "2026-11-17");
+  /** The brief is posted (12:00), claimed and delivered with a clip. */
+  const deliver = async (opts: { caption?: string; clip?: string } = {}) => {
+    s.clock.now = at(2026, 11, 17, 12);
+    await s.tick();
+    assert.equal(s.cs.task(t.id)!.state, "awaiting_agent", s.cs.task(t.id)!.error ?? "");
+    assert.ok(claimBrief(s.cs, t.id, "agent-1", s.clock.now).ok);
+    const out = await submitBrief(s.store, s.cs, t.id, "agent-1", {
+      videoPath: opts.clip ?? clips[2], manifest: { look: LOOK.key, libraryVersion: "1.4.0" },
+      ...(opts.caption !== undefined ? { caption: opts.caption } : {}),
+    }, s.clock.now);
+    assert.ok(out.ok, out.ok ? "" : out.error);
+  };
+  const events = (type: string) => s.store.feed(0, 100, [type]);
+  return { ...s, id, task: t, deliver, events };
+}
+
+test("an agent row waits until six hours before its slot, then posts a brief", async () => {
+  const s = agentSetup();
+  await s.tick();
+  assert.equal(s.cs.task(s.task.id)!.state, "queued", "08:00 is too early for an 18:00 slot");
+  assert.equal(s.events("brief.requested").length, 0);
+  s.clock.now = at(2026, 11, 17, 12);
+  await s.tick();
+  const t = s.cs.task(s.task.id)!;
+  assert.equal(t.state, "awaiting_agent", t.error ?? "");
+  const c = t.choices as any;
+  assert.equal(c.brief.look, LOOK.key);
+  assert.equal(c.brief.producer, "lemo-opuscar");
+  assert.equal(c.brief.postAt, at(2026, 11, 17, 18));
+  assert.equal(c.brief.deadline, at(2026, 11, 17, 17, 30));
+  await s.tick();
+  const ev = s.events("brief.requested");
+  assert.equal(ev.length, 1, "told once");
+  const body = JSON.parse(ev[0].body);
+  assert.equal(body.campaign_task_id, t.id);
+  assert.equal(body.look, LOOK.key);
+  assert.equal(body.deadline, new Date(at(2026, 11, 17, 17, 30)).toISOString());
+  assert.equal(body.post_at, new Date(at(2026, 11, 17, 18)).toISOString());
+  assert.match(body.summary, new RegExp(`call claim_brief with task_id ${t.id}$`));
+});
+
+test("an agent row never runs the script writer", async () => {
+  const s = agentSetup();
+  await s.deliver();
+  await s.tick();
+  assert.equal(s.cs.task(s.task.id)!.state, "reviewing", s.cs.task(s.task.id)!.error ?? "");
+  await s.approve(s.task.id);
+  await s.tick();
+  assert.equal(s.cs.task(s.task.id)!.state, "scheduled", s.cs.task(s.task.id)!.error ?? "");
+  assert.deepEqual(s.asked, [], "no script was written");
+  assert.deepEqual(s.staged, [], "no production was staged");
+  assert.deepEqual(s.audio, [], "no WanGP voiceover or music");
+});
+
+test("a delivered film with no style goes straight to review as a file", async () => {
+  const s = agentSetup();
+  await s.deliver({ caption: "Woodblock week" });
+  await s.tick();
+  const t = s.cs.task(s.task.id)!;
+  assert.equal(t.state, "reviewing", t.error ?? "");
+  assert.equal(t.editId, null);
+  const r = s.reviews.reviews.get(t.reviewId!)!;
+  assert.equal(r.subjectKind, "file");
+  assert.equal(r.sourcePath, clips[2]);
+  assert.equal(r.draft.caption, "Woodblock week");
+});
+
+test("a delivered film with a style is edited first", async () => {
+  const s = agentSetup({ style: "basic" });
+  await s.deliver();
+  await s.tick();
+  const t = s.cs.task(s.task.id)!;
+  assert.equal(t.state, "editing", t.error ?? "");
+  assert.equal(s.store.edit(t.editId!)!.sourcePath, clips[2]);
+  s.finishEdit(t.id);
+  await s.tick();
+  const r = s.reviews.reviews.get(s.cs.task(t.id)!.reviewId!)!;
+  assert.equal(r.subjectKind, "edit");
+  assert.equal(r.subjectId, t.editId);
+});
+
+test("an approved agent film is labelled with producer, look and version", async () => {
+  const s = agentSetup();
+  await s.deliver();
+  await s.tick();
+  const r = await s.approve(s.task.id);
+  await s.tick();
+  const t = s.cs.task(s.task.id)!;
+  assert.equal(t.state, "scheduled", t.error ?? "");
+  assert.equal(s.store.post(r.postId!)!.scheduledAt, at(2026, 11, 17, 18));
+  const labels = new AnalyticsStore(s.store).labels(r.postId!)!;
+  assert.equal(labels.producer, "lemo-opuscar");
+  assert.equal(labels.look, LOOK.key);
+  assert.equal(labels.lookVersion, "1.4.0");
+  assert.equal(labels.source, "generated");
+  assert.equal(labels.lengthSec, 5);
+});
+
+test("a WanGP video is labelled with its producer", async () => {
+  const s = setup();
+  const id = s.campaign({ tue: [s.make(1, { at: "18:00" })] });
+  s.worker.materialize();
+  const [t] = s.cs.tasksOn(id, "2026-11-17");
+  await s.toReview(t.id);
+  const r = await s.approve(t.id);
+  await s.tick();
+  const labels = new AnalyticsStore(s.store).labels(r.postId!)!;
+  assert.equal(labels.producer, "freeposter-wangp");
+  assert.equal(labels.look, null);
+});
+
+test("no delivery by the deadline skips the slot", async () => {
+  const s = agentSetup();
+  s.clock.now = at(2026, 11, 17, 12);
+  await s.tick();
+  assert.ok(claimBrief(s.cs, s.task.id, "agent-1", s.clock.now).ok);
+  s.clock.now = at(2026, 11, 17, 17, 31);
+  await s.tick();
+  const t = s.cs.task(s.task.id)!;
+  assert.equal(t.state, "missed", t.error ?? "");
+  assert.equal(t.reviewId, null);
+  assert.equal(t.postId, null, "nothing was posted");
+  const ev = s.store.eventByKey(`campaign.missed:${t.id}`);
+  assert.ok(ev);
+  assert.match(JSON.parse(ev.body).summary, /the agent didn.t deliver before .*; the slot was skipped/);
+});
+
+test("two expired leases fail the task", async () => {
+  const s = agentSetup();
+  s.clock.now = at(2026, 11, 17, 12);
+  await s.tick();
+  assert.ok(claimBrief(s.cs, s.task.id, "agent-1", s.clock.now).ok);
+  s.clock.now += 121 * 60_000;
+  await s.tick();
+  let t = s.cs.task(s.task.id)!;
+  assert.equal(t.state, "awaiting_agent", t.error ?? "");
+  assert.equal((t.choices as any).lease, undefined, "the lapsed lease is cleared");
+  assert.ok(s.store.eventByKey(`brief.expired:${t.id}:1`));
+  await s.tick();
+  assert.equal(s.events("brief.expired").length, 1, "told once per offer");
+  assert.ok(claimBrief(s.cs, s.task.id, "agent-2", s.clock.now).ok);
+  s.clock.now += 121 * 60_000;
+  assert.ok(s.clock.now < at(2026, 11, 17, 17, 30), "still before the deadline");
+  await s.tick();
+  t = s.cs.task(s.task.id)!;
+  assert.equal(t.state, "failed");
+  assert.equal(t.error, "no agent delivered after 2 tries");
+  assert.ok(s.store.eventByKey(`brief.expired:${t.id}:2`));
+  assert.ok(s.store.eventByKey(`campaign.failed:${t.id}`));
+});
+
+test("a claimed brief survives a new worker instance", async () => {
+  const s = agentSetup();
+  s.clock.now = at(2026, 11, 17, 12);
+  await s.tick();
+  assert.ok(claimBrief(s.cs, s.task.id, "agent-1", s.clock.now).ok);
+  // the app restarts mid-render: a fresh worker on the same database
+  const worker = new CampaignWorker({ store: s.store, productions: s.worker.productions, reviews: s.reviews, ai: null, now: () => s.clock.now, dir: tmp() });
+  s.clock.now += 30 * 60_000;
+  await worker.tick(); await worker.idle();
+  const t = s.cs.task(s.task.id)!;
+  assert.equal(t.state, "awaiting_agent");
+  assert.equal((t.choices as any).lease.holder, "agent-1", "still claimed");
+  assert.equal(claimBrief(s.cs, t.id, "agent-2", s.clock.now).ok, false, "nobody else can take it");
+  const out = await submitBrief(s.store, s.cs, t.id, "agent-1", { videoPath: clips[2], manifest: { look: LOOK.key, libraryVersion: "1.4.0" } }, s.clock.now);
+  assert.ok(out.ok, out.ok ? "" : out.error);
+  await worker.tick(); await worker.idle();
+  assert.equal(s.cs.task(t.id)!.state, "reviewing", s.cs.task(t.id)!.error ?? "");
+});
+
+test("a look hidden after the brief was made still delivers and labels", async () => {
+  const s = agentSetup();
+  s.clock.now = at(2026, 11, 17, 12);
+  await s.tick();
+  assert.equal(s.cs.task(s.task.id)!.state, "awaiting_agent");
+  syncLooks(s.store, "lemo-opuscar", []); // the look leaves the catalogue
+  await s.deliver();
+  await s.tick();
+  const r = await s.approve(s.task.id);
+  await s.tick();
+  assert.equal(s.cs.task(s.task.id)!.state, "scheduled", s.cs.task(s.task.id)!.error ?? "");
+  const labels = new AnalyticsStore(s.store).labels(r.postId!)!;
+  assert.equal(labels.look, LOOK.key);
+  assert.equal(labels.lookVersion, "1.4.0");
+});
+
+test("a look gone from the catalogue before its brief fails the task", async () => {
+  const s = agentSetup();
+  syncLooks(s.store, "lemo-opuscar", []);
+  s.clock.now = at(2026, 11, 17, 12);
+  await s.tick();
+  const t = s.cs.task(s.task.id)!;
+  assert.equal(t.state, "failed");
+  assert.equal(t.error, `look ${LOOK.key} is no longer in the catalogue`);
+  assert.ok(s.store.eventByKey(`campaign.failed:${t.id}`));
+  assert.equal(s.events("brief.requested").length, 0);
+});
+
+test("a stopped campaign posts no new brief", async () => {
+  const s = agentSetup();
+  s.worker.stopCampaign(s.id);
+  s.clock.now = at(2026, 11, 17, 12);
+  await s.tick();
+  assert.equal(s.cs.task(s.task.id)!.state, "queued");
+  assert.equal(s.events("brief.requested").length, 0);
+  s.worker.startCampaign(s.id);
+  await s.worker.idle();
+  await s.tick();
+  assert.equal(s.cs.task(s.task.id)!.state, "awaiting_agent");
+});
+
+test("a kept agent film awaits the agent at once", async () => {
+  const s = setup();
+  syncLooks(s.store, "lemo-opuscar", [LOOK]);
+  const id = s.campaign({ tue: [s.make(1, null, { style: null, look: LOOK.key, sec: 5 })] });
+  s.worker.materialize();
+  const [t] = s.cs.tasksOn(id, "2026-11-17");
+  await s.tick();
+  const c = s.cs.task(t.id)!.choices as any;
+  assert.equal(s.cs.task(t.id)!.state, "awaiting_agent", s.cs.task(t.id)!.error ?? "");
+  assert.equal(c.brief.postAt, null);
+  assert.equal(c.brief.deadline, TUE + 24 * HOUR);
+});
+
+test("a retried agent task keeps a delivery still on disk, else asks an agent again", async () => {
+  const s = agentSetup();
+  const film = join(tmp(), "film.mp4");
+  copyFileSync(clips[2], film);
+  await s.deliver({ clip: film });
+  s.worker.fail(s.task.id, "something broke");
+  assert.equal(s.worker.retryTask(s.task.id), null);
+  let t = s.cs.task(s.task.id)!;
+  assert.equal(t.state, "awaiting_agent");
+  assert.equal((t.choices as any).delivery.path, film, "the film is kept");
+  await s.tick();
+  assert.equal(s.cs.task(t.id)!.state, "reviewing", s.cs.task(t.id)!.error ?? "");
+
+  s.worker.fail(t.id, "it broke again");
+  rmSync(film);
+  s.clock.now = at(2026, 11, 17, 13);
+  assert.equal(s.worker.retryTask(t.id), null);
+  t = s.cs.task(t.id)!;
+  const c = t.choices as any;
+  assert.equal(t.state, "awaiting_agent");
+  assert.equal(c.delivery, undefined);
+  assert.equal(c.lease, undefined);
+  assert.equal(c.offers, 0);
+  assert.equal(t.reviewId, null);
+  assert.equal(c.brief.deadline, at(2026, 11, 17, 17, 30));
+  assert.ok(claimBrief(s.cs, t.id, "agent-3", s.clock.now).ok, "an agent can take it again");
+  assert.deepEqual(s.asked, []);
+});
+
+test("an agent's delivered film can't be sent for review another way", async () => {
+  const s = agentSetup();
+  await s.deliver();
+  await assert.rejects(
+    s.reviews.request({ subject: { kind: "file", path: clips[2] }, accountIds: [1], caption: "", title: "", scheduledAt: null, tiktok: null, allowDuplicate: false, via: "mcp", expireAtSchedule: false } as any),
+    /campaign video/,
+  );
+});
+
+test("a post line posts a kept agent film as it was delivered, labelled with its look", async () => {
+  const s = setup();
+  syncLooks(s.store, "lemo-opuscar", [LOOK]);
+  const id = s.campaign({ tue: [s.make(1, null, { style: null, look: LOOK.key, sec: 5 }), s.postLine("weekdaygrowth-tue-1", "20:00")] });
+  s.worker.materialize();
+  const [make, post] = s.cs.tasksOn(id, "2026-11-17");
+  await s.tick();
+  assert.ok(claimBrief(s.cs, make.id, "agent-1", s.clock.now).ok);
+  const out = await submitBrief(s.store, s.cs, make.id, "agent-1", { videoPath: clips[2], manifest: { look: LOOK.key, libraryVersion: "1.4.0" } }, s.clock.now);
+  assert.ok(out.ok, out.ok ? "" : out.error);
+  await s.tick();
+  await s.approve(make.id);
+  await s.tick();
+  assert.equal(s.cs.task(make.id)!.state, "kept", s.cs.task(make.id)!.error ?? "");
+  await s.tick();
+  const p = s.cs.task(post.id)!;
+  assert.equal(p.state, "reviewing", p.error ?? "");
+  const r = await s.approve(post.id);
+  assert.equal(s.reviews.reviews.get(r.id)!.sourcePath, clips[2]);
+  await s.tick();
+  assert.equal(s.cs.task(post.id)!.state, "scheduled", s.cs.task(post.id)!.error ?? "");
+  const labels = new AnalyticsStore(s.store).labels(r.postId!)!;
+  assert.equal(labels.look, LOOK.key);
+  assert.equal(labels.producer, "lemo-opuscar");
+  assert.deepEqual(s.asked, []);
 });
