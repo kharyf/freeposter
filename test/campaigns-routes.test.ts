@@ -1,6 +1,7 @@
 import "./isolated-home.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { syncLooks } from "../src/campaigns/looks.ts";
 import { applyAgentChange, campaignVocabulary } from "../src/campaigns/autorun.ts";
 import type { Row } from "../src/campaigns/rows.ts";
 import { DAYS, type CompiledCampaign } from "../src/campaigns/spec.ts";
@@ -312,4 +313,26 @@ test("the Campaigns tab lists a campaign's held Drive files and can release one,
   assert.equal(res.statusCode, 200, res.body);
   assert.ok(store.driveFile("d1")!.releasedAt);
   assert.equal((await send("POST", "/api/campaigns/held/d2/release")).statusCode, 400, "only a held file");
+});
+
+test("campaign vocabulary route lists visible looks", async () => {
+  const { send, store } = setup();
+  const entry = { description: "", needsImageGen: false, libraryVersion: "1" };
+  syncLooks(store, "lemo-opuscar", [{ key: "lemo:ukiyo-e", name: "Ukiyo-e", ...entry, needsImageGen: true }, { key: "lemo:old", name: "Old", ...entry }]);
+  syncLooks(store, "lemo-opuscar", [{ key: "lemo:ukiyo-e", name: "Ukiyo-e", ...entry, needsImageGen: true }]);
+  const res = await send("GET", "/api/campaigns");
+  assert.equal(res.statusCode, 200, res.body);
+  assert.deepEqual(res.json().looks, [{ key: "lemo:ukiyo-e", name: "Ukiyo-e", producer: "lemo-opuscar", needsImageGen: true }]);
+});
+
+test("saving an agent row with a null style round-trips", async () => {
+  const { send, store, campaignId, row } = setup();
+  syncLooks(store, "lemo-opuscar", [{ key: "lemo:ukiyo-e", name: "Ukiyo-e", description: "", needsImageGen: false, libraryVersion: "1" }]);
+  const agent = row({ origin: "agent", look: "lemo:ukiyo-e", style: null, id: 2 });
+  const res = await send("PUT", `/api/campaigns/${campaignId}/rows`, { rows: [agent] });
+  assert.equal(res.statusCode, 200, res.body);
+  const saved = (await send("GET", "/api/campaigns")).json().campaigns.find((c: { id: number }) => c.id === campaignId);
+  assert.equal(saved.rows[0].style, null);
+  assert.equal(saved.rows[0].origin, "agent");
+  assert.equal(saved.rows[0].look, "lemo:ukiyo-e");
 });

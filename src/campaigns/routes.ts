@@ -6,6 +6,7 @@ import { budget, todayUse } from "../ai/budget.ts";
 import type { Store } from "../db.ts";
 import { trustedRequest } from "../mcp.ts";
 import { campaignVocabulary, undoChange } from "./autorun.ts";
+import { allLooks } from "./looks.ts";
 import { parseRows } from "./rows.ts";
 import { CampaignStore, filesHeldBy, HIDDEN_CAP, releaseHeldFile, type Campaign, type LibraryKind, type TaskState } from "./store.ts";
 import { iso } from "./view.ts";
@@ -80,6 +81,8 @@ function campaignRoutes(app: FastifyInstance, store: Store, worker?: CampaignWor
       killed: cs.killed(),
       campaigns: cs.campaigns().map((c) => (today ? { ...view(c), today: cs.tasksOn(c.id, today) } : view(c))),
       ai: { ...todayUse(store), max: budget(store) },
+      /** the looks an Agent row can pick (hidden ones left out) */
+      looks: allLooks(store).map((l) => ({ key: l.key, name: l.name, producer: l.producer, needsImageGen: l.needsImageGen })),
     };
   });
 

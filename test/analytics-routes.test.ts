@@ -151,3 +151,10 @@ test("PUT /api/analytics/labels/:postId saves the user's edits and validates ids
   res = await app.inject({ method: "PUT", url: `/api/analytics/labels/${posts[0]}`, headers: { host: `localhost:${config.port}`, origin: "https://evil.example" }, payload: { styleId: "basic" } });
   assert.equal(res.statusCode, 403);
 });
+
+test("analytics compare accepts look and producer", async () => {
+  const { app } = setup();
+  const res = await app.inject("/api/analytics");
+  assert.equal(res.statusCode, 200, res.body);
+  for (const dim of ["look", "producer"]) assert.ok(Array.isArray(res.json().compare[dim]), dim);
+});
