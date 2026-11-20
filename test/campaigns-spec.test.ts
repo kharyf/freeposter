@@ -55,6 +55,16 @@ test("every problem is reported together", () => {
   for (const frag of ["version", "days.sun", "xyz", "count", "style", "types", "hook", "post.at"]) assert.ok(p.some((x) => x.includes(frag)), frag);
 });
 
+test("a make target length is checked", () => {
+  assert.ok(parseCompiled(doc({}, [make({ sec: 30 })]), vocab).ok);
+  assert.ok(parseCompiled(doc({}, [make({ sec: null })]), vocab).ok);
+  assert.ok(parseCompiled(doc({}, [make({ sec: 5 })]), vocab).ok);
+  assert.ok(parseCompiled(doc({}, [make({ sec: 300 })]), vocab).ok);
+  for (const sec of [4, 301, 12.5, "30"]) {
+    assert.ok(bad(doc({}, [make({ sec })])).some((p) => p.includes("days.tue[0].sec")), String(sec));
+  }
+});
+
 test("same_as_rule is refused in day instructions", () => {
   assert.ok(bad(doc({}, [make({ hook: { pick: "same_as_rule" } })])).some((p) => p.includes("same_as_rule")));
 });

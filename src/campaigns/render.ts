@@ -36,7 +36,8 @@ function makeSentence(day: Day, ins: MakeInstruction, vocab: Vocabulary): string
     `${pickText(ins.hook, vocab.hooks)} hook`, `${pickText(ins.angle, vocab.angles)} angle`, `${pickText(ins.cta, vocab.ctas)} cta`,
     typesText(ins.types, vocab), ins.post && ins.post.at !== "default" ? `at ${ins.post.at}` : "",
   ].filter(Boolean);
-  return `On ${DAY_NAMES[day]} ${verb} ${ins.count} ${styleToken(ins.style, vocab)} ${ins.count === 1 ? "video" : "videos"} with ${clauses.join(", ")}`;
+  const sec = ins.sec ? ` ${ins.sec} second` : "";
+  return `On ${DAY_NAMES[day]} ${verb} ${ins.count} ${styleToken(ins.style, vocab)}${sec} ${ins.count === 1 ? "video" : "videos"} with ${clauses.join(", ")}`;
 }
 
 function postSentence(day: Day, ins: PostInstruction, vocab: Vocabulary): string {

@@ -1,18 +1,17 @@
 // Autorun: a campaign the user switched it on for may be changed by the connected agent, "however it thinks is
-// best", inside fixed limits. Plain code decides what's allowed; nothing here asks AI except the translation of new
-// campaign text (the same translator the user's own edits use). What an agent may never do: change a CTA (its URL,
-// adding one, or using a CTA this campaign doesn't already use), raise the daily post cap, change a type's "post
-// without approval", touch the kill switch, or turn Autorun on or off. Every change needs a reason, is logged whole
-// (the campaign before and after) and notified, and can be undone while nothing has changed since.
-import type { AiService } from "../ai/router.ts";
+// best", inside fixed limits. Plain code decides what's allowed; nothing here asks AI. The agent sends the campaign's
+// whole table (its rows), as the Campaigns tab saves it. What an agent may never do: change a CTA (its URL, adding
+// one, or using a CTA this campaign doesn't already use), change the daily post cap, change a type's "post without
+// approval", touch the kill switch, start or stop the campaign, or turn Autorun on or off. Every change needs a
+// reason, is logged whole (the campaign before and after) and notified, and can be undone while nothing has changed
+// since.
 import { AnalyticsStore } from "../analytics/store.ts";
 import type { Store } from "../db.ts";
-import { allStyles, styleToken } from "../edit/styles.ts";
+import { allStyles, defaultStyleId, styleToken } from "../edit/styles.ts";
 import { queueEvent } from "../notify.ts";
-import { DAYS, parseCompiled, type CompiledCampaign, type Vocabulary } from "./spec.ts";
-import { roundTrip } from "./render.ts";
+import { compileRows, parseRows, type Row } from "./rows.ts";
+import { DAYS, type CompiledCampaign, type Vocabulary } from "./spec.ts";
 import { linksIn } from "./script.ts";
-import { translateCampaign } from "./translate.ts";
 import type { Campaign, CampaignStore, LibraryEntry } from "./store.ts";
 
 export interface AgentEntry {
@@ -23,14 +22,12 @@ export interface AgentEntry {
 }
 
 export interface AgentChange {
-  text?: string;
-  compiled?: unknown;
-  dailyPostCap?: number;
+  /** the campaign's whole new table */
+  rows?: unknown;
   addEntries?: AgentEntry[];
 }
 
 export const REASON_MAX = 500;
-const TEXT_MAX = 20_000;
 const ENTRIES_MAX = 20;
 
 /** Fields an agent might send that it may never change, with why. */
@@ -43,13 +40,17 @@ const FORBIDDEN: Record<string, string> = {
   cta: "an agent can't change CTAs",
   ctas: "an agent can't change CTAs",
   url: "an agent can't change CTA URLs",
-  enabled: "an agent can't switch a campaign on or off",
+  enabled: "an agent can't start or stop a campaign",
+  dailyPostCap: "an agent can't change the daily post cap",
+  text: "campaigns are a table now: send rows (get_campaign shows them)",
+  compiled: "campaigns are a table now: send rows (get_campaign shows them); the schedule is made from them",
 };
 
 /** What the compiler may name right now: the user's styles, video types and library. */
 export function campaignVocabulary(store: Store, cs: CampaignStore): Vocabulary {
   return {
     styles: allStyles(store).map((s) => ({ id: s.id, token: styleToken(s) })),
+    defaultStyle: defaultStyleId(store),
     types: cs.types().map((t) => ({ id: t.id, name: t.name })),
     hooks: cs.entries("hook"),
     angles: cs.entries("angle"),
@@ -91,8 +92,7 @@ function typeRefs(c: CompiledCampaign | null): { ids: Set<number>; ruleScopes: S
 function namedRefs(c: CompiledCampaign | null): { id: number; where: string }[] {
   const out: { id: number; where: string }[] = [];
   for (const d of DAYS) (c?.days[d] ?? []).forEach((ins, i) => {
-    if (ins.kind !== "make") return;
-    for (const k of ["hook", "angle", "cta"] as const) { const p = ins[k]; if (p.pick === "named") out.push({ id: p.id, where: `days.${d}[${i}].${k}` }); }
+    for (const k of ["hook", "angle", "cta"] as const) { const p = ins[k]; if (p?.pick === "named") out.push({ id: p.id, where: `days.${d}[${i}].${k}` }); }
   });
   return out;
 }
@@ -126,7 +126,7 @@ function limitProblems(cs: CampaignStore, c: Campaign, next: CompiledCampaign, v
 }
 
 /** The parts of a campaign a change writes (and an undo restores). */
-const state = (c: Campaign) => JSON.stringify([c.text, c.textSha, c.compiled, c.compiledSha, c.confirmedAt, c.dailyPostCap]);
+const state = (c: Campaign) => JSON.stringify([c.rows ?? [], c.text, c.textSha, c.compiled, c.compiledSha, c.confirmedAt, c.dailyPostCap]);
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
@@ -138,25 +138,10 @@ function precheck(c: Campaign, change: unknown, reason: unknown): string[] {
   else if (reason.length > REASON_MAX) problems.push(`the reason must be at most ${REASON_MAX} characters`);
   if (!isObj(change)) return [...problems, "the change must be an object"];
   for (const k of Object.keys(change)) {
-    if (["text", "compiled", "dailyPostCap", "addEntries"].includes(k)) continue;
-    problems.push(FORBIDDEN[k] ?? `unknown field "${k}" (an agent can change text, compiled, dailyPostCap and addEntries)`);
+    if (["rows", "addEntries"].includes(k)) continue;
+    problems.push(FORBIDDEN[k] ?? `unknown field "${k}" (an agent can change rows and addEntries)`);
   }
-  if (["text", "compiled", "dailyPostCap", "addEntries"].every((k) => change[k] === undefined)) problems.push("the change changes nothing");
-  if (change.text !== undefined && change.compiled !== undefined) {
-    problems.push("give text or compiled, not both: a schedule change rewrites the text itself, and new text is translated into the schedule");
-  }
-  // A draft of the user's (text not confirmed yet) is theirs to confirm: a new schedule would confirm it unseen.
-  if ((change.text !== undefined || change.compiled !== undefined) && c.textSha !== c.compiledSha) {
-    problems.push("the user is editing this campaign's text; wait until they confirm it");
-  }
-  if (change.text !== undefined && (typeof change.text !== "string" || !change.text.trim() || change.text.length > TEXT_MAX)) {
-    problems.push(`text must be non-empty, at most ${TEXT_MAX} characters`);
-  }
-  if (change.dailyPostCap !== undefined) {
-    const cap = change.dailyPostCap;
-    if (typeof cap !== "number" || !Number.isInteger(cap) || cap < 1) problems.push("dailyPostCap must be a whole number of at least 1");
-    else if (cap > c.dailyPostCap) problems.push(`the daily post cap can only go down: it's ${c.dailyPostCap}, and only the user can raise it`);
-  }
+  if (["rows", "addEntries"].every((k) => change[k] === undefined)) problems.push("the change changes nothing");
   if (change.addEntries !== undefined) {
     const list = change.addEntries;
     if (!Array.isArray(list) || list.length > ENTRIES_MAX) problems.push(`addEntries must be a list of at most ${ENTRIES_MAX} hooks or angles`);
@@ -181,12 +166,10 @@ function precheck(c: Campaign, change: unknown, reason: unknown): string[] {
 }
 
 /**
- * Applies an agent's change to an Autorun campaign, or refuses it with every problem found. A new text is translated
- * (plain parser, then the AI fallback) and every unread line refuses the change; a compiled schedule must pass the
- * strict check and be one the campaign text can say exactly (the text is rewritten to say it). Not both at once,
- * and neither while the user's own text edit waits to be confirmed. The resulting schedule is confirmed directly:
- * Autorun is the user's authority for it. Hooks and angles it adds belong to this campaign and can be named by that
- * same change's text or schedule.
+ * Applies an agent's change to an Autorun campaign, or refuses it with every problem found. New rows must pass the
+ * table's strict check, and the schedule they make runs at once: Autorun is the user's authority for it. Hooks and
+ * angles it adds belong to this campaign and can be named by that same change's rows (by the stand-in ids -1, -2, …
+ * in the order they're added).
  */
 export async function applyAgentChange(
   cs: CampaignStore,
@@ -195,7 +178,6 @@ export async function applyAgentChange(
   agent: string,
   reason: string,
   vocab: Vocabulary,
-  deps: { ai: Pick<AiService, "ask"> | null } = { ai: null },
 ): Promise<{ ok: true; changeId: number } | { ok: false; problems: string[] }> {
   const c = cs.campaign(campaignId);
   if (!c) return { ok: false, problems: [`no campaign ${campaignId}`] };
@@ -212,22 +194,13 @@ export async function applyAgentChange(
     angles: [...vocab.angles, ...adds.filter((e) => e.kind === "angle")],
   };
 
+  let rows: Row[] | null = null;
   let compiled: CompiledCampaign | null = null;
-  let text: string | null = change.text ?? null;
-  if (change.compiled !== undefined) {
-    const r = parseCompiled(change.compiled, withAdds);
+  if (change.rows !== undefined) {
+    const r = parseRows(change.rows, withAdds);
     if (!r.ok) return { ok: false, problems: r.problems };
-    // The text is rewritten to say the new schedule, so it always describes what runs.
-    const rt = roundTrip(r.value, withAdds);
-    if (!rt.ok) return { ok: false, problems: [rt.problem] };
-    compiled = rt.compiled;
-    text = rt.text;
-  } else if (change.text !== undefined) {
-    const t = await translateCampaign(deps, change.text, withAdds);
-    if (t.couldNotUnderstand.length) return { ok: false, problems: t.couldNotUnderstand.map((l) => `couldn't understand: "${l}"`) };
-    const r = parseCompiled(t.compiled, withAdds);
-    if (!r.ok) return { ok: false, problems: r.problems };
-    compiled = r.value;
+    rows = r.value;
+    compiled = compileRows(rows);
   }
 
   if (compiled) {
@@ -235,7 +208,7 @@ export async function applyAgentChange(
     if (problems.length) return { ok: false, problems };
   }
 
-  // The translation may have waited on AI: refuse if the user changed the campaign (or Autorun) meanwhile.
+  // Refuse if the user changed the campaign (or Autorun) meanwhile.
   const now = cs.campaign(campaignId);
   if (!now || !now.autorun || state(now) !== state(c)) return { ok: false, problems: ["the campaign changed while this change was being checked; read it again and retry"] };
 
@@ -246,18 +219,15 @@ export async function applyAgentChange(
   try {
     const realId = new Map<number, number>();
     for (const e of adds) realId.set(e.id, cs.addEntry({ kind: e.kind, name: e.name, text: e.text, keywords: e.keywords, ownerCampaignId: campaignId }));
-    if (compiled) {
-      for (const d of DAYS) for (const ins of compiled.days[d]) {
-        if (ins.kind !== "make") continue;
+    if (rows) {
+      for (const r of rows) {
         for (const k of ["hook", "angle"] as const) {
-          const p = ins[k];
-          if (p.pick === "named" && p.id < 0) ins[k] = { pick: "named", id: realId.get(p.id)! };
+          const p = r[k];
+          if (p.pick === "named" && p.id < 0) r[k] = { pick: "named", id: realId.get(p.id)! };
         }
       }
+      cs.setRows(campaignId, rows);
     }
-    if (text !== null && text !== c.text) cs.setText(campaignId, text);
-    if (compiled) cs.confirm(campaignId, compiled);
-    if (change.dailyPostCap !== undefined) cs.setDailyPostCap(campaignId, change.dailyPostCap);
     after = cs.campaign(campaignId)!;
     changeId = cs.logChange({ campaignId, agent, before: c, after: { ...after, addedEntryIds: [...realId.values()] }, reason: reason.trim() });
     db.exec("COMMIT");
@@ -267,8 +237,7 @@ export async function applyAgentChange(
   }
 
   const what = [
-    change.text !== undefined ? "its text" : compiled ? "its schedule" : null,
-    change.dailyPostCap !== undefined ? `its daily post cap (${c.dailyPostCap} → ${after.dailyPostCap})` : null,
+    rows ? "its videos" : null,
     adds.length ? `the library (${adds.map((e) => `${e.kind} "${e.name}"`).join(", ")})` : null,
   ].filter(Boolean).join(", ");
   queueEvent(cs.store, "campaign.changed", `campaign.changed:${changeId}`,
@@ -281,8 +250,9 @@ export async function applyAgentChange(
 function entryUsed(cs: CampaignStore, id: number): boolean {
   for (const c of cs.campaigns()) {
     for (const d of DAYS) for (const ins of c.compiled?.days[d] ?? []) {
-      if (ins.kind === "make" && [ins.hook, ins.angle, ins.cta].some((p) => p.pick === "named" && p.id === id)) return true;
+      if ([ins.hook, ins.angle, ins.cta].some((p) => p?.pick === "named" && p.id === id)) return true;
     }
+    if (c.rows.some((r) => [r.hook, r.angle, r.cta].some((p) => p.pick === "named" && p.id === id))) return true;
   }
   if (cs.db.prepare("SELECT 1 FROM campaign_tasks WHERE json_extract(choices, '$.hook.id') = ? OR json_extract(choices, '$.angle.id') = ? LIMIT 1").get(id, id)) return true;
   new AnalyticsStore(cs.store); // its tables, when nothing has made them yet
@@ -290,7 +260,7 @@ function entryUsed(cs: CampaignStore, id: number): boolean {
 }
 
 /**
- * Undoes one agent change: the campaign's text, schedule (and what it was confirmed for) and cap go back to what
+ * Undoes one agent change: the campaign's table, schedule (and what it was confirmed for) and cap go back to what
  * they were, and the hooks and angles it added go unless something uses them by now. Refused once undone, or when
  * the campaign has changed since (undo the later changes first).
  */

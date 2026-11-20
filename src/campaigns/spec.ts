@@ -11,12 +11,18 @@ export interface MakeInstruction {
   kind: "make";
   count: number;
   style: string;
+  /** target length in seconds ("30 second ads"), or null/absent to let the script decide */
+  sec?: number | null;
   hook: Pick;
   angle: Pick;
   cta: Pick;
   types: number[];
   post: { at: string } | null;
   source: string;
+  /** extra direction for the script writer (a table row's Instructions) */
+  instructions?: string;
+  /** the table row it came from */
+  row?: number;
 }
 
 export interface PostInstruction {
@@ -26,6 +32,14 @@ export interface PostInstruction {
   style: string | null;
   types: number[];
   source: string;
+  /** the table row it came from */
+  row?: number;
+  /** a table row's labels for the recorded video's analytics: only a named pick labels it */
+  hook?: Pick;
+  angle?: Pick;
+  cta?: Pick;
+  /** a table row's length, recorded for analytics */
+  sec?: number | null;
 }
 
 export interface Rule {
@@ -50,6 +64,8 @@ export interface CompiledCampaign {
 /** What the compiler may name: the user's styles, types and library. */
 export interface Vocabulary {
   styles: { id: string; token: string }[];
+  /** the editing style a make line takes when it names none (the user's default) */
+  defaultStyle?: string;
   types: { id: number; name: string }[];
   hooks: LibraryEntry[];
   angles: LibraryEntry[];
@@ -90,6 +106,18 @@ export function parseCompiled(raw: unknown, vocab: Vocabulary): { ok: true; valu
     if (!hit) { problem(`${where} is not one of the styles (${vocab.styles.map((s) => s.id).join(", ")})`); return typeof v === "string" ? v : ""; }
     return hit.id;
   };
+  // A make line's target length: absent and null both mean "let the script decide"; a number is a whole 5-300 seconds.
+  const targetSec = (v: unknown, where: string): number | null | undefined => {
+    if (v === undefined) return undefined;
+    if (v === null) return null;
+    if (typeof v !== "number" || !Number.isInteger(v) || v < 5 || v > 300) { problem(`${where} must be a whole number of seconds from 5 to 300, or null`); return null; }
+    return v;
+  };
+  const rowId = (v: unknown, where: string): number | undefined => {
+    if (v === undefined) return undefined;
+    if (!intIn(v, 1, 1_000_000_000)) problem(`${where} must be a table row id`);
+    return v as number;
+  };
   const types = (v: unknown, where: string): number[] => {
     if (!Array.isArray(v)) { problem(`${where} must be a list of video type ids`); return []; }
     return v.map((id, i) => {
@@ -120,7 +148,7 @@ export function parseCompiled(raw: unknown, vocab: Vocabulary): { ok: true; valu
   const instruction = (o: unknown, where: string): MakeInstruction | PostInstruction | null => {
     if (!isObj(o)) { problem(`${where} must be an object`); return null; }
     if (o.kind === "make") {
-      only(o, ["kind", "count", "style", "hook", "angle", "cta", "types", "post", "source"], where);
+      only(o, ["kind", "count", "style", "sec", "hook", "angle", "cta", "types", "post", "source", "instructions", "row"], where);
       if (!intIn(o.count, 1, 20)) problem(`${where}.count must be a whole number from 1 to 20`);
       let post: { at: string } | null = null;
       if (o.post !== null) {
@@ -129,21 +157,38 @@ export function parseCompiled(raw: unknown, vocab: Vocabulary): { ok: true; valu
       }
       const cta = pick(o.cta, `${where}.cta`, vocab.ctas, "CTA");
       if (cta.pick === "named") namedCta = true;
-      return {
+      const out: MakeInstruction = {
         kind: "make", count: o.count as number, style: style(o.style, `${where}.style`),
         hook: pick(o.hook, `${where}.hook`, vocab.hooks, "hook"), angle: pick(o.angle, `${where}.angle`, vocab.angles, "angle"), cta,
         types: types(o.types, `${where}.types`), post, source: source(o, where),
       };
+      const sec = targetSec(o.sec, `${where}.sec`);
+      if (sec !== undefined) out.sec = sec;
+      if (o.instructions !== undefined) {
+        if (typeof o.instructions !== "string" || o.instructions.length > 2000) problem(`${where}.instructions must be text of at most 2000 characters`);
+        else if (o.instructions.trim()) out.instructions = o.instructions.trim();
+      }
+      const row = rowId(o.row, `${where}.row`);
+      if (row !== undefined) out.row = row;
+      return out;
     }
     if (o.kind === "post") {
-      only(o, ["kind", "name", "at", "style", "types", "source"], where);
+      only(o, ["kind", "name", "at", "style", "types", "source", "row", "hook", "angle", "cta", "sec"], where);
       if (typeof o.name !== "string" || !o.name.trim() || o.name.includes("_")) problem(`${where}.name must be non-empty and contain no underscore`);
-      return {
+      const out: PostInstruction = {
         kind: "post", name: typeof o.name === "string" ? o.name : "",
         at: o.at === null ? null : time(o.at, `${where}.at`, false),
         style: o.style === null ? null : style(o.style, `${where}.style`),
         types: types(o.types, `${where}.types`), source: source(o, where),
       };
+      const row = rowId(o.row, `${where}.row`);
+      if (row !== undefined) out.row = row;
+      if (o.hook !== undefined) out.hook = pick(o.hook, `${where}.hook`, vocab.hooks, "hook");
+      if (o.angle !== undefined) out.angle = pick(o.angle, `${where}.angle`, vocab.angles, "angle");
+      if (o.cta !== undefined) out.cta = pick(o.cta, `${where}.cta`, vocab.ctas, "CTA");
+      const sec = targetSec(o.sec, `${where}.sec`);
+      if (sec !== undefined) out.sec = sec;
+      return out;
     }
     problem(`${where}.kind must be "make" or "post"`);
     return null;

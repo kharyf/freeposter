@@ -7,6 +7,7 @@ import { checkBudget } from "../src/ai/budget.ts";
 import { AnalyticsStore } from "../src/analytics/store.ts";
 import type { Script } from "../src/campaigns/script.ts";
 import { DAYS, type CompiledCampaign, type Day, type MakeInstruction, type PostInstruction } from "../src/campaigns/spec.ts";
+import type { Row } from "../src/campaigns/rows.ts";
 import { CampaignStore } from "../src/campaigns/store.ts";
 import { CampaignWorker, localAt } from "../src/campaigns/worker.ts";
 import { publishers } from "../src/platforms/index.ts";
@@ -397,6 +398,60 @@ test("one failed task doesn't stop the others; it fails with a notification", as
   assert.equal(s.cs.task(b.id)!.state, "editing");
 });
 
+test("a failed task can be retried from the window, from the step that failed", async () => {
+  const s = setup();
+  const id = s.campaign({ tue: [s.make(1, { at: "default" })] });
+  s.worker.materialize();
+  const [t] = s.cs.tasksOn(id, "2026-11-17");
+  await s.tick();
+  const firstProduction = s.cs.task(t.id)!.productionId!;
+  s.ps.setState(firstProduction, { state: "failed", error: "out of memory" });
+  await s.tick();
+  assert.equal(s.cs.task(t.id)!.state, "failed");
+
+  // The failed production is dropped, the script and audio are kept, and it renders again.
+  assert.equal(s.worker.retryTask(t.id), null);
+  const retried = s.cs.task(t.id)!;
+  assert.equal(retried.state, "rendering", retried.error ?? "");
+  assert.equal(retried.productionId, null);
+  assert.equal(s.asked.length, 1, "the script isn't written again");
+  await s.tick();
+  assert.notEqual(s.cs.task(t.id)!.productionId, firstProduction);
+  assert.ok(s.cs.task(t.id)!.choices.script, "the script is reused");
+});
+
+test("retrying a failed edit keeps the finished video and edits it again", async () => {
+  const s = setup();
+  const id = s.campaign({ tue: [s.make(1, { at: "default" })] });
+  s.worker.materialize();
+  const [t] = s.cs.tasksOn(id, "2026-11-17");
+  await s.tick();
+  s.finishProduction(t.id);
+  await s.tick();
+  const productionId = s.cs.task(t.id)!.productionId!;
+  const editId = s.cs.task(t.id)!.editId!;
+  s.store.updateEdit(editId, { state: "failed", error: "render broke" });
+  await s.tick();
+  assert.equal(s.cs.task(t.id)!.state, "failed");
+
+  assert.equal(s.worker.retryTask(t.id), null);
+  const retried = s.cs.task(t.id)!;
+  assert.equal(retried.state, "rendering", retried.error ?? "");
+  assert.equal(retried.productionId, productionId, "the finished video is kept");
+  assert.equal(retried.editId, null);
+  await s.tick();
+  assert.notEqual(s.cs.task(t.id)!.editId, editId);
+});
+
+test("only a failed task can be retried", () => {
+  const s = setup();
+  const id = s.campaign({ tue: [s.make(1, { at: "default" })] });
+  s.worker.materialize();
+  const [t] = s.cs.tasksOn(id, "2026-11-17");
+  assert.match(s.worker.retryTask(t.id)!, /failed/);
+  assert.equal(s.worker.retryTask(9999), "no such task");
+});
+
 test("a campaign's video can't be sent for review another way while its task is in flight", async () => {
   const s = setup();
   const id = s.campaign({ tue: [s.make(1, { at: "default" })] });
@@ -648,6 +703,18 @@ test("a campaign job whose post no campaign task owns can't be retried", async (
   assert.equal(s.store.job(job.id)!.state, "failed");
 });
 
+test("retrying a failed campaign video whose upload failed re-queues the upload and places it again", async () => {
+  const s = setup();
+  const id = s.campaign({ tue: [s.make(1, { at: "18:00" })] });
+  const { t, job } = await failedCampaignJob(s, id);
+  assert.equal(s.worker.retryTask(t.id), null);
+  assert.equal(s.store.job(job.id)!.state, "queued", "the upload is queued again");
+  assert.equal(s.store.job(job.id)!.nextRunAt, Number.MAX_SAFE_INTEGER, "held until the campaign worker places it");
+  await s.tick();
+  assert.equal(s.cs.task(t.id)!.state, "scheduled", s.cs.task(t.id)!.error ?? "");
+  assert.equal(s.store.job(job.id)!.nextRunAt, at(2026, 11, 17, 18), "placed again at its own time");
+});
+
 test("a campaign task (and a rule task) waits for tomorrow's AI budget instead of failing, says so once, and runs after midnight", async () => {
   const s = setup();
   const id = s.campaign({ tue: [s.make(1, { at: "18:00" })] });
@@ -677,4 +744,98 @@ test("a campaign task (and a rule task) waits for tomorrow's AI budget instead o
   const next = s.cs.task(t.id)!;
   assert.equal(next.state, "rendering", next.error ?? "");
   assert.equal((next.choices as any).waiting, undefined);
+});
+
+// ---- the campaign table ----
+
+const tableRow = (s: ReturnType<typeof setup>, extra: Partial<Row> = {}): Row => ({
+  id: 1, quantity: 1, hook: { pick: "random" }, angle: { pick: "random" }, cta: { pick: "named", id: s.cta }, style: "basic",
+  type: null, time: "09:00", days: ["tue"], sec: 9, origin: "create", text: "", ...extra, // the stand-in AI's scripts run 9 seconds
+});
+const tableCampaign = (s: ReturnType<typeof setup>, rows: Row[], name = "Table") => {
+  const id = s.cs.create({ name, text: "", accountSetId: null, defaultPostTimes: [], dailyPostCap: 100 });
+  s.cs.setRows(id, rows);
+  return id;
+};
+
+test("table rows: a task is named by its row, so adding or removing rows mid-day never re-makes or skips one", () => {
+  const s = setup();
+  const id = tableCampaign(s, [tableRow(s, { id: 1, quantity: 2 }), tableRow(s, { id: 2 })]);
+  assert.equal(s.worker.materialize(), 3);
+  // row 1 removed and a new row 3 put first: row 2 isn't made again, row 3 is made
+  s.cs.setRows(id, [tableRow(s, { id: 3 }), tableRow(s, { id: 2 })]);
+  assert.equal(s.worker.materialize(), 1);
+  const tasks = s.cs.tasksOn(id, "2026-11-17");
+  assert.deepEqual(tasks.map((t) => t.instructionIndex).sort(), [100_001, 100_001, 100_002, 100_003]);
+  // a row with no days, or a Drive row with no file name, makes nothing
+  s.cs.setRows(id, [tableRow(s, { id: 4, days: [] }), tableRow(s, { id: 5, origin: "drive", text: "" })]);
+  assert.equal(s.worker.materialize(), 0);
+});
+
+test("a Create row's instructions and length go to the script writer", async () => {
+  const s = setup();
+  const id = tableCampaign(s, [tableRow(s, { text: "Show the app on a phone", sec: 120 })]);
+  s.worker.materialize();
+  const [t] = s.cs.tasksOn(id, "2026-11-17");
+  await s.tick();
+  assert.ok(t);
+  assert.match(s.asked[0].prompt, /The owner's instructions for this video:\nShow the app on a phone/);
+  assert.match(s.asked[0].prompt, /about 120 seconds/);
+});
+
+test("a Drive row's named hook, angle and CTA and its length label the post it makes", async () => {
+  const s = setup();
+  const id = tableCampaign(s, [tableRow(s, { origin: "drive", text: "Gatekeeping", hook: { pick: "named", id: s.hooks[1] }, angle: { pick: "random" }, sec: 45 })]);
+  s.worker.materialize();
+  const [t] = s.cs.tasksOn(id, "2026-11-17");
+  const c = t.choices as any;
+  assert.equal(t.kind, "post");
+  assert.equal(c.hook.id, s.hooks[1]);
+  assert.equal(c.angle, undefined, "random would only guess what a recorded video says");
+  assert.equal(c.cta.id, s.cta);
+  assert.equal(c.postTime, "09:00");
+  assert.equal(c.instruction.sec, 45);
+});
+
+test("Stop Campaign holds only its own posts and starts nothing new for it; Start Campaign lets them go", async () => {
+  const s = setup();
+  const id = tableCampaign(s, [tableRow(s, { quantity: 2, time: "18:00" })]);
+  const other = tableCampaign(s, [tableRow(s, { time: "19:00" })], "Other");
+  s.worker.materialize();
+  const [a, b] = s.cs.tasksOn(id, "2026-11-17");
+  await s.toReview(a.id);
+  await s.approve(a.id);
+  await s.tick();
+  assert.equal(s.cs.task(a.id)!.state, "scheduled");
+  const aPost = s.cs.task(a.id)!.postId!;
+  const aTime = s.store.jobsForPost(aPost)[0].nextRunAt;
+  assert.equal(s.cs.task(b.id)!.state, "rendering");
+
+  assert.equal(s.worker.stopCampaign(id), 1);
+  assert.equal(s.cs.campaign(id)!.enabled, false);
+  assert.equal(s.store.jobsForPost(aPost)[0].nextRunAt, Number.MAX_SAFE_INTEGER, "its scheduled post is held");
+  // its render finishes and is reviewed, but an approval stays held; the other campaign goes on
+  s.finishProduction(b.id);
+  await s.tick();
+  s.finishEdit(b.id);
+  await s.tick();
+  const r = await s.approve(b.id);
+  await s.tick();
+  assert.equal(s.cs.task(b.id)!.state, "reviewing", "approved, but it doesn't post while its campaign is stopped");
+  assert.ok(s.store.jobsForPost(r.postId!).every((j) => j.nextRunAt === Number.MAX_SAFE_INTEGER));
+  assert.equal(s.store.jobsForPost(aPost)[0].nextRunAt, Number.MAX_SAFE_INTEGER, "a tick doesn't release it");
+  const [o] = s.cs.tasksOn(other, "2026-11-17");
+  assert.notEqual(s.cs.task(o.id)!.state, "queued", "another campaign isn't stopped");
+  // tomorrow's tasks aren't made while it's stopped
+  s.clock.now = at(2026, 11, 18, 8);
+  s.cs.setRows(id, [tableRow(s, { quantity: 2, time: "18:00", days: ["tue", "wed"] })]);
+  s.worker.materialize();
+  assert.equal(s.cs.tasksOn(id, "2026-11-18").length, 0);
+  s.clock.now = TUE + 60_000;
+
+  assert.equal(s.worker.startCampaign(id), 1);
+  assert.equal(s.store.jobsForPost(aPost)[0].nextRunAt, aTime, "its held post goes back to its time");
+  await s.worker.idle();
+  await s.tick();
+  assert.equal(s.cs.task(b.id)!.state, "scheduled");
 });

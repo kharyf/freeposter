@@ -38,11 +38,12 @@ test("duePolls returns only polls whose next time has passed and are not done", 
 
 test("labels round-trip and setLabels replaces", () => {
   const a = new AnalyticsStore(newStore());
-  const l: VideoLabels = { postId: 7, source: "generated", styleId: "s", hookId: 1, hookText: "h", angleId: null, angleText: null, ctaId: 2, ctaText: "c", campaignId: 3, campaignTaskId: 4, types: [1, 2], labelledBy: "campaign" };
+  const l: VideoLabels = { postId: 7, source: "generated", styleId: "s", hookId: 1, hookText: "h", angleId: null, angleText: null, ctaId: 2, ctaText: "c", campaignId: 3, campaignTaskId: 4, types: [1, 2], labelledBy: "campaign", lengthSec: 30 };
   a.setLabels(l);
   assert.deepEqual(a.labels(7), l);
-  a.setLabels({ ...l, hookText: "fixed", labelledBy: "user" });
+  a.setLabels({ ...l, hookText: "fixed", labelledBy: "user", lengthSec: undefined });
   assert.equal(a.labels(7)?.hookText, "fixed");
+  assert.equal(a.labels(7)?.lengthSec, 30, "a relabel that says no length keeps the campaign's");
   assert.equal(a.allLabels().length, 1);
   assert.equal(a.labels(8), undefined);
 });

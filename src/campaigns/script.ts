@@ -4,16 +4,27 @@ import type { AiService } from "../ai/router.ts";
 import { config } from "../config.ts";
 import type { ProductionSpec, WanShot } from "../produce/spec.ts";
 import type { LibraryEntry } from "./store.ts";
+import { TLDS } from "./tlds.ts";
 
 export interface Script { lines: string[]; shots: { prompt: string; sec: number }[]; caption: string; title: string; musicPrompt: string }
 export interface ScriptChoice { hook: LibraryEntry; angle: LibraryEntry; cta: LibraryEntry }
 
-const MAX_LINES = 12;
-const MIN_TOTAL_SEC = 8;
-const MAX_TOTAL_SEC = 60;
-const MAX_SHOTS = 8;
 const MIN_SHOT_SEC = 2;
 const MAX_SHOT_SEC = 10;
+
+/**
+ * How long and how many: 8-60 seconds, 12 lines and 8 shots for an ordinary video, stretched for a longer target (up
+ * to 300 seconds, about a line per 5 seconds) or lowered for a shorter one (down to 5 seconds).
+ */
+export function scriptLimits(targetSec?: number) {
+  const t = targetSec ?? 0;
+  return {
+    maxLines: Math.max(12, Math.ceil(t / 5)),
+    maxShots: Math.max(8, Math.ceil(t / MAX_SHOT_SEC) + 2),
+    minTotal: t ? Math.min(8, Math.max(MIN_SHOT_SEC, t - Math.max(4, Math.round(t * 0.2)))) : 8,
+    maxTotal: Math.max(60, t ? t + Math.max(4, Math.round(t * 0.2)) : 60),
+  };
+}
 
 const SCHEMA = {
   type: "object",
@@ -33,7 +44,7 @@ const SCHEMA = {
   additionalProperties: false,
 };
 
-const SYSTEM = `You write the script for a short vertical social video that is generated end to end: a voiceover, a few AI-generated video shots and a soundtrack.
+const system = (l: ReturnType<typeof scriptLimits>) => `You write the script for a short vertical social video that is generated end to end: a voiceover, a few AI-generated video shots and a soundtrack.
 Definitions (the owner's own words):
 - hook: a phrase that the video opens with in the first 2-3 seconds
 - angle: the description of the problem the video is claiming to solve
@@ -43,8 +54,10 @@ Rules:
 - The video is built around the angle.
 - The last spoken line contains the CTA's spoken call, word for word.
 - The only link anywhere (script lines and caption) is the CTA's link, and the caption contains it.
-- At most ${MAX_LINES} lines; no line starts with "#"; no line is empty.
-- ${1} to ${MAX_SHOTS} shots, each ${MIN_SHOT_SEC} to ${MAX_SHOT_SEC} seconds, ${MIN_TOTAL_SEC} to ${MAX_TOTAL_SEC} seconds in all. Each shot prompt describes one moving scene to generate, in plain visual terms, with no text on screen.
+- At most ${l.maxLines} lines; no line starts with "#"; no line is empty.
+- 1 to ${l.maxShots} shots, each ${MIN_SHOT_SEC} to ${MAX_SHOT_SEC} seconds, ${l.minTotal} to ${l.maxTotal} seconds in all.
+- When the brief gives the owner's instructions, follow them, unless they break one of these rules.
+- When the brief gives a target length, the shots' total should be close to it. Each shot prompt describes one moving scene to generate, in plain visual terms, with no text on screen.
 - musicPrompt describes an instrumental soundtrack. title is a short name for the video.`;
 
 const normalize = (s: string) => s.toLowerCase().replace(/[\p{P}\p{S}]/gu, "").replace(/\s+/g, " ").trim();
@@ -60,7 +73,8 @@ const URL_PATTERNS = [
 /**
  * The text as a viewer reads it: compatibility forms folded (NFKC: a full-width "．" is "."), invisible format
  * characters (zero-width spaces and joiners) removed, other dots that read as one ("。", "｡") made ".", and a spelled
- * dot ("example dot com", "example[.]com", "example(dot)com") read as the domain it spells, before any TLD.
+ * dot ("example dot com", "example[.]com", "example(dot)com") read as the domain it spells — but only before a real
+ * TLD, so ordinary speech ("a polka dot dress") isn't mistaken for one.
  */
 const deobfuscate = (t: string) => t
   .normalize("NFKC")
@@ -68,7 +82,7 @@ const deobfuscate = (t: string) => t
   .replace(/[。｡․﹒]/gu, ".")
   .replace(/\s*[[(]\s*dot\s*[\])]\s*/gi, ".")
   .replace(/\[\.\]|\(\.\)/g, ".")
-  .replace(/(?<=[\p{L}\p{N}])\s+dot\s+(?=\p{L}{2,}(?![\p{L}\p{N}-]))/giu, ".");
+  .replace(/(?<=[\p{L}\p{N}])\s+dot\s+(\p{L}{2,})(?![\p{L}\p{N}-])/giu, (m, tld: string) => (TLDS.has(tld.toLowerCase()) ? `.${tld}` : m));
 const normUrl = (u: string) => u.toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/[.,;:!?)"'\]]+$/, "").replace(/\/+$/, "");
 /** Every link in a text, read the way a viewer reads it (see deobfuscate). */
 export const linksIn = (text: string): string[] => {
@@ -76,7 +90,8 @@ export const linksIn = (text: string): string[] => {
   return URL_PATTERNS.flatMap((re) => t.match(re) ?? []);
 };
 
-export function checkScript(s: Script, choice: ScriptChoice): string[] {
+export function checkScript(s: Script, choice: ScriptChoice, targetSec?: number): string[] {
+  const { maxLines: MAX_LINES, maxShots: MAX_SHOTS, minTotal: MIN_TOTAL_SEC, maxTotal: MAX_TOTAL_SEC } = scriptLimits(targetSec);
   const problems: string[] = [];
   const lines = Array.isArray(s.lines) ? s.lines : [];
   const shots = Array.isArray(s.shots) ? s.shots : [];
@@ -94,12 +109,14 @@ export function checkScript(s: Script, choice: ScriptChoice): string[] {
     if (!cta) problems.push("the call to action has no words, so the last line can't contain it");
     else if (!` ${last} `.includes(` ${cta} `)) problems.push(`the last line must contain the call to action: "${choice.cta.text}"`);
   }
-  const allowed = choice.cta.url ? normUrl(choice.cta.url) : null;
+  // The chosen hook, angle and CTA are the user's own words (an agent can't add one that carries a link), so a link
+  // a viewer would read in them is allowed too: a hook the user wrote is never refused for reading as one.
+  const allowed = new Set<string>([choice.hook.text, choice.angle.text, choice.cta.text, choice.cta.url ?? ""].flatMap((t) => linksIn(String(t))).map(normUrl));
   const seen = new Set<string>();
   for (const text of [...lines, s.caption ?? "", s.title ?? "", s.musicPrompt ?? "", ...shots.map((sh) => sh?.prompt ?? "")]) {
     for (const m of linksIn(String(text))) {
       const n = normUrl(m);
-      if (n !== allowed && !seen.has(n)) { seen.add(n); problems.push(`the link ${m} isn't allowed; the only link is ${choice.cta.url ?? "none"}`); }
+      if (!allowed.has(n) && !seen.has(n)) { seen.add(n); problems.push(`the link ${m} isn't allowed; the only link is ${choice.cta.url ?? "none"}`); }
     }
   }
   if (choice.cta.url && !linksIn(String(s.caption ?? "")).some((m) => normUrl(m) === normUrl(choice.cta.url!))) problems.push(`the caption must contain the link ${choice.cta.url}`);
@@ -111,24 +128,31 @@ export function checkScript(s: Script, choice: ScriptChoice): string[] {
     else total += sh.sec;
   });
   if (total < MIN_TOTAL_SEC || total > MAX_TOTAL_SEC) problems.push(`the shots add up to ${total} seconds; they must be ${MIN_TOTAL_SEC} to ${MAX_TOTAL_SEC} seconds in all`);
+  if (targetSec) {
+    const tol = Math.max(4, Math.round(targetSec * 0.2));
+    if (total < targetSec - tol || total > targetSec + tol) problems.push(`the shots add up to ${total} seconds; aim for about ${targetSec} (within ${tol})`);
+  }
   if (typeof s.title !== "string" || !s.title.trim()) problems.push("the title is empty");
   if (typeof s.musicPrompt !== "string" || !s.musicPrompt.trim()) problems.push("the music prompt is empty");
   return problems;
 }
 
-export async function writeScript(deps: { ai: AiService }, choice: ScriptChoice): Promise<Script> {
+export async function writeScript(deps: { ai: AiService }, choice: ScriptChoice, targetSec?: number, instructions?: string): Promise<Script> {
   const { hook, angle, cta } = choice;
+  const SYSTEM = system(scriptLimits(targetSec));
   const brief = [
     `Hook: ${hook.text}`,
     `Angle: ${angle.text}`,
     `CTA (spoken call): ${cta.text}`,
     cta.url ? `CTA link: ${cta.url}` : "The CTA has no link; the script and caption contain no link.",
-  ].join("\n");
+    targetSec ? `Target length: about ${targetSec} seconds (make the shots add up close to that).` : "",
+    instructions?.trim() ? `The owner's instructions for this video:\n${instructions.trim()}` : "",
+  ].filter(Boolean).join("\n");
   let prompt = `${brief}\n\nWrite the script.`;
   let problems: string[] = [];
   for (let attempt = 0; attempt < 2; attempt++) {
     const s = await deps.ai.ask<Script>("script", { system: SYSTEM, prompt, schema: SCHEMA, effort: "medium" });
-    problems = checkScript(s, choice);
+    problems = checkScript(s, choice, targetSec);
     if (!problems.length) return s;
     prompt = `${brief}\n\nYour last script had these problems:\n- ${problems.join("\n- ")}\n\nWrite the whole script again and fix every one.`;
   }

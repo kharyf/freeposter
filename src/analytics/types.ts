@@ -42,4 +42,6 @@ export interface VideoLabels {
   campaignTaskId: number | null;
   types: number[];
   labelledBy: "campaign" | "transcript" | "ai" | "user";
+  /** the length its campaign table row gave, in seconds (absent or null when none did) */
+  lengthSec?: number | null;
 }

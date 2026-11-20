@@ -10,7 +10,7 @@ import type { CampaignWorker } from "./worker.ts";
 
 type Args = Record<string, unknown>;
 
-export const CAMPAIGN_INSTRUCTIONS = `Campaigns run the user's weekly posting plans by themselves (list_campaigns, get_campaign), and get_analytics / get_video_metrics show how videos did. Only a campaign the user switched Autorun on for can be changed by you: update_campaign (its text, compiled schedule, or a lower daily post cap) and add_library_entry (new hooks and angles), each with a reason the user sees. Autorun can never change CTAs or use one the campaign doesn't already use, raise the daily post cap, change a type's "post without approval", or turn Autorun or the kill switch on or off. Every change is logged (under the name your MCP client gave, which is advisory) and the user can undo it; hooks and angles you add belong to that campaign. stop_campaigns stops every campaign at once (the user asked you to, or something is clearly wrong); only the user can resume them.`;
+export const CAMPAIGN_INSTRUCTIONS = `Campaigns run the user's weekly posting plans by themselves (list_campaigns, get_campaign), and get_analytics / get_video_metrics show how videos did. Each campaign is a table: one row per kind of video, on the days it ticks. Only a campaign the user switched Autorun on for can be changed by you: update_campaign (its whole table of rows) and add_library_entry (new hooks and angles), each with a reason the user sees. Autorun can never change CTAs or use one the campaign doesn't already use, change a type's "post without approval", start or stop a campaign, or turn Autorun or the kill switch on or off. Every change is logged (under the name your MCP client gave, which is advisory) and the user can undo it; hooks and angles you add belong to that campaign. stop_campaigns stops every campaign at once (the user asked you to, or something is clearly wrong); only the user can resume them.`;
 
 export function campaignTools(opts: {
   store: Store;
@@ -42,7 +42,7 @@ export function campaignTools(opts: {
   const apply = async (cid: number, change: AgentChange, reason: string) => {
     const campaigns = cs();
     campaign(cid);
-    const r = await applyAgentChange(campaigns, cid, change, opts.agent(), reason, campaignVocabulary(store, campaigns), { ai: opts.worker()?.ai ?? null });
+    const r = await applyAgentChange(campaigns, cid, change, opts.agent(), reason, campaignVocabulary(store, campaigns));
     if (!r.ok) throw fail(`refused: ${r.problems.join("; ")}`);
     return r.changeId;
   };
@@ -51,7 +51,7 @@ export function campaignTools(opts: {
     {
       name: "list_campaigns",
       title: "List campaigns",
-      description: "Every campaign with whether it's on, runnable (its schedule is confirmed for its text), Autorun, and its daily post cap; and whether the kill switch has stopped them all.",
+      description: "Every campaign with whether it's on (enabled: false means the user pressed Stop Campaign), runnable, and Autorun; and whether the kill switch has stopped them all.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
       annotations: { readOnlyHint: true, openWorldHint: false },
       async run() {
@@ -61,7 +61,7 @@ export function campaignTools(opts: {
     {
       name: "get_campaign",
       title: "Get a campaign",
-      description: "One campaign: its text, its confirmed compiled schedule (days of make/post lines and rules), cap, default post times, what its rules stopped using, the styles and video types a schedule may name, and the Autorun change log (each with its reason, and whether the user undid it).",
+      description: "One campaign: its table (rows), the day-by-day schedule the rows make (compiled), the editing styles and video types a row may name, and the Autorun change log (each with its reason, and whether the user undid it). Library ids are in list_library.",
       inputSchema: {
         type: "object",
         properties: { campaign_id: { type: "integer" } },
@@ -73,7 +73,7 @@ export function campaignTools(opts: {
         const c = campaign(id(args));
         const vocab = campaignVocabulary(store, cs());
         return {
-          ...brief(c), text: c.text, compiled: c.compiled, default_post_times: c.defaultPostTimes, account_set_id: c.accountSetId,
+          ...brief(c), rows: c.rows, compiled: c.compiled, account_set_id: c.accountSetId,
           excluded: cs().excluded(c.id), killed: cs().killed(),
           styles: vocab.styles.map((s) => s.id), types: vocab.types,
           changes: cs().changes(c.id).map((ch) => ({ id: ch.id, agent: ch.agent, at: iso(ch.at), reason: ch.reason, undone_at: iso(ch.undoneAt) })),
@@ -83,37 +83,31 @@ export function campaignTools(opts: {
     {
       name: "update_campaign",
       title: "Change an Autorun campaign",
-      description: "Changes a campaign the user switched Autorun on for: either its plain-English text (translated as the user's edits are; any line that can't be understood refuses the change) or its compiled schedule (the same JSON get_campaign shows, checked strictly; the text is rewritten to say it, and a schedule the text can't say is refused), not both, and/or a lower daily post cap. Refused while the user is editing the text and hasn't confirmed it. Only videos not yet made pick up the change: today's tasks already made keep what they were given, and undoing a change doesn't touch tasks made in between. It may only use CTAs, and types that post without approval, the campaign already uses, never another campaign's own hooks or angles, and never raises the cap. reason is required and the user sees it; they can undo the change. The change is logged under the name your MCP client introduced itself with (advisory: FreePoster can't verify it).",
+      description: "Changes a campaign the user switched Autorun on for: its whole table, as get_campaign shows its rows (send every row, changed or not; a row left out is removed). Each row: id (a whole number, unique in the table; keep a row's id when changing it, use a new one for a new row), quantity (1-10 videos), hook / angle / cta ({\"pick\": \"random\"}, {\"pick\": \"best\"} or {\"pick\": \"named\", \"id\": <library id>}), style (an editing style id), type (a video type id or null), time (24-hour \"HH:MM\", or null: a Create video made and kept, not posted), days (any of sun, mon, tue, wed, thu, fri, sat), sec (length, 5-300 seconds), origin (\"create\": a generated video; text is extra instructions for its script; or \"drive\": a recorded Drive file; text is the file name, the part of its Drive filename before the first underscore; its hook, angle, cta and sec only label it for analytics) and text. Checked strictly. Only videos not yet made pick up the change: today's tasks already made keep what they were given, and undoing a change doesn't touch tasks made in between. It may only use CTAs, and types that post without approval, the campaign already uses, and never another campaign's own hooks or angles. reason is required and the user sees it; they can undo the change. The change is logged under the name your MCP client introduced itself with (advisory: FreePoster can't verify it).",
       inputSchema: {
         type: "object",
         properties: {
           campaign_id: { type: "integer" },
           reason: { type: "string", maxLength: REASON_MAX, description: "Why: one or two sentences, e.g. what the analytics showed." },
-          text: { type: "string", description: "The campaign's new text." },
-          compiled: { type: "object", description: "A new compiled schedule, shaped like get_campaign's compiled." },
-          daily_post_cap: { type: "integer", minimum: 1, description: "A lower daily post cap (it can't go up)." },
+          rows: { type: "array", items: { type: "object" }, description: "The campaign's whole new table, shaped like get_campaign's rows." },
         },
-        required: ["campaign_id", "reason"],
+        required: ["campaign_id", "reason", "rows"],
         additionalProperties: false,
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
       async run(args) {
         const cid = id(args);
         const reason = reasonOf(args);
-        const change: AgentChange = {};
-        if (args.text !== undefined) change.text = args.text as string;
-        if (args.compiled !== undefined) change.compiled = args.compiled;
-        if (args.daily_post_cap !== undefined) change.dailyPostCap = args.daily_post_cap as number;
-        if (!Object.keys(change).length) throw fail("give text, compiled or daily_post_cap to change");
-        const changeId = await apply(cid, change, reason);
+        if (args.rows === undefined) throw fail("give rows: the campaign's whole new table");
+        const changeId = await apply(cid, { rows: args.rows }, reason);
         const c = campaign(cid);
-        return { change_id: changeId, campaign: { ...brief(c), text: c.text, compiled: c.compiled } };
+        return { change_id: changeId, campaign: { ...brief(c), rows: c.rows, compiled: c.compiled } };
       },
     },
     {
       name: "list_library",
       title: "List the library",
-      description: "The hooks, angles and CTAs campaigns use, with their ids (for named picks in a compiled schedule), text, keywords, and owner_campaign_id: null for the user's own (any campaign may use them), else the campaign whose Autorun added it (only that campaign uses it).",
+      description: "The hooks, angles and CTAs campaigns use, with their ids (for named picks in a campaign's rows), text, keywords, and owner_campaign_id: null for the user's own (any campaign may use them), else the campaign whose Autorun added it (only that campaign uses it).",
       inputSchema: {
         type: "object",
         properties: { kind: { type: "string", enum: ["hook", "angle", "cta"] } },

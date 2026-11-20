@@ -3,6 +3,7 @@
 import { createHash } from "node:crypto";
 import type { Store } from "../db.ts";
 import type { DriveFileRecord } from "../types.ts";
+import { compileRows, type Row } from "./rows.ts";
 import type { CompiledCampaign } from "./spec.ts";
 
 const SCHEMA = `
@@ -109,6 +110,8 @@ export interface VideoType {
 export interface Campaign {
   id: number;
   name: string;
+  /** the table the Campaigns tab edits; its compiled schedule is what runs */
+  rows: Row[];
   text: string;
   textSha: string;
   compiled: CompiledCampaign | null;
@@ -166,7 +169,7 @@ const toEntry = (r: any): LibraryEntry => ({
 });
 const toType = (r: any): VideoType => ({ id: r.id, name: r.name, color: r.color, autoPost: Boolean(r.auto_post), createdAt: r.created_at });
 const toCampaign = (r: any): Campaign => ({
-  id: r.id, name: r.name, text: r.text, textSha: r.text_sha, compiled: r.compiled ? JSON.parse(r.compiled) : null,
+  id: r.id, name: r.name, rows: r.rows ? JSON.parse(r.rows) : [], text: r.text, textSha: r.text_sha, compiled: r.compiled ? JSON.parse(r.compiled) : null,
   compiledSha: r.compiled_sha, confirmedAt: r.confirmed_at, enabled: Boolean(r.enabled), autorun: Boolean(r.autorun),
   accountSetId: r.account_set_id, defaultPostTimes: JSON.parse(r.default_post_times), dailyPostCap: r.daily_post_cap,
   createdAt: r.created_at, updatedAt: r.updated_at,
@@ -188,6 +191,9 @@ const TASK_COLUMNS: Record<string, string> = {
 const ENTRY_COLUMNS: Record<string, string> = { name: "name", text: "text", keywords: "keywords", url: "url" };
 
 const ready = new WeakSet<Store>();
+
+/** The daily post cap every campaign made from the window gets: no longer shown, a safety net only. */
+export const HIDDEN_CAP = 100;
 
 /** Enabled, and its compiled schedule was confirmed for its current text. */
 /** Whether the confirmed schedule is the one for the campaign's current text (editing the text unconfirms it). */
@@ -295,6 +301,22 @@ export class CampaignStore {
     store.db.exec(SCHEMA);
     const libraryColumns = store.db.prepare("PRAGMA table_info(library)").all() as { name: string }[];
     if (!libraryColumns.some((c) => c.name === "owner_campaign_id")) store.db.exec("ALTER TABLE library ADD COLUMN owner_campaign_id INTEGER");
+    const campaignColumns = store.db.prepare("PRAGMA table_info(campaigns)").all() as { name: string }[];
+    if (!campaignColumns.some((c) => c.name === "rows")) {
+      // The table replaced the plain-English text: every campaign starts with an empty table (the user's choice),
+      // so nothing runs from text it no longer shows. Default post times and the daily cap left the window too: the
+      // cap stays as a hidden safety net at its highest.
+      store.db.exec("BEGIN");
+      try {
+        store.db.exec("ALTER TABLE campaigns ADD COLUMN rows TEXT");
+        store.db.prepare(`UPDATE campaigns SET rows = '[]', compiled = ?, compiled_sha = text_sha, confirmed_at = ?, default_post_times = '[]', daily_post_cap = ?`)
+          .run(JSON.stringify(compileRows([])), Date.now(), HIDDEN_CAP);
+        store.db.exec("COMMIT");
+      } catch (err) {
+        store.db.exec("ROLLBACK");
+        throw err;
+      }
+    }
   }
 
   get db() {
@@ -378,6 +400,14 @@ export class CampaignStore {
       .run(JSON.stringify(compiled), now, now, id);
   }
 
+  /** The table saved: its schedule is what runs, confirmed at once (the table is the user's own authority). */
+  setRows(id: number, rows: Row[]) {
+    const now = Date.now();
+    this.db
+      .prepare("UPDATE campaigns SET rows = ?, compiled = ?, compiled_sha = text_sha, confirmed_at = ?, updated_at = ? WHERE id = ?")
+      .run(JSON.stringify(rows), JSON.stringify(compileRows(rows)), now, now, id);
+  }
+
   setEnabled(id: number, on: boolean) {
     this.db.prepare("UPDATE campaigns SET enabled = ?, updated_at = ? WHERE id = ?").run(on ? 1 : 0, Date.now(), id);
   }
@@ -398,12 +428,12 @@ export class CampaignStore {
     this.db.prepare("UPDATE campaigns SET daily_post_cap = ?, updated_at = ? WHERE id = ?").run(cap, Date.now(), id);
   }
 
-  /** Undoing an Autorun change: the text, compiled schedule (and what it was confirmed for) and cap as they were. */
-  restore(id: number, c: Pick<Campaign, "text" | "textSha" | "compiled" | "compiledSha" | "confirmedAt" | "dailyPostCap">) {
+  /** Undoing an Autorun change: the table, text, compiled schedule (and what it was confirmed for) and cap as they were. */
+  restore(id: number, c: Pick<Campaign, "text" | "textSha" | "compiled" | "compiledSha" | "confirmedAt" | "dailyPostCap"> & { rows?: Row[] }) {
     this.db
-      .prepare(`UPDATE campaigns SET text = ?, text_sha = ?, compiled = ?, compiled_sha = ?, confirmed_at = ?, daily_post_cap = ?, updated_at = ?
+      .prepare(`UPDATE campaigns SET rows = ?, text = ?, text_sha = ?, compiled = ?, compiled_sha = ?, confirmed_at = ?, daily_post_cap = ?, updated_at = ?
                 WHERE id = ?`)
-      .run(c.text, c.textSha, c.compiled ? JSON.stringify(c.compiled) : null, c.compiledSha, c.confirmedAt, c.dailyPostCap, Date.now(), id);
+      .run(JSON.stringify(c.rows ?? []), c.text, c.textSha, c.compiled ? JSON.stringify(c.compiled) : null, c.compiledSha, c.confirmedAt, c.dailyPostCap, Date.now(), id);
   }
 
   isRunnable(c: Campaign): boolean {

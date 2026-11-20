@@ -7,7 +7,6 @@ import type { Publisher } from "../src/platforms/base.ts";
 import { publishers as real } from "../src/platforms/index.ts";
 import { queueEvent } from "../src/notify.ts";
 import { AnalyticsStore } from "../src/analytics/store.ts";
-import { DAYS, type CompiledCampaign } from "../src/campaigns/spec.ts";
 import { CampaignStore } from "../src/campaigns/store.ts";
 import { CampaignWorker } from "../src/campaigns/worker.ts";
 import { ProductionStore } from "../src/produce/store.ts";
@@ -301,34 +300,40 @@ test("the event guide tells agents campaign videos go to review by themselves", 
   assert.match(EVENT_GUIDE, /campaign videos, with campaign_task_id/);
 });
 
-const emptyDays = () => Object.fromEntries(DAYS.map((d) => [d, []])) as unknown as CompiledCampaign["days"];
 
 /** A confirmed campaign with one make line using its own CTA. */
 function campaign(store: ReturnType<typeof newStore>) {
   const cs = new CampaignStore(store);
   const hook = cs.addEntry({ kind: "hook", name: "Stop Scrolling", text: "Stop scrolling" });
   const cta = cs.addEntry({ kind: "cta", name: "Free Guide", text: "Get the guide", url: "https://example.com/guide" });
-  const id = cs.create({ name: "Weekday Growth", text: "the text", accountSetId: null, defaultPostTimes: ["09:00"], dailyPostCap: 3 });
-  cs.confirm(id, { version: 1, days: { ...emptyDays(), tue: [{ kind: "make", count: 1, style: "basic", hook: { pick: "named", id: hook }, angle: { pick: "random" }, cta: { pick: "named", id: cta }, types: [], post: null, source: "make 1" }] }, rules: [] });
-  return { cs, id, hook, cta };
+  const id = cs.create({ name: "Weekday Growth", text: "", accountSetId: null, defaultPostTimes: [], dailyPostCap: 100 });
+  const row = (quantity = 1) => ({
+    id: 1, quantity, hook: { pick: "named", id: hook }, angle: { pick: "random" }, cta: { pick: "named", id: cta }, style: "basic",
+    type: null, time: null, days: ["tue"], sec: 30, origin: "create", text: "",
+  });
+  cs.setRows(id, [row() as never]);
+  return { cs, id, hook, cta, row };
 }
 
 test("Autorun tools: changes need Autorun and a reason, and are made in the MCP client's name", async () => {
   const { app, rpc, call, store } = setup({ campaigns: true });
   await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "codex", version: "1" } });
-  const { cs, id } = campaign(store);
-  const off = await call("update_campaign", { campaign_id: id, daily_post_cap: 2, reason: "fewer, better posts" });
+  const { cs, id, row } = campaign(store);
+  const off = await call("update_campaign", { campaign_id: id, rows: [row(2)], reason: "fewer, better posts" });
   assert.equal(off.isError, true);
   assert.match(off.content[0].text, /Autorun is off/);
   cs.setAutorun(id, true);
-  const noReason = await call("update_campaign", { campaign_id: id, daily_post_cap: 2 });
+  const noReason = await call("update_campaign", { campaign_id: id, rows: [row(2)] });
   assert.equal(noReason.isError, true);
   assert.match(noReason.content[0].text, /reason/);
-  const raise = await call("update_campaign", { campaign_id: id, daily_post_cap: 5, reason: "more" });
-  assert.equal(raise.isError, true);
-  const ok = await call("update_campaign", { campaign_id: id, daily_post_cap: 2, reason: "fewer, better posts" });
+  const cap = await call("update_campaign", { campaign_id: id, daily_post_cap: 5, reason: "more" });
+  assert.equal(cap.isError, true, "the cap isn't the agent's");
+  const bad = await call("update_campaign", { campaign_id: id, rows: [row(11)], reason: "more" });
+  assert.equal(bad.isError, true);
+  assert.match(bad.content[0].text, /quantity/);
+  const ok = await call("update_campaign", { campaign_id: id, rows: [row(2)], reason: "fewer, better posts" });
   assert.ok(!ok.isError, ok.content[0].text);
-  assert.equal(cs.campaign(id)!.dailyPostCap, 2);
+  assert.equal(cs.campaign(id)!.rows[0].quantity, 2);
   assert.equal(cs.changes(id)[0].agent, "codex");
 
   const cta = await call("add_library_entry", { campaign_id: id, kind: "cta", name: "Buy", text: "Buy now", reason: "sell" });
@@ -344,7 +349,8 @@ test("Autorun tools: changes need Autorun and a reason, and are made in the MCP 
   assert.equal(list.campaigns[0].id, id);
   assert.equal(list.campaigns[0].autorun, true);
   const got = (await call("get_campaign", { campaign_id: id })).structuredContent;
-  assert.equal(got.daily_post_cap, 2);
+  assert.equal(got.rows[0].quantity, 2);
+  assert.equal(got.compiled.days.tue[0].count, 2);
   assert.equal(got.changes.length, 2);
   assert.equal(got.changes[0].reason, "fewer, better posts");
   const lib = (await call("list_library", { kind: "hook" })).structuredContent;

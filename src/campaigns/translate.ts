@@ -18,11 +18,12 @@ const LABEL_LIST = { type: "array", items: { enum: ["hook", "angle", "cta", "sty
 const MAKE = {
   type: "object",
   properties: {
-    kind: { enum: ["make"] }, count: { type: "number" }, style: { type: "string" }, hook: PICK, angle: PICK, cta: PICK,
+    kind: { enum: ["make"] }, count: { type: "number" }, style: { type: "string" }, sec: { oneOf: [{ type: "null" }, { type: "number" }] },
+    hook: PICK, angle: PICK, cta: PICK,
     types: { type: "array", items: { type: "number" } },
     post: { oneOf: [{ type: "null" }, { type: "object", properties: { at: { type: "string", description: '"HH:MM" or "default"' } }, required: ["at"], additionalProperties: false }] },
   },
-  required: ["kind", "count", "style", "hook", "angle", "cta", "types", "post"],
+  required: ["kind", "count", "style", "sec", "hook", "angle", "cta", "types", "post"],
   additionalProperties: false,
 };
 const POST = {
@@ -80,7 +81,7 @@ const SCHEMA = {
   additionalProperties: false,
 };
 
-const SYSTEM = `You turn lines of a social-media posting plan into structured instructions. Each numbered line is one the program could not read. For each line return one entry with its index, the day it applies to (sun, mon, tue, wed, thu, fri, sat, or null if it names none), and either an instruction (a day's work), a rule (a reaction to analytics), or both null when it cannot be mapped to the shapes allowed. Never invent ids, URLs or styles: use only the ids listed in the vocabulary, and when unsure return null for both. Times are 24-hour "HH:MM". A "make" instruction needs count (1-20), style (a style id), hook/angle/cta each {"pick":"random"|"best"} or {"pick":"named","id":<id>}, types (video type ids, may be empty) and post (null, or {"at":"HH:MM"} or {"at":"default"}). A "post" instruction posts an existing video by name: name (no underscore), at ("HH:MM" or null), style (style id or null), types. A rule has when {label, is, thresholdPct 1-99, minVideos, age 24h|72h|7d, scope campaign|account} and then {kind:"stop_using"} or {kind:"make", count, keep, vary, post} where keep and vary are disjoint lists of labels (hook, angle, cta, style, type). A make rule needs a named CTA elsewhere in the campaign. Answer with JSON only.`;
+const SYSTEM = `You turn lines of a social-media posting plan into structured instructions. Each numbered line is one the program could not read. For each line return one entry with its index, the day it applies to (sun, mon, tue, wed, thu, fri, sat, or null if it names none), and either an instruction (a day's work), a rule (a reaction to analytics), or both null when it cannot be mapped to the shapes allowed. Never invent ids, URLs or styles: use only the ids listed in the vocabulary, and when unsure return null for both. Times are 24-hour "HH:MM". A "make" instruction needs count (1-20), style (a style id), sec (a target length in whole seconds 8-60, or null when the line names none), hook/angle/cta each {"pick":"random"|"best"} or {"pick":"named","id":<id>}, types (video type ids, may be empty) and post (null, or {"at":"HH:MM"} or {"at":"default"}). A "post" instruction posts an existing video by name: name (no underscore), at ("HH:MM" or null), style (style id or null), types. A rule has when {label, is, thresholdPct 1-99, minVideos, age 24h|72h|7d, scope campaign|account} and then {kind:"stop_using"} or {kind:"make", count, keep, vary, post} where keep and vary are disjoint lists of labels (hook, angle, cta, style, type). A make rule needs a named CTA elsewhere in the campaign. Answer with JSON only.`;
 
 const vocabText = (v: Vocabulary) => JSON.stringify({
   styles: v.styles.map((s) => ({ id: s.id, token: s.token })),

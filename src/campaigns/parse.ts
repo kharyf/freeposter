@@ -16,9 +16,35 @@ const DAY_WORDS: Record<Day, string[]> = {
 };
 const DAY_ALT = DAYS.flatMap((d) => DAY_WORDS[d]).sort((a, b) => b.length - a.length).join("|");
 const dayOf = (word: string): Day => DAYS.find((d) => DAY_WORDS[d].includes(word.toLowerCase()))!;
-const DAY_PREFIX = new RegExp(`^(?:on\\s+|every\\s+)?(${DAY_ALT})s?\\.?(?:\\s*[,:-]\\s*|\\s+)`, "i");
+// One day word, possibly plural and with a trailing dot; a day name at the very start of a line.
+const DAY_ONE = new RegExp(`^(?:on\\s+|every\\s+)?(${DAY_ALT})s?\\.?(?=$|[\\s,:-])`, "i");
+// The separator between days in a list: a comma, maybe followed by "and", or a bare "and", "&" or "+".
+const DAY_SEP = /^(?:\s*,\s*(?:and\s+)?|\s+and\s+|\s*&\s*|\s*\+\s*)/i;
 // An unread line's day: one the line starts with, or one after "on"/"every" ("I sat down" names no day).
 const DAY_NAMED = new RegExp(`(?:^|\\b(?:on|every)\\s+)(${DAY_ALT})s?(?![a-z0-9])`, "i");
+
+/**
+ * The days a line opens with, and how much of it they took: one day ("On Sunday …", "Sun. - make …") or a list
+ * ("Sunday, Monday, … and Saturday make …"). Null when the line doesn't open with a day.
+ */
+function dayPrefix(line: string): { days: Day[]; len: number } | null {
+  const first = DAY_ONE.exec(line);
+  if (!first) return null;
+  const days: Day[] = [dayOf(first[1])];
+  let at = first[0].length;
+  for (;;) {
+    const sep = DAY_SEP.exec(line.slice(at));
+    if (!sep) break;
+    const next = DAY_ONE.exec(line.slice(at + sep[0].length));
+    if (!next) break;
+    at += sep[0].length + next[0].length;
+    const d = dayOf(next[1]);
+    if (!days.includes(d)) days.push(d);
+  }
+  const after = /^\s*[,:-]?\s+/.exec(line.slice(at));
+  if (!after) return null;
+  return { days, len: at + after[0].length };
+}
 
 const NUMBER_WORDS = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen",
   "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty"];
@@ -155,7 +181,8 @@ function makeClauses(text: string, vocab: Vocabulary): Clauses | null {
       if (!p) return null;
       c[label] = p;
       len = m[0].length;
-    } else return null;
+    } else if (/^for\b/i.test(s)) break; // "for the Bumplz mobile game …": a description, not part of the schedule
+    else return null;
     s = s.slice(len);
   }
   return c;
@@ -167,18 +194,48 @@ function styleId(name: string, vocab: Vocabulary): string | null {
   return vocab.styles.find((st) => st.token.toLowerCase() === n || st.id.toLowerCase().replace(/\s/g, "") === n)?.id ?? null;
 }
 
+/** "30 second", "30-second" or "30s": a make line's target length, with how much of the text it took. */
+const DURATION = /(\d{1,3})\s*(?:-|\s)?\s*(?:seconds?|secs?|s)\b/i;
+
 function readMake(rest: string, source: string, vocab: Vocabulary): MakeInstruction | null {
   const m = new RegExp(`^make(\\s+and\\s+post)?\\s+(${NUM})\\s+(.+)$`, "i").exec(rest);
   if (!m) return null;
   const count = readNumber(m[2]);
-  const withVideos = /^(.+?)\s+videos?(?![a-z0-9])(.*)$/i.exec(m[3]);
-  const [style, tail] = withVideos ? [withVideos[1], withVideos[2]] : (/^(.+?)((?:\s+with\s+|,).*)?$/i.exec(m[3])!.slice(1) as [string, string?]);
-  const id = styleId(style, vocab);
-  if (!id) return null;
-  const c = makeClauses(tail ?? "", vocab);
+  let body = m[3];
+  let sec: number | null = null;
+  let style: string | null;
+  let tail: string;
+  const noun = /^(.+?)\s+(videos?|ads?)(?![a-z0-9])(.*)$/i.exec(body);
+  if (noun) {
+    // A target length before "videos"/"ads" ("three 30 second ads") is the length, not the style.
+    let pre = noun[1];
+    const dur = DURATION.exec(pre);
+    if (dur) { sec = Number(dur[1]); pre = `${pre.slice(0, dur.index)} ${pre.slice(dur.index + dur[0].length)}`.trim(); }
+    // No style word at all ("three 30 second ads") takes the campaign's default style; a wrong name stays unread.
+    style = pre ? styleId(pre, vocab) : vocab.defaultStyle ?? null;
+    tail = noun[3];
+  } else {
+    const dur = DURATION.exec(body);
+    if (dur) { sec = Number(dur[1]); body = `${body.slice(0, dur.index)} ${body.slice(dur.index + dur[0].length)}`.trim(); }
+    const parts = /^(.+?)((?:\s+with\s+|,).*)?$/i.exec(body)!.slice(1) as [string, string?];
+    style = parts[0].trim() ? styleId(parts[0], vocab) : vocab.defaultStyle ?? null;
+    tail = parts[1] ?? "";
+  }
+  if (!style) return null;
+  const c = makeClauses(tail, vocab);
   if (!c) return null;
   const post = c.at ? { at: c.at } : m[1] || c.post ? { at: "default" } : null;
-  return { kind: "make", count, style: id, hook: c.hook, angle: c.angle, cta: c.cta, types: c.types, post, source };
+  const out: MakeInstruction = { kind: "make", count, style, hook: c.hook, angle: c.angle, cta: c.cta, types: c.types, post, source };
+  if (sec !== null) out.sec = sec;
+  return out;
+}
+
+/** "The call to action for every video should be X": the named CTA every make takes unless it names one. */
+function readDefaultCta(line: string, vocab: Vocabulary): Pick | null {
+  const m = new RegExp(`^(?:the\\s+)?(?:call[\\s-]to[\\s-]action|cta)\\s+for\\s+(?:every|each|all)\\s+videos?\\s+(?:should\\s+be|is|must\\s+be)\\s+(.+)$`, "i").exec(line);
+  if (!m) return null;
+  const p = libraryPick(m[1], vocab.ctas);
+  return p?.pick === "named" ? p : null;
 }
 
 function readPost(rest: string, source: string, vocab: Vocabulary): PostInstruction | null {
@@ -250,14 +307,23 @@ export function parseCampaignText(text: string, vocab: Vocabulary): ParsedCampai
   const lines = sentences(text);
   const items: Item[] = [];
   const unreadAt = new Set<number>();
+  let defaultCta: Pick | null = null;
   lines.forEach((line, i) => {
-    const d = DAY_PREFIX.exec(line);
-    const value = d
-      ? (readMake(line.slice(d[0].length), line, vocab) ?? readPost(line.slice(d[0].length), line, vocab))
-      : readRule(line);
-    if (value) items.push({ sentence: i, day: d ? dayOf(d[1]) : null, value });
+    const d = dayPrefix(line);
+    let value: MakeInstruction | PostInstruction | Rule | null;
+    if (d) {
+      const rest = line.slice(d.len);
+      value = readMake(rest, line, vocab) ?? readPost(rest, line, vocab);
+    } else {
+      const cta = readDefaultCta(line, vocab);
+      if (cta) { defaultCta = cta; return; } // a campaign-wide default, not one day's work
+      value = readRule(line);
+    }
+    if (value) for (const day of d ? d.days : [null]) items.push({ sentence: i, day, value });
     else unreadAt.add(i);
   });
+  // "The call to action for every video should be X" names the CTA for every make that doesn't name one.
+  if (defaultCta) for (const it of items) if ("kind" in it.value && it.value.kind === "make" && it.value.cta.pick === "random") it.value.cta = defaultCta;
 
   // Self-check: whatever the strict parser refuses goes back to unread, so the output always validates.
   for (;;) {

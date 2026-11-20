@@ -361,6 +361,27 @@
   .cp-autorun { border: 2px solid var(--accent); border-radius: 8px; padding: 4px 10px; background: color-mix(in srgb, var(--accent) 8%, transparent); font-weight: 600; }
   .cp-autorun.on { background: color-mix(in srgb, var(--accent) 18%, transparent); }
   .cp-settings { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0 12px; margin-bottom: 4px; }
+  .cp-card .section-head .cp-run { margin-left: auto; }
+  button.cp-start { background: var(--ok); border-color: var(--ok); color: #fff; font-weight: 600; padding: 8px 14px; }
+  .cp-table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; margin-top: 8px; }
+  table.cp-table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  .cp-table th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12px; padding: 6px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  .cp-table td { padding: 4px 6px; border-top: 1px solid var(--line); vertical-align: middle; }
+  .cp-table tr:first-child td { border-top: 0; }
+  .cp-table input, .cp-table select { margin: 0; padding: 4px 6px; font-size: 13px; width: auto; }
+  .cp-table input[type=number] { width: 64px; }
+  .cp-table select.cp-lib { max-width: 150px; }
+  .cp-table input.cp-rtext { width: 200px; min-width: 140px; }
+  .cp-time { display: flex; gap: 2px; align-items: center; white-space: nowrap; }
+  .cp-days { display: flex; gap: 2px; }
+  .cp-days button { width: 26px; height: 26px; padding: 0; font-size: 12px; font-weight: 600; }
+  .cp-days button[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .cp-table tr.idle td { background: color-mix(in srgb, var(--warn) 6%, transparent); }
+  .cp-table .cp-del { padding: 2px 8px; }
+  .cp-add-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  .cp-add-row button { font-size: 18px; line-height: 1; width: 32px; height: 32px; padding: 0; font-weight: 600; }
+  .cp-idle { color: var(--warn); font-size: 12px; margin-top: 6px; }
+  .cp-idle ul { margin: 2px 0 0; padding-left: 18px; }
   .cp-settings label { margin-top: 0; }
   .cp-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; align-items: center; }
   .cp-buttons .go { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
@@ -575,20 +596,25 @@
 
 <main id="campaigns" class="page" role="tabpanel" aria-label="Campaigns" hidden>
   <div class="cp-top">
-    <button type="button" id="cpStop" class="cp-stop" title="Holds every campaign post and stops making new videos until you resume">■ Stop all campaigns</button>
     <button type="button" id="cpNew">New campaign</button>
     <span id="cpAi" class="muted an-ai"></span>
   </div>
   <div id="cpKilled"></div>
   <section id="cpLibrary"><div class="muted">Loading…</div></section>
   <div id="cpList"></div>
+  <dialog id="campaign-new" class="cp-dialog" aria-labelledby="cpNewTitle">
+    <h2 id="cpNewTitle">New campaign</h2>
+    <label for="cpNewName">Name</label>
+    <input type="text" id="cpNewName" maxlength="100" placeholder="e.g. Weekday Growth">
+    <div class="cp-buttons"><button type="button" id="cpNewCancel">Cancel</button><button type="button" id="cpNewOk" class="go">Create</button></div>
+  </dialog>
   <dialog id="autorun-warning" class="cp-dialog" aria-labelledby="cpArTitle">
     <h2 id="cpArTitle">Turn on Autorun for <span id="cpArName"></span>?</h2>
     <p style="margin:0 0 4px">Whichever AI agent is connected to FreePoster may then change this campaign however it thinks best. Every change is listed under Changes with its reason, and you can undo each one.</p>
     <p class="may">It may:</p>
-    <ul><li>change the schedule, the rules, how many videos are made and their editing styles</li><li>change the types its videos carry</li><li>add hooks and angles to the library (for this campaign only)</li><li>lower the daily post cap</li></ul>
+    <ul><li>change the campaign's table: its videos, how many are made, their days, times, lengths and editing styles</li><li>change the types its videos carry</li><li>add hooks and angles to the library (for this campaign only)</li></ul>
     <p class="maynot">It may not:</p>
-    <ul><li>change CTA links or add CTAs</li><li>use a CTA this campaign doesn't already use</li><li>raise the daily post cap</li><li>let a type post without approval, or add a type that posts without approval</li><li>switch the campaign on or off</li><li>stop or resume campaigns</li><li>turn Autorun on or off</li></ul>
+    <ul><li>change CTA links or add CTAs</li><li>use a CTA this campaign doesn't already use</li><li>let a type post without approval, or add a type that posts without approval</li><li>start or stop the campaign</li><li>stop or resume campaigns</li><li>turn Autorun on or off</li></ul>
     <div class="cp-buttons"><button type="button" id="cpArCancel">Cancel</button><button type="button" id="cpArOk" class="go">Turn on Autorun</button></div>
   </dialog>
 </main>
@@ -2666,16 +2692,14 @@ const cpLibForget = (...ids) => { for (const id of ids) delete cpLibDrafts[id]; 
 const cpFormIds = (p) => ["name", "text", "kw", "url"].map((f) => `${p}${f}`);
 let cpSeq = 0; // answers to older loads are dropped
 let cpArFor = null; // the campaign the Autorun dialog is asking about
-const cpPreviews = {}; // campaign id -> the last Preview: { compiled, couldNotUnderstand, textSha, text }
-const cpDrafts = {}; // campaign id -> its text box, as typed (kept across re-renders)
+const cpRows = {}; // campaign id -> its table as edited here, until the server has saved exactly that
+const cpSaving = {}; // campaign id -> the chain of its table saves (one at a time, in order)
 const cpNotes = {}; // campaign id -> { kind, text, problems? } under the card's buttons
 const cpToday = {}; // campaign id -> { tasks } | { error }
 const cpHistory = {}; // campaign id -> { date, tasks? , error? }
 const cpChanges = {}; // campaign id -> { changes? , error? }
 const cpChangeNotes = {}; // change id -> why its Undo didn't work
 const cpOpen = new Set(); // "<id>:history" / "<id>:changes" drawers that are open
-const cpReading = {}; // campaign id -> the number of its Preview still being read (its Confirm waits; only the newest answer counts)
-let cpReadSeq = 0;
 
 /** One call to the app: never throws; a network failure comes back as an error a person can read. */
 async function cpCall(method, url, body) {
@@ -2739,14 +2763,13 @@ function renderCampaigns() {
       : `AI today · campaigns & labels: ${budgeted.calls} calls · all AI: ${all.calls} calls`;
     $("cpAi").title = "Campaigns and labels stop for the day at either limit; captions and edits aren't counted against it";
   }
-  $("cpStop").hidden = cp.killed;
   $("cpKilled").innerHTML = cp.killed ? `<div class="cp-killed" role="status"><span>Campaigns are stopped. Nothing is made or posted for any campaign until you resume.</span>
     <button type="button" id="cpResume">Resume</button></div>` : "";
   renderCpLibrary();
   $("cpList").innerHTML = cp.campaigns.length ? cp.campaigns.map(cpCardHtml).join("")
-    : `<section><h2>No campaigns yet</h2><p class="muted" style="margin:0">Press <strong>New campaign</strong>, then write the week in your own words, for example:
-      “On Sunday make and post 3 Fancy videos with Stop Scrolling hook, Myth Bust angle, and Free Guide call to action. On Monday post 'Gatekeeping_5.30.pm_Basic'.”
-      Add the hooks, angles and CTAs it names to the library above first.</p></section>`;
+    : `<section><h2>No campaigns yet</h2><p class="muted" style="margin:0">Press <strong>New campaign</strong>, then add its videos with <strong>+</strong>:
+      how many, the hook, angle and CTA, editing style, type, time and days, length, and whether each is made (Create) or a recorded Drive file.
+      Add hooks, angles and CTAs to the library above first to pick them by name.</p></section>`;
 }
 
 // ---- the library ----
@@ -2755,7 +2778,7 @@ function renderCpLibrary() {
   const count = (k) => (k === "type" ? cpLib.types.length : cpLib.entries.filter((e) => e.kind === k).length);
   const seg = CP_LIB.map(([k, t]) => `<button type="button" data-cp-lib="${k}" aria-pressed="${cpLibKind === k}">${t} (${count(k)})</button>`).join("");
   const list = cpLibKind === "type" ? cpTypesHtml() : cpEntriesHtml(cpLibKind);
-  $("cpLibrary").innerHTML = `<div class="section-head"><h2>Library</h2><span class="muted">what campaign text can name</span></div>
+  $("cpLibrary").innerHTML = `<div class="section-head"><h2>Library</h2><span class="muted">what campaign tables can pick by name</span></div>
     <div class="cp-seg" role="group" aria-label="Library part">${seg}</div>${list}<div id="cpLibNote" role="status"></div>`;
   cpShowLibNote(cpLibNote);
 }
@@ -2886,52 +2909,92 @@ async function cpAutoPost(box) {
 // ---- campaign cards ----
 
 function cpChip(c) {
-  if (cp.killed) return `<span class="cp-chip stopped" title="Stop all campaigns is on">Stopped</span>`;
-  if (c.runnable) return `<span class="cp-chip running">Running</span>`;
-  if (!c.enabled) return `<span class="cp-chip off"${c.confirmedForText ? "" : ` title="Its schedule isn't confirmed for the current text either"`}>Off</span>`;
-  return `<span class="cp-chip unconfirmed" title="It runs again once you preview and confirm the schedule for the current text">${c.confirmedAt ? "Not confirmed (text changed)" : "Not confirmed"}</span>`;
+  if (cp.killed) return `<span class="cp-chip stopped" title="Every campaign is stopped (an agent used the kill switch); press Resume above">Stopped (all)</span>`;
+  if (!c.enabled) return `<span class="cp-chip stopped">Stopped</span>`;
+  return `<span class="cp-chip running">Running</span>`;
 }
 
-/** A hook / angle / CTA pick, with a warning when this campaign's rules have stopped using a named one. */
-function cpPick(kind, p, c) {
-  if (!p) return "–";
-  if (p.pick === "random") return "random";
-  if (p.pick === "best") return "best";
-  if (p.pick === "same_as_rule") return "the rule's";
-  const e = cpEntry(p.id);
-  const stopped = c.excluded?.[kind]?.includes(p.id);
-  const why = `the rule says this ${CP_KIND_WORD[kind]} isn't working; this line still uses it because it names it`;
-  return `${e ? esc(e.name) : `#${esc(p.id)} (not in the library)`}${stopped ? ` <span class="cp-warn" title="${esc(why)}" aria-label="${esc(why)}">⚠ the rule says this isn't working</span>` : ""}`;
+const CP_DAY_LETTER = { sun: "S", mon: "M", tue: "T", wed: "W", thu: "T", fri: "F", sat: "S" };
+const CP_DAY_NAME = { sun: "Sunday", mon: "Monday", tue: "Tuesday", wed: "Wednesday", thu: "Thursday", fri: "Friday", sat: "Saturday" };
+const CP_QTY = [1, 10], CP_SEC = [5, 300];
+
+/** The table as this window has it: an edit not yet saved, else the campaign's own. */
+const cpRowsOf = (c) => cpRows[c.id] ?? c.rows ?? [];
+const cpDefaultStyle = () => (status.editingStyles ?? []).find((s) => s.isDefault)?.id ?? status.editingStyles?.[0]?.id ?? "";
+
+/** Why a row isn't in the schedule yet (the same reasons the server leaves it out for). */
+function cpRowIssues(r) {
+  const out = [];
+  if (!r.days.length) out.push("no days ticked");
+  if (r.origin === "drive") {
+    if (!r.text.trim()) out.push("no file name");
+    if (r.time === null) out.push("a Drive video needs a time");
+  } else if (r.sec === null) out.push("no length");
+  return out;
 }
 
-function cpInstruction(ins, c) {
-  if (ins.kind === "make") {
-    const post = ins.post === null ? "kept (made, not posted)" : ins.post.at === "default" ? "post at default time" : `post at ${esc(ins.post.at)}`;
-    return [`make ${esc(ins.count)}`, esc(anStyleName(ins.style)), `hook ${cpPick("hook", ins.hook, c)}`, `angle ${cpPick("angle", ins.angle, c)}`,
-      `CTA ${cpPick("cta", ins.cta, c)}`, cpTypes(ins.types), post].filter(Boolean).join(" · ");
-  }
-  return [`post “${esc(ins.name)}” ${ins.at ? `at ${esc(ins.at)}` : "at default time"}`, ins.style ? esc(anStyleName(ins.style)) : "", cpTypes(ins.types)].filter(Boolean).join(" · ");
+/** "HH:MM" (24-hour) as its hour (1-12), minute and AM/PM, or nothing. */
+function cpTimeParts(t) {
+  if (!t) return null;
+  const [h, m] = t.split(":").map(Number);
+  return { h: h % 12 || 12, m, pm: h >= 12 };
 }
 
-function cpRule(r) {
-  const w = r.when;
-  const what = { hook: "a hook", angle: "an angle", cta: "a CTA", style: "a style", type: "a type" }[w.label] ?? esc(w.label);
-  const terms = `${w.is === "working" ? "top" : "bottom"} ${esc(w.thresholdPct)}% @${esc(w.age)}, ≥${esc(w.minVideos)} videos, this ${esc(w.scope)}`;
-  const then = r.then.kind === "stop_using" ? "stop using it in random and best picks"
-    : `make ${esc(r.then.count)}${r.then.keep.length ? ` keeping ${esc(r.then.keep.join(", "))}` : ""}${r.then.vary.length ? `, random ${esc(r.then.vary.join(", "))}` : ""}${r.then.post ? ", and post them" : ", and keep them"}`;
-  return `when ${what} is ${w.is === "working" ? "working" : "not working"} (${terms}) → ${then}`;
+function cpPickSelect(c, r, kind) {
+  const p = r[kind];
+  const cur = p.pick === "named" ? `n:${p.id}` : p.pick;
+  const own = cpLib.entries.filter((e) => e.kind === kind && (e.ownerCampaignId == null || e.ownerCampaignId === c.id));
+  const opts = [["random", "Random"], ["best", "Best performing"], ...own.map((e) => [`n:${e.id}`, e.name])];
+  if (p.pick === "named" && !own.some((e) => e.id === p.id)) opts.push([cur, `#${p.id} (not in the library)`]);
+  const id = `cpR${c.id}_${r.id}_${kind}`;
+  return `<select class="cp-lib" id="${id}" data-cp-row="${c.id}:${r.id}" data-cp-field="${kind}" aria-label="${CP_KIND_WORD[kind]}">${opts.map(([v, label]) =>
+    `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(label)}</option>`).join("")}</select>`;
 }
 
-function cpWeekHtml(compiled, c) {
-  const rows = CP_DAYS.map(([d, label]) => {
-    const list = compiled.days?.[d] ?? [];
-    if (!list.length) return `<div class="cp-row empty"><span class="d">${label}</span><span class="ins">nothing</span><span class="src"></span></div>`;
-    return list.map((ins, i) => `<div class="cp-row"><span class="d">${i ? "" : label}</span><span class="ins">${cpInstruction(ins, c)}</span>
-      <span class="src" title="what you wrote">${esc(ins.source)}</span></div>`).join("");
-  }).join("");
-  const rules = compiled.rules?.length ? compiled.rules.map((r) => `<div class="cp-row"><span class="d">Rule</span><span class="ins">${cpRule(r)}</span>
-    <span class="src" title="what you wrote">${esc(r.source)}</span></div>`).join("") : "";
-  return `<div class="cp-week">${rows}${rules}</div>`;
+function cpRowHtml(c, r) {
+  const f = (field) => `id="cpR${c.id}_${r.id}_${field}" data-cp-row="${c.id}:${r.id}" data-cp-field="${field}"`;
+  const styles = status.editingStyles ?? [];
+  const styleOpts = styles.map((s) => `<option value="${esc(s.id)}" ${s.id === r.style ? "selected" : ""}>${esc(s.name)}</option>`);
+  if (!styles.some((s) => s.id === r.style)) styleOpts.push(`<option value="${esc(r.style)}" selected>${esc(r.style)} (gone)</option>`);
+  const typeOpts = [`<option value="" ${r.type === null ? "selected" : ""}>None</option>`]
+    .concat(cpLib.types.map((t) => `<option value="${t.id}" ${t.id === r.type ? "selected" : ""}>${esc(t.name)}</option>`));
+  const tp = cpTimeParts(r.time);
+  const hours = [`<option value="" ${tp ? "" : "selected"}>--</option>`]
+    .concat(Array.from({ length: 12 }, (_, i) => i + 1).map((h) => `<option value="${h}" ${tp?.h === h ? "selected" : ""}>${h}</option>`));
+  const minutes = Array.from({ length: 60 }, (_, m) => `<option value="${m}" ${(tp?.m ?? 0) === m ? "selected" : ""}>${String(m).padStart(2, "0")}</option>`);
+  const keepTip = "No time: the video is made and kept in the library, not posted";
+  const days = CP_DAYS.map(([d]) => `<button type="button" id="cpR${c.id}_${r.id}_d${d}" data-cp-row="${c.id}:${r.id}" data-cp-day="${d}" aria-pressed="${r.days.includes(d)}"
+    title="${CP_DAY_NAME[d]}" aria-label="${CP_DAY_NAME[d]}">${CP_DAY_LETTER[d]}</button>`).join("");
+  const drive = r.origin === "drive";
+  const issues = cpRowIssues(r);
+  return `<tr class="${issues.length ? "idle" : ""}">
+    <td><input type="number" ${f("quantity")} min="${CP_QTY[0]}" max="${CP_QTY[1]}" step="1" value="${esc(r.quantity)}" aria-label="Quantity"
+      ${drive ? `title="A Drive file posts once; quantity is ignored for it"` : ""}></td>
+    <td>${cpPickSelect(c, r, "hook")}</td>
+    <td>${cpPickSelect(c, r, "angle")}</td>
+    <td>${cpPickSelect(c, r, "cta")}</td>
+    <td><select ${f("style")} aria-label="Editing style">${styleOpts.join("")}</select></td>
+    <td><select ${f("type")} aria-label="Type">${typeOpts.join("")}</select></td>
+    <td><span class="cp-time" title="${tp ? "" : keepTip}"><select ${f("hour")} aria-label="Hour">${hours.join("")}</select>:<select ${f("minute")} aria-label="Minute" ${tp ? "" : "disabled"}>${minutes.join("")}</select>
+      <select ${f("ampm")} aria-label="AM or PM" ${tp ? "" : "disabled"}><option value="am" ${tp?.pm ? "" : "selected"}>AM</option><option value="pm" ${tp?.pm ? "selected" : ""}>PM</option></select></span></td>
+    <td><div class="cp-days" role="group" aria-label="Days">${days}</div></td>
+    <td><input type="number" ${f("sec")} min="${CP_SEC[0]}" max="${CP_SEC[1]}" step="1" value="${r.sec === null ? "" : esc(r.sec)}" aria-label="Length in seconds"
+      title="${drive ? "Seconds; for a Drive file, recorded for analytics only" : "Seconds"}"></td>
+    <td><select ${f("origin")} aria-label="Origin"><option value="create" ${drive ? "" : "selected"}>Create</option><option value="drive" ${drive ? "selected" : ""}>Drive</option></select></td>
+    <td><input type="text" class="cp-rtext" ${f("text")} maxlength="2000" value="${esc(r.text)}"
+      aria-label="${drive ? "File name" : "Instructions"}" placeholder="${drive ? "File name, e.g. Gatekeeping" : "Instructions for the script (optional)"}"></td>
+    <td><button type="button" class="cp-del" data-cp-del="${c.id}:${r.id}" data-focus="cp-del-${c.id}-${r.id}" title="Remove video" aria-label="Remove video">×</button></td>
+  </tr>`;
+}
+
+function cpTableHtml(c) {
+  const rows = cpRowsOf(c);
+  const idle = rows.map((r, i) => [i, cpRowIssues(r)]).filter(([, x]) => x.length);
+  return `<div class="cp-table-wrap"><table class="cp-table"><thead><tr>
+      <th>Quantity</th><th>Hook</th><th>Angle</th><th>CTA</th><th>Editing Style</th><th>Type</th><th>Time</th><th>Days</th><th>Length (s)</th><th>Origin</th><th>File Name / Instructions</th><th></th>
+    </tr></thead><tbody>${rows.length ? rows.map((r) => cpRowHtml(c, r)).join("") : `<tr><td colspan="12" class="muted">No videos yet: press + to add one.</td></tr>`}</tbody></table></div>
+    <div class="cp-add-row"><button type="button" data-cp-addrow="${c.id}" id="cpAdd${c.id}" title="Add Video" aria-label="Add Video">+</button></div>
+    ${idle.length ? `<div class="cp-idle">Not running yet:<ul>${idle.map(([i, x]) => `<li>Row ${i + 1}: ${esc(x.join(", "))}</li>`).join("")}</ul></div>` : ""}`;
 }
 
 function cpTaskHtml(t) {
@@ -2944,7 +3007,8 @@ function cpTaskHtml(t) {
   // today's AI budget ran out before its script: it waits (it isn't failed) and tries again after midnight
   const waiting = t.state === "queued" && ch.waiting;
   if (waiting) notes.push(ch.waiting);
-  return `<li><span class="st ${esc(t.state)}">${waiting ? "Waiting for tomorrow's AI budget" : esc(CP_STATE_WORD[t.state] ?? t.state)}</span> · ${esc(t.kind)}${name}${bits ? ` · ${bits}` : ""}
+  const retry = t.state === "failed" ? ` <button type="button" data-cp-retry="${t.id}" data-focus="cp-retry-${t.id}" title="Run this video again from the step that failed">Retry</button>` : "";
+  return `<li><span class="st ${esc(t.state)}">${waiting ? "Waiting for tomorrow's AI budget" : esc(CP_STATE_WORD[t.state] ?? t.state)}</span> · ${esc(t.kind)}${name}${bits ? ` · ${bits}` : ""}${retry}
     ${t.error ? `<span class="why err">${esc(t.error)}</span>` : ""}${notes.map((n) => `<span class="why">Note: ${esc(n)}</span>`).join("")}</li>`;
 }
 
@@ -2987,50 +3051,27 @@ function cpChangesHtml(c) {
     <div>${x.undoneAt ? `<span class="muted">undone</span>` : `<button type="button" data-cp-undo="${x.id}" data-cp-camp="${c.id}" data-focus="cp-undo-${x.id}">Undo</button>`}</div></div>`).join("");
 }
 
-/** Whether the campaign's preview is still for what the text box says and what the server holds (only then can it be confirmed). */
-function cpPreviewFits(c) {
-  const p = cpPreviews[c.id];
-  return Boolean(p) && (cpDrafts[c.id] ?? c.text) === p.text && c.textSha === p.textSha;
-}
-
 function cpCardHtml(c) {
-  const preview = cpPreviews[c.id];
-  const draft = cpDrafts[c.id] ?? c.text;
   const sets = status.accountSets ?? [];
   const setOpts = [`<option value="" ${c.accountSetId === null ? "selected" : ""}>Default set</option>`]
     .concat(sets.map((s) => `<option value="${s.id}" ${c.accountSetId === s.id ? "selected" : ""}>${esc(s.name)}</option>`));
   if (c.accountSetId !== null && !sets.some((s) => s.id === c.accountSetId)) setOpts.push(`<option value="${c.accountSetId}" selected>Set ${esc(c.accountSetId)}</option>`);
   const note = cpNotes[c.id];
   const noteHtml = note ? `<div class="cp-note ${note.kind}" role="status">${esc(note.text)}${note.problems?.length ? `<ul>${note.problems.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>` : ""}</div>` : "";
-  let week;
-  if (preview) {
-    week = `<h3>Preview <span class="cp-preview-mark">not confirmed yet: nothing runs until you confirm it<span id="cpStale${c.id}" ${cpPreviewFits(c) ? "hidden" : ""}> · the text has changed since this preview: preview again to confirm</span></span></h3>
-      ${cpWeekHtml(preview.compiled, c)}
-      ${preview.couldNotUnderstand.length ? `<div class="cp-unread"><strong>Couldn't understand</strong> (these lines are left out; reword them and preview again):
-        <ul>${preview.couldNotUnderstand.map((l) => `<li>${esc(l)}</li>`).join("")}</ul></div>` : ""}`;
-  } else if (c.compiled) {
-    const stale = !c.confirmedForText;
-    week = `<h3>${stale ? "Last confirmed schedule" : "Schedule"} <span class="muted" style="font-weight:400">confirmed ${esc(new Date(c.confirmedAt).toLocaleString())}${stale ? " for older text; preview the current text and confirm it" : ""}</span></h3>
-      ${cpWeekHtml(c.compiled, c)}`;
-  } else week = `<h3>Schedule</h3><div class="muted">Write the week, then press Preview to see how FreePoster reads it.</div>`;
+  const run = c.enabled
+    ? `<button type="button" class="cp-run cp-stop" id="cpRun${c.id}" data-cp-run="${c.id}" data-on="false" title="Holds this campaign's posts and makes nothing new until you start it again">Stop Campaign</button>`
+    : `<button type="button" class="cp-run cp-start" id="cpRun${c.id}" data-cp-run="${c.id}" data-on="true" title="Runs this campaign again and lets its held posts go out">Start Campaign</button>`;
   const open = (k) => (cpOpen.has(`${c.id}:${k}`) ? "open" : "");
   return `<section class="cp-card" data-cp-card="${c.id}">
-    <div class="section-head"><h2 class="cp-name">${esc(c.name)}</h2>${cpChip(c)}</div>
+    <div class="section-head"><h2 class="cp-name">${esc(c.name)}</h2>${cpChip(c)}${run}</div>
     <div class="cp-controls">
-      <label class="cp-switch"><input type="checkbox" id="cpEn${c.id}" data-cp-enabled="${c.id}" ${c.enabled ? "checked" : ""}> Enabled</label>
       <label class="cp-switch cp-autorun ${c.autorun ? "on" : ""}" title="Lets the connected AI agent change this campaign"><input type="checkbox" id="cpAr${c.id}" data-cp-autorun="${c.id}" ${c.autorun ? "checked" : ""}> ⚠ Autorun</label>
     </div>
     <div class="cp-settings">
       <div><label for="cpSet${c.id}">Account set</label><select id="cpSet${c.id}" data-cp-set="${c.id}">${setOpts.join("")}</select></div>
-      <div><label for="cpTimes${c.id}">Default post times</label><input type="text" id="cpTimes${c.id}" data-cp-times="${c.id}" value="${esc(c.defaultPostTimes.join(", "))}" placeholder="09:00, 17:30"></div>
-      <div><label for="cpCap${c.id}">Daily post cap</label><input type="number" id="cpCap${c.id}" data-cp-cap="${c.id}" min="1" max="100" step="1" value="${esc(c.dailyPostCap)}"></div>
     </div>
-    <label for="cpText${c.id}">The week, in your words</label>
-    <textarea id="cpText${c.id}" data-cp-text="${c.id}" maxlength="20000" placeholder="On Sunday make and post 3 Fancy videos with Stop Scrolling hook, Myth Bust angle, and Free Guide call to action. On Monday post 'Gatekeeping_5.30.pm_Basic'. …">${esc(draft)}</textarea>
-    <div class="cp-buttons"><button type="button" id="cpPrev${c.id}" data-cp-preview="${c.id}" ${cpReading[c.id] ? "disabled" : ""}>${cpReading[c.id] ? "Reading…" : "Preview"}</button>
-      ${preview && !cpReading[c.id] ? `<button type="button" class="go" id="cpConf${c.id}" data-cp-confirm="${c.id}" ${cpPreviewFits(c) ? "" : "hidden"}>Confirm this schedule</button>` : ""}</div>
+    ${cpTableHtml(c)}
     ${noteHtml}
-    ${week}
     <h3>Today</h3>${cpTodayHtml(c)}
     ${cpHeldHtml(c)}
     <details class="cp-drawer" data-cp-drawer="history" data-cp-id="${c.id}" ${open("history")}><summary>History</summary>${open("history") ? cpHistoryHtml(c) : ""}</details>
@@ -3045,36 +3086,53 @@ function cpApply(id, r, okText) {
   keepFocus(renderCampaigns);
 }
 
-async function cpPreview(id) {
-  const text = $(`cpText${id}`).value;
-  const n = (cpReading[id] = ++cpReadSeq);
-  cpDrafts[id] = text;
-  cpNotes[id] = { kind: "ok", text: "Reading the text… (lines FreePoster can't read itself go to the AI, which can take a little while)" };
-  keepFocus(renderCampaigns);
-  const r = await cpCall("PUT", `/api/campaigns/${id}/text`, { text });
-  if (cpReading[id] !== n) return;
-  delete cpReading[id];
-  if (r.ok) {
-    cpPreviews[id] = { ...r.body, text };
-    const unread = r.body.couldNotUnderstand.length;
-    cpNotes[id] = { kind: unread ? "err" : "ok", text: unread ? `${unread} line${unread === 1 ? "" : "s"} couldn't be understood; see below.` : "Check the table, then confirm it." };
-  } else {
-    delete cpPreviews[id]; // an older preview isn't the text being asked about any more
-    cpNotes[id] = { kind: "err", text: r.error, problems: r.problems };
-  }
-  await loadCampaigns(); // the text is saved now: the campaign pauses until this schedule is confirmed
+/** Saves a campaign's table whole, one save at a time; the window's copy is let go once the server has exactly it. */
+function cpSaveRows(id) {
+  const sent = structuredClone(cpRows[id] ?? cpCampaign(id)?.rows ?? []);
+  cpSaving[id] = (cpSaving[id] ?? Promise.resolve()).then(async () => {
+    const r = await cpCall("PUT", `/api/campaigns/${id}/rows`, { rows: sent });
+    if (r.ok) {
+      cp.campaigns = cp.campaigns.map((c) => (c.id === id ? r.body : c));
+      if (JSON.stringify(cpRows[id]) === JSON.stringify(sent)) delete cpRows[id];
+      cpNotes[id] = undefined;
+    } else cpNotes[id] = { kind: "err", text: `Not saved: ${r.error}`, problems: r.problems };
+    keepFocus(renderCampaigns);
+  });
+  return cpSaving[id];
 }
 
-async function cpConfirm(id, button) {
-  const p = cpPreviews[id];
-  const c = cpCampaign(id);
-  if (!p || !c) return;
-  if (!cpPreviewFits(c)) { cpNotes[id] = { kind: "err", text: "The text changed since this preview — preview again." }; return keepFocus(renderCampaigns); }
-  const r = await cpBusy(button, () => cpCall("POST", `/api/campaigns/${id}/confirm`, { compiled: p.compiled, textSha: p.textSha }));
-  if (r.ok) { delete cpPreviews[id]; cpNotes[id] = { kind: "ok", text: r.body.enabled ? "Confirmed. It runs from now on." : "Confirmed. Switch on Enabled to run it." }; }
-  else if (r.status === 409) { delete cpPreviews[id]; cpNotes[id] = { kind: "err", text: "The text changed since this preview — preview again." }; }
-  else cpNotes[id] = { kind: "err", text: r.error, problems: r.problems };
-  await loadCampaigns();
+/** The window's working copy of a campaign's table (made on the first edit). */
+function cpEditRows(id) {
+  cpRows[id] ??= structuredClone(cpCampaign(id)?.rows ?? []);
+  return cpRows[id];
+}
+
+function cpRowFor(el) {
+  const [cid, rid] = el.dataset.cpRow.split(":").map(Number);
+  return { cid, row: cpEditRows(cid).find((r) => r.id === rid) };
+}
+
+const cpClamp = (v, [lo, hi]) => Math.min(hi, Math.max(lo, Math.round(v)));
+
+/** One cell changed: the row takes the new value (whole numbers kept in range). */
+function cpSetField(row, field, el) {
+  const v = el.value;
+  if (field === "quantity") { const n = Number(v); row.quantity = v.trim() && Number.isFinite(n) ? cpClamp(n, CP_QTY) : row.quantity; }
+  else if (field === "sec") { const n = Number(v); row.sec = !v.trim() ? null : Number.isFinite(n) ? cpClamp(n, CP_SEC) : row.sec; }
+  else if (field === "hook" || field === "angle" || field === "cta") row[field] = v.startsWith("n:") ? { pick: "named", id: Number(v.slice(2)) } : { pick: v };
+  else if (field === "style") row.style = v;
+  else if (field === "type") row.type = v === "" ? null : Number(v);
+  else if (field === "origin") row.origin = v;
+  else if (field === "text") row.text = v;
+  else if (field === "hour" || field === "minute" || field === "ampm") {
+    const box = el.closest(".cp-time");
+    const h = box.querySelector('[data-cp-field="hour"]').value;
+    if (h === "") { row.time = null; return; }
+    const m = Number(box.querySelector('[data-cp-field="minute"]').value);
+    const pm = box.querySelector('[data-cp-field="ampm"]').value === "pm";
+    const h24 = (Number(h) % 12) + (pm ? 12 : 0);
+    row.time = `${String(h24).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+  }
 }
 
 async function cpLoadDrawer(id, kind) {
@@ -3107,22 +3165,56 @@ $("cpLibrary").addEventListener("keydown", (e) => {
   const go = form?.querySelector("[data-cp-add], [data-cp-save], #cpTypeAdd");
   if (go) { e.preventDefault(); go.click(); }
 });
+// Typing is kept in the window's copy at once (a redraw puts it back); it's saved when the field is left (change).
 $("cpList").addEventListener("input", (e) => {
-  const t = e.target.closest("[data-cp-text]");
-  if (!t) return;
-  const id = Number(t.dataset.cpText);
-  cpDrafts[id] = t.value;
-  const c = cpCampaign(id);
-  if (!c || !cpPreviews[id]) return;
-  const fits = cpPreviewFits(c); // typing past the preview hides its Confirm at once
-  if ($(`cpConf${id}`)) $(`cpConf${id}`).hidden = !fits;
-  if ($(`cpStale${id}`)) $(`cpStale${id}`).hidden = fits;
+  const t = e.target;
+  if (!t.dataset.cpRow || t.dataset.cpField !== "text") return;
+  const { row } = cpRowFor(t);
+  if (row) row.text = t.value;
 });
 $("cpList").addEventListener("click", async (e) => {
-  const prev = e.target.closest("[data-cp-preview]");
-  if (prev) return cpPreview(Number(prev.dataset.cpPreview));
-  const conf = e.target.closest("[data-cp-confirm]");
-  if (conf) return cpConfirm(Number(conf.dataset.cpConfirm), conf);
+  const add = e.target.closest("[data-cp-addrow]");
+  if (add) {
+    const id = Number(add.dataset.cpAddrow);
+    const rows = cpEditRows(id);
+    const last = rows[rows.length - 1];
+    rows.push({
+      id: Math.max(0, ...rows.map((r) => r.id)) + 1, quantity: 1, hook: { pick: "random" }, angle: { pick: "random" }, cta: { pick: "random" },
+      style: last?.style ?? cpDefaultStyle(), type: null, time: null, days: [], sec: 30, origin: "create", text: "",
+    });
+    return cpSaveRows(id);
+  }
+  const del = e.target.closest("[data-cp-del]");
+  if (del) {
+    const [id, rid] = del.dataset.cpDel.split(":").map(Number);
+    cpRows[id] = cpEditRows(id).filter((r) => r.id !== rid);
+    return cpSaveRows(id);
+  }
+  const day = e.target.closest("[data-cp-day]");
+  if (day) {
+    const { cid, row } = cpRowFor(day);
+    if (!row) return;
+    const d = day.dataset.cpDay;
+    row.days = row.days.includes(d) ? row.days.filter((x) => x !== d) : CP_DAYS.map(([x]) => x).filter((x) => x === d || row.days.includes(x));
+    return cpSaveRows(cid);
+  }
+  const runBtn = e.target.closest("[data-cp-run]");
+  if (runBtn) {
+    const id = Number(runBtn.dataset.cpRun), on = runBtn.dataset.on === "true";
+    const r = await cpBusy(runBtn, () => cpCall("PUT", `/api/campaigns/${id}/enabled`, { on }));
+    return cpApply(id, r, r.ok ? (on
+      ? `Started: it runs again.${r.body.released ? ` ${r.body.released} held post${r.body.released === 1 ? "" : "s"} released.` : ""}${cp.killed ? " Every campaign is still stopped until you press Resume above." : ""}`
+      : `Stopped: nothing new is made for it, and its posts are held until you start it again.${r.body.held ? ` ${r.body.held} post${r.body.held === 1 ? " is" : "s are"} held.` : ""}`) : null);
+  }
+  const retryTask = e.target.closest("[data-cp-retry]");
+  if (retryTask) {
+    const camp = retryTask.closest("[data-cp-card]")?.dataset.cpCard;
+    const r = await cpBusy(retryTask, () => cpCall("POST", `/api/campaigns/tasks/${retryTask.dataset.cpRetry}/retry`));
+    if (!r.ok) { banner("err", `Couldn't retry it: ${r.error}`); return; }
+    await loadCampaigns();
+    if (camp && cpOpen.has(`${camp}:history`)) await cpLoadDrawer(Number(camp), "history");
+    return;
+  }
   const rel = e.target.closest("[data-cp-release]");
   if (rel) {
     if (!confirm("Release this Drive file from its campaign?\n\nIt goes on by its filename instead: to review, or (a _RAW file) posted at its filename's time. If its filename's day has passed, it is marked too late and nothing posts.")) return;
@@ -3136,7 +3228,7 @@ $("cpList").addEventListener("click", async (e) => {
     const r = await cpBusy(undo, () => cpCall("POST", `/api/campaigns/changes/${changeId}/undo`));
     if (r.ok) delete cpChangeNotes[changeId];
     else cpChangeNotes[changeId] = r.status === 409 ? `Couldn't undo: ${r.error}` : r.error;
-    if (r.ok) { delete cpPreviews[id]; delete cpDrafts[id]; } // the campaign's text and schedule are back to before
+    if (r.ok) delete cpRows[id]; // the campaign's table is back to before
     await cpLoadDrawer(id, "changes");
     await loadCampaigns();
   }
@@ -3159,10 +3251,11 @@ $("cpList").addEventListener("change", async (e) => {
     keepFocus(renderCampaigns);
     return cpLoadDrawer(id, "history");
   }
-  if (t.dataset.cpEnabled) {
-    const id = Number(t.dataset.cpEnabled);
-    const r = await cpBusy(t, () => cpCall("PUT", `/api/campaigns/${id}/enabled`, { on: t.checked }));
-    return cpApply(id, r, r.ok ? (t.checked ? (r.body.runnable ? "Enabled: it runs." : "Enabled; it runs once its schedule is confirmed.") : "Off: nothing new is made or posted for it.") : null);
+  if (t.dataset.cpRow && t.dataset.cpField) {
+    const { cid, row } = cpRowFor(t);
+    if (!row) return;
+    cpSetField(row, t.dataset.cpField, t);
+    return cpSaveRows(cid);
   }
   if (t.dataset.cpAutorun) {
     const id = Number(t.dataset.cpAutorun);
@@ -3175,21 +3268,6 @@ $("cpList").addEventListener("change", async (e) => {
     const r = await cpBusy(t, () => cpCall("PUT", `/api/campaigns/${id}/account-set`, { accountSetId: t.value === "" ? null : Number(t.value) }));
     return cpApply(id, r, r.ok ? "Account set saved." : null);
   }
-  if (t.dataset.cpTimes) {
-    const id = Number(t.dataset.cpTimes);
-    const times = t.value.split(/[\s,]+/).filter(Boolean).map((x) => (/^\d:\d\d$/.test(x) ? `0${x}` : x));
-    const bad = times.filter((x) => !/^([01]\d|2[0-3]):[0-5]\d$/.test(x));
-    if (bad.length) { cpNotes[id] = { kind: "err", text: `Post times are 24-hour HH:MM, like 09:00 or 17:30 (not ${bad.join(", ")}).` }; return keepFocus(renderCampaigns); }
-    const r = await cpBusy(t, () => cpCall("PUT", `/api/campaigns/${id}/post-times`, { times }));
-    return cpApply(id, r, r.ok ? (r.body.defaultPostTimes.length ? `Default post times: ${r.body.defaultPostTimes.join(", ")}.` : "No default post times.") : null);
-  }
-  if (t.dataset.cpCap) {
-    const id = Number(t.dataset.cpCap);
-    const cap = Number(t.value);
-    if (!Number.isInteger(cap) || cap < 1 || cap > 100) { cpNotes[id] = { kind: "err", text: "The daily post cap is a whole number from 1 to 100." }; return keepFocus(renderCampaigns); }
-    const r = await cpBusy(t, () => cpCall("PUT", `/api/campaigns/${id}/cap`, { cap }));
-    return cpApply(id, r, r.ok ? `At most ${cap} post${cap === 1 ? "" : "s"} a day.` : null);
-  }
 });
 $("cpArCancel").addEventListener("click", () => $("autorun-warning").close());
 $("autorun-warning").addEventListener("close", () => { const id = cpArFor; cpArFor = null; if (id !== null) $(`cpAr${id}`)?.focus(); });
@@ -3199,30 +3277,33 @@ $("cpArOk").addEventListener("click", async (e) => {
   $("autorun-warning").close();
   cpApply(id, r, r.ok ? "Autorun is on. Its changes are listed under Changes, each with an Undo." : null);
 });
-$("cpStop").addEventListener("click", async (e) => {
-  const r = await cpBusy(e.currentTarget, () => cpCall("POST", "/api/campaigns/stop"));
-  if (!r.ok) return banner("err", `Couldn't stop the campaigns: ${r.error}`);
-  banner("ok", `Campaigns are stopped.${r.body.held ? ` ${r.body.held} post${r.body.held === 1 ? " is" : "s are"} held.` : ""}`);
-  await loadCampaigns();
-});
 $("cpKilled").addEventListener("click", async (e) => {
   const b = e.target.closest("#cpResume");
-  if (!b || !confirm("Resume all campaigns?\n\nEnabled campaigns start making videos again, and held posts go out: at their own time if it is still ahead, else at the next free post time.")) return;
+  if (!b || !confirm("Resume all campaigns?\n\nCampaigns that aren't stopped on their own start making videos again, and held posts go out: at their own time if it is still ahead, else as soon as possible.")) return;
   const r = await cpBusy(b, () => cpCall("POST", "/api/campaigns/resume"));
   if (!r.ok) return banner("err", `Couldn't resume the campaigns: ${r.error}`);
   banner("ok", `Campaigns resumed.${r.body.released ? ` ${r.body.released} held post${r.body.released === 1 ? "" : "s"} released.` : ""}`);
   await loadCampaigns();
 });
-$("cpNew").addEventListener("click", async (e) => {
-  const name = prompt("Name the campaign (e.g. Weekday Growth):")?.trim();
-  if (!name) return;
+$("cpNew").addEventListener("click", () => {
+  $("cpNewName").value = "";
+  $("campaign-new").showModal();
+  $("cpNewName").focus();
+});
+$("cpNewCancel").addEventListener("click", () => $("campaign-new").close());
+$("campaign-new").addEventListener("close", () => $("cpNew").focus());
+$("cpNewName").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("cpNewOk").click(); } });
+$("cpNewOk").addEventListener("click", async (e) => {
+  const name = $("cpNewName").value.trim();
+  if (!name) return $("cpNewName").focus();
   const r = await cpBusy(e.currentTarget, () => cpCall("POST", "/api/campaigns", { name }));
   if (!r.ok) return banner("err", `Couldn't make the campaign: ${r.error}`);
+  $("campaign-new").close();
   await loadCampaigns();
-  $(`cpText${r.body.id}`)?.focus();
+  $(`cpAdd${r.body.id}`)?.focus();
 });
 // Today's counts move as videos are made and posted; keep up while the tab shows, but not under someone typing
-// in a field (a redraw would drop a half-typed cap or post time; library forms and the week's text are kept anyway).
+// in a field (library forms and the table's text are kept anyway; a half-typed number would be lost).
 setInterval(() => {
   const typing = $("campaigns").contains(document.activeElement) && document.activeElement.matches("input:not([type=checkbox]):not([type=color]), textarea");
   if (!$("campaigns").hidden && !$("autorun-warning").open && !typing) loadCampaigns();

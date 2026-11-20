@@ -31,6 +31,7 @@ import type { Production, ProductionStore } from "../produce/store.ts";
 import { generateMusic, generateSpeech } from "../produce/wan-audio.ts";
 import { hashFile } from "../review/media.ts";
 import type { ReviewRequest, ReviewService, Subject } from "../review/service.ts";
+import { ROW_INSTRUCTION_BASE } from "./rows.ts";
 import { buildGeneratedProduction, writeScript, type Script } from "./script.ts";
 import { DAYS, type MakeInstruction, type Pick as ValuePick, type PostInstruction } from "./spec.ts";
 import { CampaignStore, campaignTaskFor, driveFileTaken, mayPostUnseen, type Campaign, type CampaignTask, type LibraryEntry, type LibraryKind, type TaskState } from "./store.ts";
@@ -264,12 +265,14 @@ export class CampaignWorker {
     });
     let made = 0;
     instructions.forEach((ins, index) => {
+      // A table row's tasks are named by the row, so adding, removing or moving rows mid-day never re-makes or skips one.
+      const instructionIndex = ins.row !== undefined ? ROW_INSTRUCTION_BASE + ins.row : index;
       const copies = ins.kind === "make" ? ins.count : 1;
       for (let copy = 0; copy < copies; copy++) {
-        if (have.has(`${index}:${copy}`)) continue;
+        if (have.has(`${instructionIndex}:${copy}`)) continue;
         const { choices, error } = this.resolve(c, ins, copy, DAY_LABELS[dayIndex], ctx, keepNo.get(`${index}:${copy}`) ?? copy + 1);
         const id = this.campaigns.addTask({
-          campaignId: c.id, date: key, dayIndex, instructionIndex: index, copy, kind: ins.kind, choices: choices as unknown as Record<string, unknown>,
+          campaignId: c.id, date: key, dayIndex, instructionIndex, copy, kind: ins.kind, choices: choices as unknown as Record<string, unknown>,
           state: error ? "failed" : "queued", error,
         });
         if (id === null) continue;
@@ -357,6 +360,13 @@ export class CampaignWorker {
     } else {
       choices.postTime = ins.at ?? defaults[0] ?? null;
       if (!choices.postTime) problems.push("the line has no time, and the campaign has no default post times");
+      // A table row's labels for the recorded video: only a named one says what it is (random or best would guess).
+      for (const kind of ["hook", "angle", "cta"] as LibraryKind[]) {
+        const p = ins[kind];
+        if (p?.pick !== "named") continue;
+        const entry = ctx.pool(kind).find((e) => e.id === p.id);
+        if (entry) choices[kind] = entry;
+      }
     }
     return { choices, error: problems.length ? problems.join("; ") : null };
   }
@@ -408,7 +418,7 @@ export class CampaignWorker {
       case "queued":
         if (t.kind === "post") return this.findVideo(t);
         if (c.waitUntil !== undefined && this.now() < c.waitUntil) return; // waiting for tomorrow's AI budget
-        if (this.campaigns.killed()) return; // stopped: nothing new starts
+        if (this.stopped(t)) return; // stopped: nothing new starts
         if (c.waitUntil !== undefined) this.setChoices(t.id, { waiting: undefined, waitUntil: undefined });
         this.campaigns.updateTask(t.id, { state: "scripting" });
         return this.spawn(t, () => this.makeScript(t.id));
@@ -451,8 +461,10 @@ export class CampaignWorker {
       if (!this.ai) throw new Error("no AI provider is set up to write the script");
       log({ id }, "writing the script");
       let script: Script;
+      const targetSec = c.instruction.kind === "make" ? c.instruction.sec ?? undefined : undefined;
+      const instructions = c.instruction.kind === "make" ? c.instruction.instructions : undefined;
       try {
-        script = await this.write({ ai: this.ai }, { hook: c.hook!, angle: c.angle!, cta: c.cta! });
+        script = await this.write({ ai: this.ai }, { hook: c.hook!, angle: c.angle!, cta: c.cta! }, targetSec, instructions);
       } catch (err) {
         if (err instanceof OverBudget || (err as Error)?.name === "OverBudget") return this.waitForBudget(id);
         throw err;
@@ -582,7 +594,7 @@ export class CampaignWorker {
           return;
         }
         if (r.postId === null) return; // the review service is still making the post
-        if (this.campaigns.killed()) return; // the post stays held until resumeAll
+        if (this.stopped(t)) return; // the post stays held until resumeAll or Start Campaign
         return this.place(t, c, r.postId);
       case "rejected":
         return this.fail(t.id, "you rejected it in review; nothing was posted", false);
@@ -621,6 +633,7 @@ export class CampaignWorker {
       angleId: src.angle?.id ?? null, angleText: src.angle?.text ?? null,
       ctaId: src.cta?.id ?? null, ctaText: src.cta?.text ?? null,
       campaignId: t.campaignId, campaignTaskId: t.id, types: c.types, labelledBy: "campaign",
+      lengthSec: c.instruction?.sec ?? null,
     });
     this.store.releasePost(postId, { at });
     this.campaigns.updateTask(t.id, { state: "scheduled", postId });
@@ -711,7 +724,7 @@ export class CampaignWorker {
       this.tell(this.campaigns.task(t.id)!, "campaign.missed", `no video named ${ins.name} turned up by the end of ${t.date}`);
       return;
     }
-    if (this.campaigns.killed()) return;
+    if (this.stopped(t)) return;
     const name = ins.name.toLowerCase();
     const from = addDays(t.date, -(KEPT_WINDOW_DAYS - 1));
     const taken = this.store.db.prepare("SELECT 1 FROM campaign_tasks WHERE id != ? AND json_extract(choices, '$.sourceTaskId') = ? LIMIT 1");
@@ -798,6 +811,51 @@ export class CampaignWorker {
       `Campaign "${name}": ${what} for ${t.date} is waiting for tomorrow's AI budget (today's is used up); FreePoster tries again after midnight.`);
   }
 
+  /**
+   * Retries a failed task from the window: what it already made is kept, and only the step that failed runs again. A
+   * failed or gone production, edit or review is dropped, while the script and audio are reused; a video already
+   * edited goes straight back for approval. A post that failed on a platform is re-queued exactly as a job Retry, so
+   * it is held and placed again under the daily cap. Returns why it can't be retried, or null.
+   */
+  retryTask(id: number): string | null {
+    const t = this.campaigns.task(id);
+    if (!t) return "no such task";
+    if (t.state !== "failed") return "only a failed video can be retried";
+    // A post that failed on a platform: its uploads go back to the queue (the same as the job Retry), held until the
+    // campaign worker places it again.
+    if (t.postId !== null) {
+      const jobs = this.store.jobsForPost(t.postId);
+      const failed = jobs.filter((j) => j.state === "failed");
+      if (jobs.length && failed.length === jobs.length) {
+        for (const j of failed) this.store.retryJob(j.id);
+        log(t, "retried by the user");
+        return null;
+      }
+    }
+    const production = t.productionId === null ? undefined : this.productions.productions.get(t.productionId);
+    const edit = t.editId === null ? undefined : this.store.edit(t.editId);
+    const patch: Partial<Pick<CampaignTask, "state" | "error" | "productionId" | "editId" | "reviewId" | "postId">> = { error: null, postId: null };
+    if (edit?.state === "ready") {
+      // Its video is edited and ready: it goes back for approval (a fresh review).
+      patch.state = "reviewing";
+      patch.reviewId = null;
+    } else if (production && (production.state === "ready" || production.state === "approved") && production.outputPath) {
+      // Its video is made: edit it again.
+      patch.state = "rendering";
+      patch.editId = null;
+      patch.reviewId = null;
+    } else {
+      // Nothing usable yet: write the script if it has none, then make the video again.
+      patch.state = (t.choices as unknown as TaskChoices).script ? "rendering" : "queued";
+      patch.productionId = null;
+      patch.editId = null;
+      patch.reviewId = null;
+    }
+    this.campaigns.updateTask(id, patch);
+    log(t, "retried by the user");
+    return null;
+  }
+
   fail(id: number, error: string, notify = true) {
     const t = this.campaigns.task(id);
     if (!t) return;
@@ -828,6 +886,34 @@ export class CampaignWorker {
       ? `Campaign "${name}" missed ${what} on ${t.date}: ${error}.`
       : `Campaign "${name}" couldn't finish ${what} for ${t.date}: ${error}`;
     queueEvent(this.store, type, `${type}:${t.id}`, { campaign_id: t.campaignId, task_id: t.id, date: t.date, error }, summary);
+  }
+
+  // ---- stopping one campaign ----
+
+  /** Whether a task's campaign may not go on: every campaign is stopped, or its own is (Stop Campaign) or gone. */
+  private stopped(t: CampaignTask): boolean {
+    return this.campaigns.killed() || this.campaigns.campaign(t.campaignId)?.enabled === false;
+  }
+
+  /**
+   * Stop Campaign: nothing new is made or started for it, and its posts not yet out are held (renders under way
+   * finish, and wait). Returns how many posts were held.
+   */
+  stopCampaign(id: number): number {
+    this.campaigns.setEnabled(id, false);
+    let held = 0;
+    for (const t of this.campaigns.tasksIn(["scheduled"])) if (t.campaignId === id && t.postId !== null && this.store.holdPost(t.postId) > 0) held++;
+    console.log(`campaign ${id}: stopped; ${held} post${held === 1 ? "" : "s"} held`);
+    return held;
+  }
+
+  /** Start Campaign: it runs again, and its held posts are placed again (as resumeAll does; not while every campaign is stopped). */
+  startCampaign(id: number): number {
+    this.campaigns.setEnabled(id, true);
+    const released = this.campaigns.killed() ? 0 : this.placeHeld();
+    console.log(`campaign ${id}: started; ${released} post${released === 1 ? "" : "s"} released`);
+    void this.tick().catch((err) => console.error(`campaigns: ${(err as Error).message}`));
+    return released;
   }
 
   // ---- the kill switch ----
@@ -870,6 +956,7 @@ export class CampaignWorker {
         const c = t.choices as unknown as TaskChoices;
         const campaign = this.campaigns.campaign(t.campaignId);
         if (!campaign) { const started = this.cancelHeld(t.postId!); this.fail(t.id, `its campaign is gone${started ? `. ${started}` : ""}`); continue; }
+        if (!campaign.enabled) continue; // its campaign is stopped: held until Start Campaign
         const stillFits = from >= now && this.postsOn(campaign.id, dayKey(from), t.id).length < campaign.dailyPostCap && !this.takenMinutes(t.id).has(minute(from));
         const at = stillFits ? from : this.postTime(t, c, campaign);
         if (at === null) {

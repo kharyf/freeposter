@@ -81,6 +81,22 @@ test("two bad scripts fail, naming the problems, after exactly two asks", async 
   assert.equal(asked.length, 2);
 });
 
+test("a target length goes into the brief, is enforced, and a far-off script is retried", async () => {
+  // No target: the 9-second good() is fine on its own.
+  assert.deepEqual(checkScript(good(), choice), []);
+  assert.match(checkScript(good(), choice, 30).join("\n"), /aim for about 30/);
+
+  const short = good();
+  short.shots = [{ prompt: "x", sec: 3 }, { prompt: "y", sec: 3 }]; // 6s, nowhere near 30
+  const onTarget = good();
+  onTarget.shots = [{ prompt: "a", sec: 10 }, { prompt: "b", sec: 10 }, { prompt: "c", sec: 10 }]; // 30s
+  const { ai, asked } = fakeAi([short, onTarget]);
+  assert.deepEqual(await writeScript({ ai }, choice, 30), onTarget);
+  assert.equal(asked.length, 2);
+  assert.match(asked[0].prompt, /Target length: about 30 seconds/);
+  assert.match(asked[1].prompt, /aim for about 30/);
+});
+
 test("buildGeneratedProduction: one wan shot per script shot, presenter on the first, stageable without parseSpec", async () => {
   const dir = tmp();
   const vo = join(dir, "vo.wav"), music = join(dir, "m.wav");
@@ -139,6 +155,24 @@ test("obfuscated domains are problems unless they are the CTA's", () => {
   assert.deepEqual(checkScript({ ...good(), lines: ["Stop scrolling now.", "Try it free today at example dot com/plan"] }, choice), []);
 });
 
+test("a spelled dot is a link only before a real TLD, so ordinary speech isn't one", () => {
+  assert.deepEqual(linksIn("a woman in a polka dot dress"), []);
+  assert.deepEqual(linksIn("a red dot on the map"), []);
+  assert.deepEqual(linksIn("circle each dot with a pencil"), []);
+  assert.ok(linksIn("go to evil dot com").length);
+});
+
+test("a hook the user wrote that reads as a link is never refused", () => {
+  const polka = { ...choice, hook: entry("hook", "Polka dot dresses are back") };
+  const s = good();
+  s.lines = ["Polka dot dresses are back.", "One tap and it is done.", "Try it free today at example.com/plan"];
+  assert.deepEqual(checkScript(s, polka), []);
+  const withLink = { ...choice, hook: entry("hook", "Go to mysite.com now") };
+  const t = good();
+  t.lines = ["Go to mysite.com now.", "One tap and it is done.", "Try it free today at example.com/plan"];
+  assert.deepEqual(checkScript(t, withLink), []);
+});
+
 test("shot prompts, title and music prompt are scanned for links too", () => {
   assert.match(problemsWith({ shots: [{ prompt: "a sign saying evil.com", sec: 5 }, { prompt: "x", sec: 5 }] }), /evil\.com/);
   assert.match(problemsWith({ title: "see evil.com" }), /evil\.com/);
@@ -180,4 +214,26 @@ test("linksIn finds the links in a hook or angle an agent adds", () => {
   assert.ok(linksIn("Go to evil dot xyz").length);
   assert.ok(linksIn("mail me@evil.com").length);
   assert.ok(linksIn("evil．com").length);
+});
+
+test("a table row's length stretches or shrinks what a script may be: 5 seconds up to 300", () => {
+  const short = { ...good(), shots: [{ prompt: "a calendar filling in", sec: 5 }] };
+  assert.deepEqual(checkScript(short, choice, 5), [], "one 5-second shot for a 5-second video");
+  assert.ok(checkScript(short, choice).length > 0, "too short without a target");
+  const long = (sec: number, lines: number) => ({
+    ...good(),
+    lines: [good().lines[0], ...Array.from({ length: lines - 2 }, (_, i) => `Point ${i + 1}.`), good().lines[2]],
+    shots: Array.from({ length: sec / 10 }, (_, i) => ({ prompt: `scene ${i + 1}`, sec: 10 })),
+  });
+  assert.deepEqual(checkScript(long(300, 60), choice, 300), [], "30 shots and 60 lines for five minutes");
+  assert.ok(checkScript(long(300, 60), choice, 60).length > 0, "but not for a minute");
+});
+
+test("a Create row's instructions are in the brief", async () => {
+  const { ai, asked } = fakeAi([good()]);
+  await writeScript({ ai }, choice, undefined, "  Mention the Android app  ");
+  assert.match(asked[0].prompt, /The owner's instructions for this video:\nMention the Android app\n/);
+  const plain = fakeAi([good()]);
+  await writeScript({ ai: plain.ai }, choice);
+  assert.doesNotMatch(plain.asked[0].prompt, /instructions/);
 });

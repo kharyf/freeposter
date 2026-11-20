@@ -62,16 +62,16 @@ The tab also compares **labels** (hook, angle, CTA, style, type) by median score
 
 ## 🔷 Campaigns
 
-Write your week in free-form text ("On Sunday make and post …") in the Campaigns tab.
+Each campaign is a table in the Campaigns tab, one row per kind of video. Press **+** (Add Video) for a new row. Every change saves at once.
 
-- **Translated once, then confirmed.** Plain code reads the text first; at most one AI call handles the lines it couldn't read. A confirm table follows, and **nothing runs until you confirm**.
-- **"make" without "post"** means the video is made, approved and kept in the library.
-- **Post lines** use the `{name}_{time}_{style}` file names.
-- **Rules live in the text**, e.g. "When analytics show a hook is working, make 3 variants".
+- **Columns:** Quantity (1–10), Hook, Angle, CTA (Random, Best performing, or one from the library), Editing Style, Type, Time (hour, minute, AM/PM), Days (S M T W T F S), Length (5–300 seconds), Origin, and File Name / Instructions.
+- **Origin.** *Create* makes a video from the row. Its Instructions column holds extra direction for the script. *Drive* posts a recorded file from your Drive folder. Its File Name is the `{name}` part of `{name}_{time}_{style}`. On a Drive row, the hook, angle, CTA and length only label the video for analytics, and Quantity is ignored.
+- **No time** on a Create row means the video is made, approved and kept in the library, not posted. A Drive row needs a time.
+- **A row runs once it's complete.** It needs at least one day ticked, a length (Create), and a file name and time (Drive). Until then the table lists what it's missing.
 - **Types.** Define your own video types. A type can be allowed to post without approval; everything else waits for your approval.
-- **Daily post cap** (3 by default).
-- **Autorun** is off by default. When on, the connected agent may change that campaign within limits: it can't change CTAs or use one the campaign doesn't already use, can't attach a type that posts without approval, can only lower the daily cap, and can't switch Autorun or the campaign on or off. Every change comes with a reason and can be undone.
-- **Stop everything.** Send `/stop` on Telegram or use the window. Only the window resumes.
+- **Stop Campaign / Start Campaign.** Stop Campaign is the red button on each campaign. It holds that campaign's scheduled posts and makes nothing new. Start Campaign lets the held posts go out again.
+- **Autorun** is off by default. When on, the connected agent may change that campaign's table within limits. It can't change CTAs or use one the campaign doesn't already use. It can't attach a type that posts without approval, start or stop the campaign, or switch Autorun. Every change comes with a reason and can be undone.
+- **Stop everything.** Send `/stop` on Telegram (or an agent calls `stop_campaigns`). Only the window's Resume starts them again.
 
 Generated videos use **WanGP** for video, speech and music (music is mixed at -18 dB). Choose its models in Setup, or set `WANGP_MODEL`, `WANGP_SPEECH_MODEL`, `WANGP_AUDIO_MODEL` and `WANGP_PRESENTER_MODEL`.
 

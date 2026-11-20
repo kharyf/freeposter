@@ -1,20 +1,17 @@
-// The Campaigns tab's HTTP API. Everything here is the user's own window: Autorun, the daily cap, the kill switch's
-// Resume and the library's CTAs are only changeable from here, never from an agent's MCP tools.
+// The Campaigns tab's HTTP API. Everything here is the user's own window: Autorun, Stop / Start Campaign, the kill
+// switch's Resume and the library's CTAs are only changeable from here, never from an agent's MCP tools.
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { accountSets } from "../accounts.ts";
 import { budget, todayUse } from "../ai/budget.ts";
 import type { Store } from "../db.ts";
 import { trustedRequest } from "../mcp.ts";
 import { campaignVocabulary, undoChange } from "./autorun.ts";
-import { parseCompiled } from "./spec.ts";
-import { CampaignStore, confirmedForText, filesHeldBy, releaseHeldFile, type Campaign, type LibraryKind, type TaskState } from "./store.ts";
-import { translateCampaign } from "./translate.ts";
+import { parseRows } from "./rows.ts";
+import { CampaignStore, filesHeldBy, HIDDEN_CAP, releaseHeldFile, type Campaign, type LibraryKind, type TaskState } from "./store.ts";
 import { iso } from "./view.ts";
 import { dayKey, type CampaignWorker } from "./worker.ts";
 
 const KINDS: LibraryKind[] = ["hook", "angle", "cta"];
-const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
-const TEXT_MAX = 20_000;
 const FINISHED: TaskState[] = ["posted", "kept", "missed", "failed"];
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -61,9 +58,8 @@ function campaignRoutes(app: FastifyInstance, store: Store, worker?: CampaignWor
 
   /** The campaign as the tab shows it. */
   const view = (c: Campaign) => ({
-    id: c.id, name: c.name, text: c.text, textSha: c.textSha, compiled: c.compiled, enabled: c.enabled, autorun: c.autorun,
-    runnable: cs.isRunnable(c), confirmedForText: confirmedForText(c), confirmedAt: c.confirmedAt, accountSetId: c.accountSetId, defaultPostTimes: c.defaultPostTimes,
-    dailyPostCap: c.dailyPostCap, excluded: cs.excluded(c.id), held: filesHeldBy(store, c.id),
+    id: c.id, name: c.name, rows: c.rows, compiled: c.compiled, enabled: c.enabled, autorun: c.autorun,
+    runnable: cs.isRunnable(c), accountSetId: c.accountSetId, excluded: cs.excluded(c.id), held: filesHeldBy(store, c.id),
   });
   /** Resolves `:id` to a campaign, or answers 400/404 itself. */
   const campaignOf = (params: unknown, reply: FastifyReply): Campaign | undefined => {
@@ -73,8 +69,6 @@ function campaignRoutes(app: FastifyInstance, store: Store, worker?: CampaignWor
     if (!c) missing(reply, "campaign", id);
     return c;
   };
-  const times = (v: unknown): string[] | null =>
-    Array.isArray(v) && v.length <= 24 && v.every((t) => typeof t === "string" && TIME.test(t)) ? [...new Set(v as string[])].sort() : null;
   const setExists = (id: unknown) => typeof id === "number" && accountSets(store).some((s) => s.id === id);
 
   // ---- campaigns ----
@@ -89,62 +83,45 @@ function campaignRoutes(app: FastifyInstance, store: Store, worker?: CampaignWor
     };
   });
 
+  /** A new campaign: an empty table, running (it makes nothing until a row has days ticked). */
   app.post("/api/campaigns", async (req, reply) => {
     const b = bodyOf(req);
     if (typeof b.name !== "string" || !b.name.trim() || b.name.length > 100) return bad(reply, "name is required (at most 100 characters)");
-    if (b.text !== undefined && (typeof b.text !== "string" || b.text.length > TEXT_MAX)) return bad(reply, `text must be text of at most ${TEXT_MAX} characters`);
     if (b.accountSetId !== undefined && b.accountSetId !== null && !setExists(b.accountSetId)) return bad(reply, "no such account set");
-    const defaultPostTimes = b.defaultPostTimes === undefined ? [] : times(b.defaultPostTimes);
-    if (!defaultPostTimes) return bad(reply, 'defaultPostTimes must be a list of 24-hour "HH:MM" times');
-    const cap = b.dailyPostCap === undefined ? 3 : b.dailyPostCap;
-    if (!Number.isInteger(cap) || (cap as number) < 1 || (cap as number) > 100) return bad(reply, "dailyPostCap must be a whole number from 1 to 100");
-    const id = cs.create({ name: b.name.trim(), text: (b.text as string | undefined) ?? "", accountSetId: (b.accountSetId as number | null | undefined) ?? null, defaultPostTimes, dailyPostCap: cap as number });
+    const id = cs.create({ name: b.name.trim(), text: "", accountSetId: (b.accountSetId as number | null | undefined) ?? null, defaultPostTimes: [], dailyPostCap: HIDDEN_CAP });
+    cs.setRows(id, []);
     return { id, campaign: view(cs.campaign(id)!) };
   });
 
-  /** The user's words → a schedule to look at. Saves the text only; nothing runs until it is confirmed for this exact text. */
-  app.put("/api/campaigns/:id/text", async (req, reply) => {
+  /** The table, saved whole (the tab saves on every change). Its schedule runs at once; tasks already made keep theirs. */
+  app.put("/api/campaigns/:id/rows", async (req, reply) => {
     const c = campaignOf(req.params, reply);
     if (!c) return;
-    const text = bodyOf(req).text;
-    if (typeof text !== "string" || text.length > TEXT_MAX) return bad(reply, `text must be text of at most ${TEXT_MAX} characters`);
-    cs.setText(c.id, text);
-    const textSha = cs.campaign(c.id)!.textSha; // before the await: a later edit must not lend its sha to this preview
-    const { compiled, couldNotUnderstand } = await translateCampaign({ ai: worker?.ai ?? null }, text, campaignVocabulary(store, cs));
-    return { compiled, couldNotUnderstand, textSha };
-  });
-
-  app.post("/api/campaigns/:id/confirm", async (req, reply) => {
-    const c = campaignOf(req.params, reply);
-    if (!c) return;
-    const b = bodyOf(req);
-    if (typeof b.textSha !== "string" || b.compiled === undefined) return bad(reply, "send the compiled schedule and the textSha it was made from");
-    // Never confirm a schedule translated from older text (the text was edited since it was shown).
-    if (b.textSha !== c.textSha) return reply.code(409).send({ error: "the text changed since this schedule was made; translate it again" });
-    const r = parseCompiled(b.compiled, campaignVocabulary(store, cs));
-    if (!r.ok) return bad(reply, "that schedule isn't valid", r.problems);
-    cs.confirm(c.id, r.value);
+    const r = parseRows(bodyOf(req).rows, campaignVocabulary(store, cs));
+    if (!r.ok) return bad(reply, "the table couldn't be saved", r.problems);
+    cs.setRows(c.id, r.value);
     return view(cs.campaign(c.id)!);
   });
 
-  const toggle = (path: "enabled" | "autorun", set: (id: number, on: boolean) => void) =>
-    app.put(`/api/campaigns/:id/${path}`, async (req, reply) => {
-      const c = campaignOf(req.params, reply);
-      if (!c) return;
-      const on = bodyOf(req).on;
-      if (typeof on !== "boolean") return bad(reply, "on must be true or false");
-      set(c.id, on);
-      return view(cs.campaign(c.id)!);
-    });
-  toggle("enabled", (id, on) => cs.setEnabled(id, on));
-  toggle("autorun", (id, on) => cs.setAutorun(id, on));
-
-  app.put("/api/campaigns/:id/cap", async (req, reply) => {
+  /** Stop Campaign (on: false) holds its posts and makes nothing new; Start Campaign (on: true) lets them go again. */
+  app.put("/api/campaigns/:id/enabled", async (req, reply) => {
     const c = campaignOf(req.params, reply);
     if (!c) return;
-    const cap = bodyOf(req).cap;
-    if (!Number.isInteger(cap) || (cap as number) < 1 || (cap as number) > 100) return bad(reply, "cap must be a whole number from 1 to 100");
-    cs.setDailyPostCap(c.id, cap as number);
+    const on = bodyOf(req).on;
+    if (typeof on !== "boolean") return bad(reply, "on must be true or false");
+    let held = 0, released = 0;
+    if (!worker) cs.setEnabled(c.id, on);
+    else if (on) released = worker.startCampaign(c.id);
+    else held = worker.stopCampaign(c.id);
+    return { ...view(cs.campaign(c.id)!), held, released };
+  });
+
+  app.put("/api/campaigns/:id/autorun", async (req, reply) => {
+    const c = campaignOf(req.params, reply);
+    if (!c) return;
+    const on = bodyOf(req).on;
+    if (typeof on !== "boolean") return bad(reply, "on must be true or false");
+    cs.setAutorun(c.id, on);
     return view(cs.campaign(c.id)!);
   });
 
@@ -157,21 +134,23 @@ function campaignRoutes(app: FastifyInstance, store: Store, worker?: CampaignWor
     return view(cs.campaign(c.id)!);
   });
 
-  app.put("/api/campaigns/:id/post-times", async (req, reply) => {
-    const c = campaignOf(req.params, reply);
-    if (!c) return;
-    const t = times(bodyOf(req).times);
-    if (!t) return bad(reply, 'times must be a list of 24-hour "HH:MM" times');
-    cs.setDefaultPostTimes(c.id, t);
-    return view(cs.campaign(c.id)!);
-  });
-
   app.get("/api/campaigns/:id/tasks", async (req, reply) => {
     const c = campaignOf(req.params, reply);
     if (!c) return;
     const date = (req.query as { date?: string }).date ?? dayKey(Date.now());
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return bad(reply, "date must be YYYY-MM-DD");
     return { date, tasks: cs.tasksOn(c.id, date) };
+  });
+
+  /** Retries one of a campaign's failed videos: it runs again from the step that failed (the window's Retry). */
+  app.post("/api/campaigns/tasks/:id/retry", async (req, reply) => {
+    const id = idParam((req.params as { id: string }).id);
+    if (id === null) return bad(reply, "id must be a task id");
+    if (!worker) return reply.code(503).send({ error: "campaigns aren't running in this FreePoster" });
+    if (!cs.task(id)) return missing(reply, "task", id);
+    const refused = worker.retryTask(id);
+    if (refused) return reply.code(409).send({ error: refused });
+    return { task: cs.task(id) };
   });
 
   app.get("/api/campaigns/:id/changes", async (req, reply) => {
@@ -214,9 +193,9 @@ function campaignRoutes(app: FastifyInstance, store: Store, worker?: CampaignWor
 
   // ---- library ----
 
-  /** Whether a confirmed schedule or a task still being made uses this entry. */
+  /** Whether a campaign's table or a task still being made uses this entry. */
   const inUse = (id: number): string | null => {
-    for (const c of cs.campaigns()) if (c.compiled && names(c.compiled, id)) return `the confirmed schedule of "${c.name}"`;
+    for (const c of cs.campaigns()) if (names(c.rows, id) || (c.compiled && names(c.compiled, id))) return `the table of "${c.name}"`;
     const inFlight = cs.db
       .prepare(`SELECT campaign_id FROM campaign_tasks WHERE state NOT IN (${FINISHED.map(() => "?").join(",")})
                 AND (json_extract(choices, '$.hook.id') = ? OR json_extract(choices, '$.angle.id') = ? OR json_extract(choices, '$.cta.id') = ?) LIMIT 1`)

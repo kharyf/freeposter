@@ -8,10 +8,11 @@ import { readTime } from "../src/drive/filename.ts";
 const entry = (id: number, kind: "hook" | "angle" | "cta", name: string) => ({ id, kind, name, text: "t", keywords: [], url: null, createdAt: 0 });
 const vocab: Vocabulary = {
   styles: [{ id: "basic", token: "Basic" }, { id: "fancy", token: "Fancy" }],
+  defaultStyle: "basic",
   types: [{ id: 1, name: "Clip" }, { id: 2, name: "Behind the Scenes" }],
   hooks: [entry(1, "hook", "Stop Scrolling"), entry(2, "hook", "Nobody Tells"), entry(3, "hook", "Rise and Grind")],
   angles: [entry(10, "angle", "Myth Bust")],
-  ctas: [entry(20, "cta", "Free Guide")],
+  ctas: [entry(20, "cta", "Free Guide"), entry(21, "cta", "Download Free Today")],
 };
 
 const EXAMPLE =
@@ -248,6 +249,33 @@ test("render: every make, post and rule shape reads back as itself", () => {
       rule({ label: "cta", is: "not_working", scope: "account" }, { kind: "stop_using" }),
     ],
   });
+});
+
+test("a list of days, the default style, a CTA for every video and a target length all read", () => {
+  const text =
+    "Sunday, Monday, Tuesday, Wednesday, Thursday, Friday, and Saturday make and post three 30 second ads for the Bumplz mobile game located in C:/src/Bumplz\n" +
+    'The call to action for every video should be "Download Free Today"';
+  const { compiled, unread } = parse(text);
+  assert.deepEqual(unread, []);
+  for (const d of ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const) {
+    assert.deepEqual(compiled.days[d], [{
+      kind: "make", count: 3, style: "basic", sec: 30, hook: { pick: "random" }, angle: { pick: "random" },
+      cta: { pick: "named", id: 21 }, types: [], post: { at: "default" },
+      source: "Sunday, Monday, Tuesday, Wednesday, Thursday, Friday, and Saturday make and post three 30 second ads for the Bumplz mobile game located in C:/src/Bumplz",
+    }], d);
+  }
+  back(compiled);
+});
+
+test("a make line with no style word takes the default; a target length renders back", () => {
+  const { compiled, unread } = parse(
+    "On Sunday make 2 Basic 45 second videos with Free Guide cta\n" +
+    "On Monday make and post 2 20 second videos with Free Guide cta",
+  );
+  assert.deepEqual(unread, []);
+  assert.equal((compiled.days.sun[0] as MakeInstruction).sec, 45);
+  assert.deepEqual([(compiled.days.mon[0] as MakeInstruction).sec, (compiled.days.mon[0] as MakeInstruction).style], [20, "basic"]);
+  back(compiled);
 });
 
 test("render: a schedule the text can't say is refused, not stored as text that lies", () => {
