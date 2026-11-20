@@ -112,8 +112,8 @@ export function mcpFixture(opts: { campaigns?: boolean } = {}) {
   const app = buildServer(store, runner, publishers, {}, undefined, undefined, undefined, { service: reviews }, worker);
   let id = 0;
   /** One JSON-RPC request to /mcp. */
-  const rpc = async (method: string, params?: unknown, headers: Record<string, string> = {}) => {
-    const res = await app.inject({ method: "POST", url: "/mcp", headers: { ...HOST, ...headers }, payload: { jsonrpc: "2.0", id: ++id, method, params } });
+  const rpc = async (method: string, params?: unknown, headers: Record<string, string> = {}, url = "/mcp") => {
+    const res = await app.inject({ method: "POST", url, headers: { ...HOST, ...headers }, payload: { jsonrpc: "2.0", id: ++id, method, params } });
     return { status: res.statusCode, body: res.body ? res.json() : undefined };
   };
   const call = async (name: string, args: Record<string, unknown> = {}) => (await rpc("tools/call", { name, arguments: args })).body.result;

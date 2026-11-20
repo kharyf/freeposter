@@ -210,7 +210,7 @@ test("launches once for an open brief and not again while running", async () => 
   const mcp = JSON.parse(readFileSync(mcpPath, "utf8"));
   assert.deepEqual(mcp.mcpServers.freeposter.type, "http");
   // Always the local address the server listens on, never a public tunnel in BASE_URL.
-  assert.equal(mcp.mcpServers.freeposter.url, `http://127.0.0.1:${config.port}/mcp`);
+  assert.equal(mcp.mcpServers.freeposter.url, `http://127.0.0.1:${config.port}/mcp?tools=list_briefs,claim_brief,renew_brief,submit_brief,give_up_brief`);
   assert.equal(s.store.pref("agent.launch.status"), `working on task ${first}`);
 
   s.finish({ code: 0, stdout: "done", stderr: "" });

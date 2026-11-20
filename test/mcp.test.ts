@@ -27,7 +27,8 @@ test("MCP handshake and tool list", async () => {
   const note = await app.inject({ method: "POST", url: "/mcp", headers: HOST, payload: { jsonrpc: "2.0", method: "notifications/initialized" } });
   assert.equal(note.statusCode, 202);
 
-  const names = (await rpc("tools/list")).body.result.tools.map((t: any) => t.name);
+  assert.deepEqual((await rpc("tools/list")).body.result.tools.map((t: any) => t.name), ["fp", "fp_help"]);
+  const names = (await rpc("tools/list", undefined, {}, "/mcp?profile=full")).body.result.tools.map((t: any) => t.name);
   assert.deepEqual(names.sort(), ["add_editing_style", "add_library_entry", "audit_reviews", "cancel_post", "cancel_production", "claim_brief", "create_edit", "describe_production_tools", "get_analytics", "get_campaign", "get_edit", "get_post", "get_production", "get_review", "get_tiktok_creator_info", "get_video_metrics", "give_up_brief", "list_accounts", "list_briefs", "list_campaigns", "list_editing_styles", "list_events", "list_library", "list_posts", "list_reviews", "publish_video", "renew_brief", "request_review", "reschedule_post", "retry_job", "revise_edit", "revise_production", "start_production", "stop_campaigns", "submit_brief", "sync_looks", "transcribe_media", "update_campaign", "wait_for_events"]);
   // Agents have no way to approve: only the user does, on a review (review.test.ts).
   assert.ok(!names.some((n: string) => /approve|decide|accept/.test(n)), "no approve tool");
@@ -314,7 +315,7 @@ test("Autorun tools: changes need Autorun and a reason, and are made in the MCP 
   assert.deepEqual(lib.entries.map((e: any) => e.name), ["Stop Scrolling", "Nobody Tells"]);
   assert.deepEqual(lib.entries.map((e: any) => e.owner_campaign_id), [null, id], "an agent's hook belongs to its campaign");
 
-  const tools = (await rpc("tools/list")).body.result.tools;
+  const tools = (await rpc("tools/list", undefined, {}, "/mcp?profile=full")).body.result.tools;
   for (const name of ["get_analytics", "get_video_metrics", "list_campaigns", "get_campaign", "list_library"]) {
     assert.equal(tools.find((t: any) => t.name === name).annotations.readOnlyHint, true, name);
   }
@@ -329,7 +330,7 @@ test("stop_campaigns turns the kill switch on; no tool turns it off", async () =
   const r = await call("stop_campaigns");
   assert.ok(!r.isError, r.content[0].text);
   assert.equal(cs.killed(), true);
-  const names = (await rpc("tools/list")).body.result.tools.map((t: any) => t.name);
+  const names = (await rpc("tools/list", undefined, {}, "/mcp?profile=full")).body.result.tools.map((t: any) => t.name);
   assert.ok(!names.some((n: string) => /resume|restart|start_campaign|unkill/.test(n)));
   await app.close();
 });
@@ -432,7 +433,7 @@ function briefTask(cs: CampaignStore, sec: number | null = null) {
 
 test("agent tools are listed", async () => {
   const { rpc } = mcpFixture();
-  const tools = (await rpc("tools/list")).body.result.tools;
+  const tools = (await rpc("tools/list", undefined, {}, "/mcp?profile=full")).body.result.tools;
   for (const name of ["sync_looks", "list_briefs", "claim_brief", "renew_brief", "submit_brief", "give_up_brief"]) {
     const t = tools.find((x: any) => x.name === name);
     assert.ok(t, name);
@@ -466,7 +467,7 @@ test("claim_brief through MCP uses the client name as holder and returns a claim
   const twin = await call("claim_brief", { task_id: taskId });
   assert.equal(twin.isError, true);
   assert.match(twin.content[0].text, /claimed by codex until/);
-  const noToken = await call("renew_brief", { task_id: taskId });
+  const noToken = await call("renew_brief", { task_id: taskId, claim_token: "" });
   assert.equal(noToken.isError, true);
   assert.match(noToken.content[0].text, /claimed under another claim; call claim_brief to get your own/);
   const mine = (await call("claim_brief", { task_id: taskId, claim_token: got.claim_token })).structuredContent;
@@ -477,7 +478,7 @@ test("claim_brief through MCP uses the client name as holder and returns a claim
 
 test("submit_brief refuses an unknown task_id with a helpful error", async () => {
   const { call } = mcpFixture({ campaigns: true });
-  const r = await call("submit_brief", { task_id: 999, video_path: "C:/nope.mp4", library_version: "1" });
+  const r = await call("submit_brief", { task_id: 999, claim_token: "", video_path: "C:/nope.mp4", library_version: "1" });
   assert.equal(r.isError, true);
   assert.match(r.content[0].text, /list_briefs/);
 });
@@ -523,4 +524,55 @@ test("give_up_brief tells the user", async () => {
     assert.equal(events.length, 1, `worker running: ${campaigns}`);
     assert.match(events[0].summary, /the agent gave up: no image generator/);
   }
+});
+
+test("lean MCP: two tools, short instructions, named calls still work", async () => {
+  const { rpc, call } = mcpFixture();
+  const init = await rpc("initialize", { protocolVersion: "2025-06-18", clientInfo: { name: "t", version: "1" } });
+  assert.ok(init.body.result.instructions.length <= 1500);
+  assert.match(init.body.result.instructions, /tap Approve/);
+  const r = await call("list_accounts"); // hidden but callable
+  assert.ok(r.structuredContent.accounts);
+  const full = await rpc("initialize", { protocolVersion: "2025-06-18" }, {}, "/mcp?profile=full");
+  assert.ok(full.body.result.instructions.length > 5000);
+});
+
+test("fp runs ops, batches, and accepts args as a JSON string", async () => {
+  const { call } = mcpFixture();
+  let r = await call("fp", { op: "get_post", args: '{"post_id":999}' });
+  assert.equal(r.isError, true); assert.match(r.content[0].text, /no post 999/);
+  r = await call("fp", { op: "list_accounts", fields: "accounts.id" });
+  assert.equal(r.structuredContent, undefined); assert.deepEqual(JSON.parse(r.content[0].text), { accounts: [] });
+  r = await call("fp", { calls: [{ op: "list_accounts" }, { op: "list_posts" }] });
+  assert.equal(JSON.parse(r.content[0].text).length, 2);
+  assert.match((await call("fp", { op: "x", args: "[1]" })).content[0].text, /unknown op|args must be an object/);
+  assert.match((await call("fp", { op: "list_accounts", args: "[1]" })).content[0].text, /args must be an object \(or a JSON string of one\)/);
+  assert.equal((await call("fp", { calls: [{ op: "wait_for_events" }] })).isError, undefined);
+  assert.match((await call("fp", { calls: [{ op: "wait_for_events" }] })).content[0].text, /can't be batched/);
+  assert.equal((await call("fp", { calls: new Array(21).fill({ op: "list_posts" }) })).isError, true);
+});
+
+test("fp_help returns the index, one op, and guides", async () => {
+  const { call } = mcpFixture();
+  assert.match((await call("fp_help", {})).content[0].text, /^FreePoster agent API/);
+  assert.match((await call("fp_help", { op: "claim_brief" })).content[0].text, /claim_token/);
+  assert.match((await call("fp_help", { topic: "events" })).content[0].text, /review\.redo/);
+  assert.equal((await call("fp_help", { topic: "nope" })).isError, true);
+});
+
+test("?tools= gives a typed subset; unknown names are refused", async () => {
+  const { rpc } = mcpFixture();
+  const sub = await rpc("tools/list", undefined, {}, "/mcp?tools=claim_brief,submit_brief");
+  assert.deepEqual(sub.body.result.tools.map((t: any) => t.name), ["claim_brief", "submit_brief"]);
+  const bad = await rpc("tools/list", undefined, {}, "/mcp?tools=nope");
+  assert.equal(bad.body.error.code, -32602);
+  assert.match(bad.body.error.message, /claim_brief/);
+});
+
+test("lean profile budget: instructions plus tool schemas stay under 4,000 characters", async () => {
+  const { rpc } = mcpFixture();
+  const init = await rpc("initialize", { protocolVersion: "2025-06-18" });
+  const list = await rpc("tools/list");
+  const total = init.body.result.instructions.length + JSON.stringify(list.body.result).length;
+  assert.ok(total <= 4000, `lean profile is ${total} chars`);
 });

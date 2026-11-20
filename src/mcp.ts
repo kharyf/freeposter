@@ -10,6 +10,10 @@ import { isAbsolute, join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { ToolError, type Tool } from "./api/errors.ts";
 import { EVENT_GUIDE, GUIDES } from "./api/guides.ts";
+import { trustedRequest } from "./api/guard.ts";
+import { ApiError, guideText, indexText, noGuide, opDoc, runBatch, runOp } from "./api/routes.ts";
+import { validate } from "./api/schema.ts";
+import { parseFields } from "./api/compact.ts";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { accountSets, defaultSetId, setToken, sharedFrom } from "./accounts.ts";
 import { codeDir, config, isConfigured } from "./config.ts";
@@ -41,6 +45,14 @@ export const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"];
 
 const INSTRUCTIONS = [GUIDES.rules, GUIDES.events, GUIDES.production, GUIDES.campaigns].join("\n\n");
 
+/** What lean (and typed-subset) clients are told: the rest is behind fp_help. */
+const leanInstructions = () => `FreePoster posts short vertical videos to the user's TikTok, Instagram, Facebook, X and YouTube accounts. It runs on this computer; paths are local.
+Use fp(op, args) for everything; fp_help() lists ops, fp_help(op) shows one op's args, fp_help(topic) gives a guide. Read fp_help(topic:"rules") before your first post.
+You can't post or approve: request_review sends the video to the user, and only their tap on Approve posts it. If they say "yes" to you, tell them to tap Approve.
+For TikTok, call get_tiktok_creator_info and let the user choose privacy_level.
+News comes from the event log: wait_for_events / list_events; fp_help(topic:"events") says what to do with each event.
+If you can run shell commands, the same ops are at POST ${config.baseUrl}/agent/v1/<op> (or the freeposter CLI), which costs fewer tokens.`;
+
 /** Prompts: ready-made requests the user can pick in agents that offer them (often as slash commands). */
 const PROMPTS = [
   {
@@ -64,7 +76,6 @@ const iso = (ms: number | null | undefined) => (ms === null || ms === undefined 
 
 export { ToolError, EVENT_GUIDE };
 export type { Tool };
-import { trustedRequest } from "./api/guard.ts";
 export { trustedRequest };
 
 // ---- argument readers: the schemas below tell clients the shapes; these make sure of them ----
@@ -134,9 +145,6 @@ const POST_PROPS = {
   allow_duplicate: { type: "boolean", default: false, description: "Post even though this exact file already went to some of these accounts. Only when the user confirms." },
   dry_run: { type: "boolean", default: false, description: "Run every check and report, without asking for a review." },
 };
-
-/** Tools whose text result is compact JSON rather than indented. */
-const COMPACT = new Set<string>();
 
 export function mcpTools(store: Store, runner: Runner, publishers: Record<Platform, Publisher>, reviews: ReviewService, producer?: ProductionWorker, reviewChannel: () => Record<string, unknown> = () => ({}), campaigns?: CampaignWorker, agent: () => string = () => "agent"): Tool[] {
   const view = (p: Parameters<typeof postView>[1]) => {
@@ -616,11 +624,11 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
     reviewChannel,
     fail: (message) => new ToolError(message),
   }));
-  // Analytics and campaign results can be long: their text is compact JSON.
-  for (const t of [...analyticsTools({ store, fail: (message) => new ToolError(message) }), ...campaignTools({ store, worker: () => campaigns, agent, fail: (message) => new ToolError(message) }), ...agentTools({ store, worker: () => campaigns, agent, fail: (message) => new ToolError(message) })]) {
-    COMPACT.add(t.name);
-    tools.push(t);
-  }
+  tools.push(
+    ...analyticsTools({ store, fail: (message) => new ToolError(message) }),
+    ...campaignTools({ store, worker: () => campaigns, agent, fail: (message) => new ToolError(message) }),
+    ...agentTools({ store, worker: () => campaigns, agent, fail: (message) => new ToolError(message) }),
+  );
   return tools;
 
   /**
@@ -735,10 +743,100 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
 
 const rpcError = (id: unknown, code: number, message: string) => ({ jsonrpc: "2.0", id: id ?? null, error: { code, message } });
 
+/** Which tools tools/list shows and which instructions initialize gives; every registry tool stays callable by name. */
+type Profile = { kind: "lean" } | { kind: "full" } | { kind: "subset"; names: string[] };
+
+function readProfile(query: unknown, tools: Tool[]): Profile | string {
+  const q = (query && typeof query === "object" ? query : {}) as Record<string, unknown>;
+  const one = (v: unknown) => (Array.isArray(v) ? String(v[0]) : typeof v === "string" ? v : undefined);
+  const list = one(q.tools);
+  if (list !== undefined) {
+    const names = [...new Set(list.split(",").map((n) => n.trim()).filter(Boolean))];
+    const unknown = names.filter((n) => !tools.some((t) => t.name === n));
+    if (unknown.length || !names.length) return `unknown tools ${unknown.join(", ") || "(none given)"}; valid names: ${tools.map((t) => t.name).join(", ")}`;
+    return { kind: "subset", names };
+  }
+  const profile = one(q.profile);
+  if (profile === undefined || profile === "lean") return { kind: "lean" };
+  if (profile === "full") return { kind: "full" };
+  return `unknown profile ${profile}; use lean or full, or ?tools=a,b,c`;
+}
+
+/** The two tools lean clients see; callable on every profile. Their results are text only. */
+function gatewayTools(tools: Tool[]): Tool[] {
+  const objectArgs = (raw: unknown): Record<string, unknown> => {
+    let v = raw ?? {};
+    if (typeof v === "string") {
+      try { v = JSON.parse(v); } catch { /* reported below */ }
+    }
+    if (typeof v !== "object" || v === null || Array.isArray(v)) throw new ApiError(400, "args must be an object (or a JSON string of one)");
+    return v as Record<string, unknown>;
+  };
+  const failed = (err: unknown) => (err instanceof ApiError ? new ToolError(err.message) : err);
+  const callProps = {
+    op: { type: "string", description: "Op name." },
+    args: { anyOf: [{ type: "object" }, { type: "string" }], description: "Op arguments (object or JSON string)." },
+    fields: { type: "string", description: "Comma-separated result fields to keep." },
+  };
+  return [
+    {
+      name: "fp",
+      title: "Run a FreePoster op",
+      description: "Run a FreePoster op. fp_help lists ops and their args.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          ...callProps,
+          calls: { type: "array", items: { type: "object", properties: callProps }, description: "Batch of {op,args,fields} instead of op." },
+        },
+      },
+      annotations: { readOnlyHint: false, openWorldHint: false },
+      async run(args) {
+        try {
+          if (args.calls !== undefined) {
+            const items = Array.isArray(args.calls)
+              ? args.calls.map((c) => (c && typeof c === "object" && !Array.isArray(c) && typeof (c as Args).args === "string" ? { ...c, args: objectArgs((c as Args).args) } : c))
+              : args.calls;
+            return await runBatch(tools, items);
+          }
+          if (typeof args.op !== "string") throw new ApiError(400, "op must be a string");
+          return (await runOp(tools, args.op, objectArgs(args.args), parseFields(args.fields))) ?? {};
+        } catch (err) {
+          throw failed(err);
+        }
+      },
+    },
+    {
+      name: "fp_help",
+      title: "FreePoster help",
+      description: "FreePoster ops and guides. No args: the op index. op: one op's args. topic: rules|events|production|campaigns|limits.",
+      inputSchema: { type: "object", properties: { op: { type: "string" }, topic: { type: "string" } } },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+      async run(args) {
+        try {
+          if (typeof args.topic === "string") {
+            const guide = guideText(args.topic);
+            if (guide === null) throw new ApiError(404, noGuide(args.topic));
+            return guide;
+          }
+          if (typeof args.op === "string") return opDoc(tools, args.op);
+          return indexText(tools);
+        } catch (err) {
+          throw failed(err);
+        }
+      },
+    },
+  ];
+}
+
 export function registerMcp(app: FastifyInstance, tools: Tool[], setAgent: (name: string) => void) {
   // The server is stateless, so the agent's name for the Autorun log is the clientInfo.name of the latest initialize.
+  const gateway = gatewayTools(tools);
+  const callable = [...tools, ...gateway.filter((g) => !tools.some((t) => t.name === g.name))];
+  const shown = (profile: Profile): Tool[] =>
+    profile.kind === "full" ? tools : profile.kind === "lean" ? gateway : profile.names.map((n) => tools.find((t) => t.name === n)!);
 
-  async function handle(msg: any): Promise<object | null> {
+  async function handle(msg: any, profile: Profile): Promise<object | null> {
     if (!msg || typeof msg !== "object" || msg.jsonrpc !== "2.0" || typeof msg.method !== "string") {
       return msg && "id" in msg && !("method" in msg) ? null : rpcError(msg?.id, -32600, "not a JSON-RPC 2.0 request");
     }
@@ -753,7 +851,7 @@ export function registerMcp(app: FastifyInstance, tools: Tool[], setAgent: (name
           protocolVersion: PROTOCOL_VERSIONS.includes(params.protocolVersion) ? params.protocolVersion : PROTOCOL_VERSIONS[0],
           capabilities: { tools: { listChanged: false }, prompts: { listChanged: false } },
           serverInfo: { name: "freeposter", title: "FreePoster", version: VERSION },
-          instructions: INSTRUCTIONS,
+          instructions: profile.kind === "full" ? INSTRUCTIONS : leanInstructions(),
         });
       }
       case "ping":
@@ -769,15 +867,19 @@ export function registerMcp(app: FastifyInstance, tools: Tool[], setAgent: (name
         return reply({ description: prompt.description, messages: [{ role: "user", content: { type: "text", text: prompt.text(args) } }] });
       }
       case "tools/list":
-        return reply({ tools: tools.map(({ run, ...t }) => t) });
+        return reply({ tools: shown(profile).map(({ run, ...t }) => t) });
       case "tools/call": {
-        const tool = tools.find((t) => t.name === params.name);
+        const tool = callable.find((t) => t.name === params.name);
         if (!tool) return isNotification ? null : rpcError(msg.id, -32602, `unknown tool ${params.name}`);
         const args = params.arguments ?? {};
         if (typeof args !== "object" || Array.isArray(args)) return isNotification ? null : rpcError(msg.id, -32602, "arguments must be an object");
         try {
+          const isGateway = gateway.includes(tool);
+          if (!isGateway) validate(tool.inputSchema, args);
           const result = await tool.run(args);
-          return reply({ content: [{ type: "text", text: COMPACT.has(tool.name) ? JSON.stringify(result) : JSON.stringify(result, null, 2) }], structuredContent: result });
+          // The gateway tools answer in text only (a guide is plain text, a result compact JSON); named tools also carry structuredContent.
+          if (isGateway) return reply({ content: [{ type: "text", text: typeof result === "string" ? result : JSON.stringify(result) }] });
+          return reply({ content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result });
         } catch (err) {
           // Platform and validation errors go back to the model, which can fix its call or tell the user.
           if (!(err instanceof ToolError)) console.error(`mcp ${tool.name}:`, (err as Error).message);
@@ -800,8 +902,10 @@ export function registerMcp(app: FastifyInstance, tools: Tool[], setAgent: (name
     if (!req.headers["content-type"]?.startsWith("application/json") || typeof req.body !== "object" || req.body === null) {
       return reply.code(400).send(rpcError(null, -32700, "send a JSON-RPC message as application/json"));
     }
+    const profile = readProfile(req.query, tools);
+    if (typeof profile === "string") return reply.code(400).send(rpcError(null, -32602, profile));
     const batch = Array.isArray(req.body);
-    const responses = (await Promise.all((batch ? (req.body as unknown[]) : [req.body]).map(handle))).filter(Boolean);
+    const responses = (await Promise.all((batch ? (req.body as unknown[]) : [req.body]).map((m) => handle(m, profile)))).filter(Boolean);
     if (!responses.length) return reply.code(202).send();
     return reply.type("application/json").send(batch ? responses : responses[0]);
   });

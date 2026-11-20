@@ -44,15 +44,56 @@ export async function runOp(tools: Tool[], name: string, args: unknown, fields?:
   return fields ? pick(out, fields) : out;
 }
 
-export function registerAgentApi(app: FastifyInstance, tools: Tool[], setAgent: (name: string) => void) {
-  const index = [
+/** The op index (GET /agent/v1, fp_help with no args). */
+export function indexText(tools: Tool[]): string {
+  return [
     "FreePoster agent API. POST /agent/v1/<op> with JSON args → compact JSON.",
     "You can't approve: only the user's tap does. Read GET /agent/v1/guide/rules once.",
     `Batch: POST /agent/v1 [{"op","args","fields"}]. Docs: GET /agent/v1/<op>. Guides: ${GUIDE_TOPICS.join(" ")}.`,
     ...tools.map((t) => `${signature(t.name, t.inputSchema)} — ${summary(t.description)}`),
   ].join("\n");
+}
 
-  // Its own plugin, so the empty-body parser below applies to /agent/v1 and nowhere else.
+/** One op's docs (GET /agent/v1/<op>, fp_help op). */
+export function opDoc(tools: Tool[], name: string): string {
+  const tool = tools.find((t) => t.name === name);
+  if (!tool) throw unknownOp(tools, name);
+  return renderDoc(tool);
+}
+
+/** A guide's text, or null for an unknown topic. */
+export function guideText(topic: string): string | null {
+  return Object.hasOwn(GUIDES, topic) ? GUIDES[topic as keyof typeof GUIDES] : null;
+}
+
+export const noGuide = (topic: string) => `no guide ${topic}; guides: ${GUIDE_TOPICS.join(" ")}`;
+
+/** Runs a batch of {op, args, fields}: at most 20 objects, each result {ok} or {error, status}. */
+export async function runBatch(tools: Tool[], items: unknown): Promise<unknown[]> {
+  if (!Array.isArray(items)) throw new ApiError(400, "send a JSON array of {op, args, fields}");
+  if (items.length > MAX_BATCH) throw new ApiError(400, `at most ${MAX_BATCH} items per batch`);
+  if (items.some((i) => typeof i !== "object" || i === null || Array.isArray(i))) throw new ApiError(400, "every item must be an object {op, args, fields}");
+  const out: unknown[] = [];
+  for (const item of items as { op?: unknown; args?: unknown; fields?: unknown }[]) {
+    try {
+      if (typeof item.op !== "string") throw new ApiError(400, "op must be a string");
+      if (item.op === "wait_for_events") throw new ApiError(400, "wait_for_events can't be batched");
+      out.push({ ok: (await runOp(tools, item.op, item.args, parseFields(item.fields))) ?? {} });
+    } catch (err) {
+      if (err instanceof ApiError) out.push({ error: err.message, status: err.status });
+      else {
+        console.error("agent api:", (err as Error).message);
+        out.push({ error: "internal error", status: 500 });
+      }
+    }
+  }
+  return out;
+}
+
+export function registerAgentApi(app: FastifyInstance, tools: Tool[], setAgent: (name: string) => void) {
+  const index = indexText(tools);
+
+  // Its own plugin under the prefix, so the empty-body parser and the 404 handler apply to /agent/v1 and nowhere else.
   app.register(async (api) => {
     api.removeAllContentTypeParsers();
     api.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body, done) => {
@@ -72,7 +113,9 @@ export function registerAgentApi(app: FastifyInstance, tools: Tool[], setAgent: 
       if (refused) return reply.code(403).send({ error: refused });
       if (req.method === "POST") {
         const hasBody = Number(req.headers["content-length"] ?? 0) > 0 || req.headers["transfer-encoding"] !== undefined;
-        if (hasBody && !req.headers["content-type"]?.toLowerCase().startsWith("application/json")) {
+        // Fastify picks the JSON parser by the exact media type; anything else would reach "*" and lose its body.
+        const mediaType = (req.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
+        if (hasBody && mediaType !== "application/json") {
           return reply.code(415).send({ error: "send the arguments as application/json" });
         }
       }
@@ -91,47 +134,31 @@ export function registerAgentApi(app: FastifyInstance, tools: Tool[], setAgent: 
     };
     const text = (reply: { type(t: string): any }, body: string) => reply.type("text/plain; charset=utf-8").send(body);
 
-    api.get("/agent/v1", async (_req, reply) => text(reply, index));
+    api.setNotFoundHandler((_req, reply) => reply.code(404).send({ error: "not found; GET /agent/v1 lists the ops" }));
 
-    api.get<{ Params: { topic: string } }>("/agent/v1/guide/:topic", async (req, reply) => {
+    api.get("/", async (_req, reply) => text(reply, index));
+
+    api.get<{ Params: { topic: string } }>("/guide/:topic", async (req, reply) => {
       const topic = req.params.topic;
-      if (!Object.hasOwn(GUIDES, topic)) return reply.code(404).type("text/plain; charset=utf-8").send(`no guide ${topic}; guides: ${GUIDE_TOPICS.join(" ")}`);
-      return text(reply, GUIDES[topic as keyof typeof GUIDES]);
+      const guide = guideText(topic);
+      if (guide === null) return reply.code(404).type("text/plain; charset=utf-8").send(noGuide(topic));
+      return text(reply, guide);
     });
 
-    api.get<{ Params: { op: string } }>("/agent/v1/:op", async (req, reply) => {
-      const tool = tools.find((t) => t.name === req.params.op);
-      if (!tool) throw unknownOp(tools, req.params.op);
-      return text(reply, renderDoc(tool));
+    api.get<{ Params: { op: string } }>("/:op", async (req, reply) => {
+      return text(reply, opDoc(tools, req.params.op));
     });
 
-    api.post<{ Params: { op: string }; Querystring: { fields?: string } }>("/agent/v1/:op", async (req, reply) => {
+    api.post<{ Params: { op: string }; Querystring: { fields?: string } }>("/:op", async (req, reply) => {
       noteAgent(req);
       const result = await runOp(tools, req.params.op, req.body, parseFields(req.query.fields));
       return reply.type("application/json").send(JSON.stringify(result ?? {}));
     });
 
-    api.post("/agent/v1", async (req, reply) => {
+    api.post("/", async (req, reply) => {
       noteAgent(req);
-      const items = req.body;
-      if (!Array.isArray(items)) throw new ApiError(400, "send a JSON array of {op, args, fields}");
-      if (items.length > MAX_BATCH) throw new ApiError(400, `at most ${MAX_BATCH} items per batch`);
-      if (items.some((i) => typeof i !== "object" || i === null || Array.isArray(i))) throw new ApiError(400, "every item must be an object {op, args, fields}");
-      const out: unknown[] = [];
-      for (const item of items as { op?: unknown; args?: unknown; fields?: unknown }[]) {
-        try {
-          if (typeof item.op !== "string") throw new ApiError(400, "op must be a string");
-          if (item.op === "wait_for_events") throw new ApiError(400, "wait_for_events can't be batched");
-          out.push({ ok: (await runOp(tools, item.op, item.args, parseFields(item.fields))) ?? {} });
-        } catch (err) {
-          if (err instanceof ApiError) out.push({ error: err.message, status: err.status });
-          else {
-            console.error("agent api:", (err as Error).message);
-            out.push({ error: "internal error", status: 500 });
-          }
-        }
-      }
+      const out = await runBatch(tools, req.body);
       return reply.type("application/json").send(JSON.stringify(out));
     });
-  });
+  }, { prefix: "/agent/v1" });
 }

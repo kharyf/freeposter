@@ -79,6 +79,16 @@ test("refuses other websites and non-JSON bodies", async () => {
   assert.equal((await api("POST", "/agent/v1/list_accounts", {}, { origin: "https://evil.example" })).statusCode, 403);
   assert.equal((await api("GET", "/agent/v1", undefined, { origin: "https://evil.example" })).statusCode, 403);
   assert.equal((await app.inject({ method: "POST", url: "/agent/v1/request_review", headers: { ...HOST, "content-type": "text/plain" }, payload: "{}" })).statusCode, 415);
+  // only exactly application/json is parsed; a lookalike would otherwise become {} and drop the args
+  assert.equal((await app.inject({ method: "POST", url: "/agent/v1/get_post", headers: { ...HOST, "content-type": "application/json-patch+json" }, payload: '{"post_id":1}' })).statusCode, 415);
+  assert.notEqual((await app.inject({ method: "POST", url: "/agent/v1/list_accounts", headers: { ...HOST, "content-type": "application/json; charset=utf-8" }, payload: "{}" })).statusCode, 415);
+});
+
+test("unmatched paths answer 404 JSON", async () => {
+  const { api } = setup();
+  const r = await api("GET", "/agent/v1/a/b");
+  assert.equal(r.statusCode, 404);
+  assert.deepEqual(Object.keys(r.json()), ["error"]);
 });
 
 test("the app password guards the API", async () => {

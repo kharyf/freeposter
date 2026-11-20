@@ -37,8 +37,8 @@ function setup() {
   const producer = new ProductionWorker(store, { adapters: fakeAdapters(), dir: tmp(), speechFor });
   const app = buildServer(store, new Runner(store, publishers, tmp()), publishers, {}, undefined, undefined, producer);
   let id = 0;
-  const rpc = async (method: string, params?: unknown) => {
-    const res = await app.inject({ method: "POST", url: "/mcp", headers: HOST, payload: { jsonrpc: "2.0", id: ++id, method, params } });
+  const rpc = async (method: string, params?: unknown, url = "/mcp") => {
+    const res = await app.inject({ method: "POST", url, headers: HOST, payload: { jsonrpc: "2.0", id: ++id, method, params } });
     return res.json();
   };
   const call = async (name: string, args: Record<string, unknown> = {}) => (await rpc("tools/call", { name, arguments: args })).result;
@@ -59,7 +59,7 @@ const withClip = () => ({ ...spec, shots: [spec.shots[0], { ...spec.shots[1], pa
 
 test("the six production tools are listed, and none approves", async () => {
   const { rpc, app } = setup();
-  const names = (await rpc("tools/list")).result.tools.map((t: any) => t.name);
+  const names = (await rpc("tools/list", undefined, "/mcp?profile=full")).result.tools.map((t: any) => t.name);
   for (const n of ["describe_production_tools", "start_production", "get_production", "revise_production", "cancel_production", "transcribe_media"]) assert.ok(names.includes(n), n);
   assert.ok(!names.includes("approve_production"));
   assert.equal(names.length, 39);

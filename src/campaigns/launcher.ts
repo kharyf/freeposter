@@ -21,8 +21,8 @@ const MIN_RUN_MINUTES = 5;
  * The only FreePoster tools the launched Claude may use: the brief ones, never posting, campaigns or the kill
  * switch. Bash stays open, since the lemo-opuscar skill runs sh, git, node, npm, ffmpeg and python.
  */
-const ALLOWED_TOOLS = ["Bash", "Read", "Write", "Edit", "Skill",
-  ...["list_briefs", "claim_brief", "renew_brief", "submit_brief", "give_up_brief"].map((t) => `mcp__freeposter__${t}`)].join(",");
+const BRIEF_TOOLS = ["list_briefs", "claim_brief", "renew_brief", "submit_brief", "give_up_brief"];
+const ALLOWED_TOOLS = ["Bash", "Read", "Write", "Edit", "Skill", ...BRIEF_TOOLS.map((t) => `mcp__freeposter__${t}`)].join(",");
 
 /** Where the prompt ships: templates/, unpacked beside the bundle in the installed app. */
 const promptFile = () => join(codeDir.replace(/app\.asar$/, "app.asar.unpacked"), "templates", "agent", "brief-prompt.md");
@@ -188,7 +188,7 @@ export class AgentLauncher {
   /** FreePoster's MCP server as Claude Code reads it, with the app password when one is set. */
   private writeMcpConfig(path: string) {
     // The address the server listens on, so nothing goes through a public tunnel set as BASE_URL.
-    const server: Record<string, unknown> = { type: "http", url: `http://127.0.0.1:${config.port}/mcp` };
+    const server: Record<string, unknown> = { type: "http", url: `http://127.0.0.1:${config.port}/mcp?tools=${BRIEF_TOOLS.join(",")}` };
     // The server takes the password as Basic auth with any user name, as the browser sends it.
     if (config.appPassword) server.headers = { Authorization: `Basic ${Buffer.from(`freeposter:${config.appPassword}`).toString("base64")}` };
     writeFileSync(path, JSON.stringify({ mcpServers: { freeposter: server } }, null, 2), { mode: 0o600 });

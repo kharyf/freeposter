@@ -24,7 +24,9 @@ If you set an app password in FreePoster, add it as HTTP Basic auth (any user na
 
 Downloading a preview (`preview_url`) needs the same header when a password is set.
 
-Restart Hermes. Ask it "what can FreePoster make?" and it should call `describe_production_tools`. With only this step, Hermes already hears what happened whenever you talk to it, through `list_events`. The webhook below makes it react without waiting for you.
+FreePoster's MCP server is lean by default: Hermes sees two tools, `fp` and `fp_help`, which reach every FreePoster op, and costs about 0.5k tokens a session instead of about 10k. To have every tool typed, use `url: http://localhost:4400/mcp?profile=full`; for an exact set, `?tools=list_events,request_review,get_review` (comma-separated tool names). If Hermes can run shell commands, `curl http://localhost:4400/agent/v1` and `POST /agent/v1/<op>` cost even less ([agents.md](agents.md#1-the-mcp-server-the-api-and-the-command-line)).
+
+Restart Hermes. Ask it "what can FreePoster make?" and it should call `fp_help` and then `describe_production_tools` through `fp`. With only this step, Hermes already hears what happened whenever you talk to it, through `list_events`. The webhook below makes it react without waiting for you.
 
 ## 2. The webhook route (optional)
 

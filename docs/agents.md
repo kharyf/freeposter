@@ -6,15 +6,25 @@ Every agent gets the same three things, and none of them is tied to one agent:
 
 | What | Needed? | What it does |
 |---|---|---|
-| [The MCP server](#1-the-mcp-server) | Yes | The agent calls FreePoster: accounts, edits, productions, reviews, posts. |
+| [The MCP server, API or CLI](#1-the-mcp-server-the-api-and-the-command-line) | Yes | The agent calls FreePoster: accounts, edits, productions, reviews, posts. |
 | [The event feed](#2-the-event-feed) | Built in | The agent finds out what happened: a video is ready, you approved, rejected or asked for a redo, a post went out. |
 | [A webhook](#3-a-webhook-optional) | Optional | FreePoster pushes each event the moment it happens, for agents that run all the time. |
 
 Reviews on Telegram work with any agent too ([section 4](#4-reviews-on-telegram)). For Hermes's ready-made pieces, see [hermes.md](hermes.md).
 
-## 1. The MCP server
+## 1. The MCP server, the API and the command line
 
-While FreePoster runs, it serves MCP (Streamable HTTP) at `http://localhost:4400/mcp`. The app's **AI agents** panel shows the setup line for each agent:
+**Agents that can run shell commands: use the API or the CLI (cheapest).** Nothing is loaded into the conversation up front; the agent reads what it needs, when it needs it:
+
+```bash
+curl -s http://localhost:4400/agent/v1                       # every op, one line each
+curl -s http://localhost:4400/agent/v1/request_review        # one op's arguments
+curl -s -X POST http://localhost:4400/agent/v1/list_accounts -H 'content-type: application/json' -d '{}'
+```
+
+`GET /agent/v1/guide/rules` (also `events`, `production`, `campaigns`, `limits`) is the long-form advice. Results are compact JSON; `?fields=a.b,c` keeps only some fields and `POST /agent/v1` runs up to 20 ops in one request. The `freeposter` command line ([section 5](#5-the-command-line)) does the same.
+
+**Everything else uses MCP** (Streamable HTTP) at `http://localhost:4400/mcp`. The app's **AI agents** panel shows the setup line for each agent:
 
 ```bash
 claude mcp add --transport http freeposter http://localhost:4400/mcp   # Claude Code
@@ -27,7 +37,23 @@ Cursor, VS Code, Windsurf and others take it in their MCP settings file:
 { "mcpServers": { "freeposter": { "type": "http", "url": "http://localhost:4400/mcp" } } }
 ```
 
-An agent that only runs local commands can use `npx mcp-remote http://localhost:4400/mcp`, or the `freeposter` command line ([section 5](#5-the-command-line)). If you set an app password, agents send it as HTTP Basic auth (any user name).
+By default the server is **lean**: it lists just two tools, `fp(op, args)` and `fp_help(op | topic)`, and a short set of instructions. Every FreePoster op still works through `fp` (several at once with `calls`, a few result fields with `fields`), and `fp_help` shows the op index, one op's arguments, or a guide. Clients that want every tool typed ask for it in the URL:
+
+| URL | What the agent sees |
+|---|---|
+| `/mcp` (or `?profile=lean`) | `fp` and `fp_help` |
+| `/mcp?profile=full` | every tool with its full schema and the full instructions |
+| `/mcp?tools=claim_brief,submit_brief` | exactly those tools, typed (an unknown name is refused, listing the valid ones) |
+
+Every tool can be called by name on every profile, listed or not. What each costs a session (characters, about 4 per token):
+
+| Profile | Instructions + tool list | About |
+|---|---|---|
+| `full` (how it was) | 41,769 chars | 10.4k tokens |
+| lean (default) | 1,988 chars | 0.5k tokens |
+| `?tools=` the five brief tools | 4,656 chars | 1.2k tokens |
+
+An agent that only runs local commands can use `npx mcp-remote http://localhost:4400/mcp`. If you set an app password, agents send it as HTTP Basic auth (any user name).
 
 The server also offers two **prompts**, which agents that support prompts show as ready-made requests (often slash commands):
 
