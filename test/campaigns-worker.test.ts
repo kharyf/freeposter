@@ -1171,6 +1171,25 @@ test("a look hidden after the brief was made still delivers and labels", async (
   assert.equal(labels.lookVersion, "1.4.0");
 });
 
+test("a row whose look left the catalogue makes no task and sends no failure", async () => {
+  const s = setup();
+  syncLooks(s.store, "lemo-opuscar", [LOOK]);
+  syncLooks(s.store, "lemo-opuscar", []); // hidden
+  const id = tableCampaign(s, [
+    tableRow(s, { id: 1, origin: "agent", style: null, look: LOOK.key, time: "18:00", sec: 5 }),
+    tableRow(s, { id: 2, origin: "agent", style: null, look: "lemo:never-synced", time: "19:00", sec: 5 }),
+  ]);
+  assert.equal(s.worker.materialize(), 0);
+  assert.deepEqual(s.cs.tasksOn(id, "2026-11-17"), []);
+  s.clock.now = at(2026, 11, 17, 12);
+  await s.tick();
+  assert.deepEqual(s.cs.tasksOn(id, "2026-11-17"), []);
+  assert.equal(s.store.feed(0, 100, ["campaign.failed"]).length, 0);
+  // Back in the catalogue, the row runs again.
+  syncLooks(s.store, "lemo-opuscar", [LOOK]);
+  assert.equal(s.worker.materialize(), 1);
+});
+
 test("a look gone from the catalogue before its brief fails the task", async () => {
   const s = agentSetup();
   syncLooks(s.store, "lemo-opuscar", []);

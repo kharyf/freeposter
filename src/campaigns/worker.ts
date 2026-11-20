@@ -287,6 +287,12 @@ export class CampaignWorker {
     });
     let made = 0;
     instructions.forEach((ins, index) => {
+      // An Agent row whose look has left the catalogue (hidden by a sync, or never synced) doesn't run: the table
+      // says so, and no task is made (nor a failure sent) until the look is back.
+      if (ins.kind === "make" && ins.look) {
+        const look = lookByKey(this.store, ins.look);
+        if (!look || look.hidden) return;
+      }
       // A table row's tasks are named by the row, so adding, removing or moving rows mid-day never re-makes or skips one.
       const instructionIndex = ins.row !== undefined ? ROW_INSTRUCTION_BASE + ins.row : index;
       const copies = ins.kind === "make" ? ins.count : 1;
