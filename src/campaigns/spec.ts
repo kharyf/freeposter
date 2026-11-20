@@ -10,7 +10,10 @@ export type Pick = { pick: "named"; id: number } | { pick: "random" } | { pick: 
 export interface MakeInstruction {
   kind: "make";
   count: number;
-  style: string;
+  /** the editing style; null only for an agent film, which names a look instead */
+  style: string | null;
+  /** an agent film's look (a catalogue key): the lemo-opuscar skill makes the video instead of the script writer */
+  look?: string;
   /** target length in seconds ("30 second ads"), or null/absent to let the script decide */
   sec?: number | null;
   hook: Pick;
@@ -70,6 +73,8 @@ export interface Vocabulary {
   hooks: LibraryEntry[];
   angles: LibraryEntry[];
   ctas: LibraryEntry[];
+  /** the looks catalogue an agent row may name; absent means none */
+  looks?: { key: string }[];
 }
 
 type Obj = Record<string, unknown>;
@@ -148,7 +153,7 @@ export function parseCompiled(raw: unknown, vocab: Vocabulary): { ok: true; valu
   const instruction = (o: unknown, where: string): MakeInstruction | PostInstruction | null => {
     if (!isObj(o)) { problem(`${where} must be an object`); return null; }
     if (o.kind === "make") {
-      only(o, ["kind", "count", "style", "sec", "hook", "angle", "cta", "types", "post", "source", "instructions", "row"], where);
+      only(o, ["kind", "count", "style", "look", "sec", "hook", "angle", "cta", "types", "post", "source", "instructions", "row"], where);
       if (!intIn(o.count, 1, 20)) problem(`${where}.count must be a whole number from 1 to 20`);
       let post: { at: string } | null = null;
       if (o.post !== null) {
@@ -157,11 +162,18 @@ export function parseCompiled(raw: unknown, vocab: Vocabulary): { ok: true; valu
       }
       const cta = pick(o.cta, `${where}.cta`, vocab.ctas, "CTA");
       if (cta.pick === "named") namedCta = true;
+      let look: string | undefined;
+      if (o.look !== undefined) {
+        if (typeof o.look !== "string" || !(vocab.looks ?? []).some((l) => l.key === o.look)) problem(`${where}.look is not in the looks catalogue`);
+        else look = o.look;
+      }
+      if (o.style === null && o.look === undefined) problem(`${where}.style can only be null with a look`);
       const out: MakeInstruction = {
-        kind: "make", count: o.count as number, style: style(o.style, `${where}.style`),
+        kind: "make", count: o.count as number, style: o.style === null && o.look !== undefined ? null : style(o.style, `${where}.style`),
         hook: pick(o.hook, `${where}.hook`, vocab.hooks, "hook"), angle: pick(o.angle, `${where}.angle`, vocab.angles, "angle"), cta,
         types: types(o.types, `${where}.types`), post, source: source(o, where),
       };
+      if (look !== undefined) out.look = look;
       const sec = targetSec(o.sec, `${where}.sec`);
       if (sec !== undefined) out.sec = sec;
       if (o.instructions !== undefined) {

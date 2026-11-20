@@ -9,6 +9,7 @@ import { AnalyticsStore } from "../analytics/store.ts";
 import type { Store } from "../db.ts";
 import { allStyles, defaultStyleId, styleToken } from "../edit/styles.ts";
 import { queueEvent } from "../notify.ts";
+import { allLooks } from "./looks.ts";
 import { compileRows, parseRows, type Row } from "./rows.ts";
 import { DAYS, type CompiledCampaign, type Vocabulary } from "./spec.ts";
 import { linksIn } from "./script.ts";
@@ -55,6 +56,7 @@ export function campaignVocabulary(store: Store, cs: CampaignStore): Vocabulary 
     hooks: cs.entries("hook"),
     angles: cs.entries("angle"),
     ctas: cs.entries("cta"),
+    looks: allLooks(store).map((l) => ({ key: l.key })),
   };
 }
 
@@ -200,7 +202,7 @@ export async function applyAgentChange(
     const r = parseRows(change.rows, withAdds);
     if (!r.ok) return { ok: false, problems: r.problems };
     rows = r.value;
-    compiled = compileRows(rows);
+    compiled = compileRows(rows, withAdds);
   }
 
   if (compiled) {

@@ -96,3 +96,14 @@ test("stop_using only works for hooks, angles and CTAs", () => {
   }
   for (const label of ["hook", "angle", "cta"]) assert.ok(parseCompiled(doc({ rules: [{ ...rule(), when: { ...rule().when, label } }] }), vocab).ok, label);
 });
+
+test("parseCompiled accepts look and refuses null style without one", () => {
+  const v = { ...vocab, looks: [{ key: "lemo:ukiyo-e" }] } as Vocabulary;
+  const ok = parseCompiled(doc({}, [make({ style: null, look: "lemo:ukiyo-e" })]), v);
+  assert.ok(ok.ok, ok.ok ? "" : ok.problems.join("; "));
+  assert.equal((ok as any).value.days.tue[0].look, "lemo:ukiyo-e");
+  assert.ok(parseCompiled(doc({}, [make({ style: "Fancy", look: "lemo:ukiyo-e" })]), v).ok);
+  assert.equal(parseCompiled(doc({}, [make({ style: null })]), v).ok, false);
+  assert.equal(parseCompiled(doc({}, [make({ style: null, look: "lemo:nope" })]), v).ok, false);
+  assert.equal(parseCompiled(doc({}, [make({ look: "lemo:ukiyo-e" })]), vocab).ok, false);
+});

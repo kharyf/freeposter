@@ -2,6 +2,7 @@
 // keeps, their scores, and the names of the library entries and types their labels point at.
 import type { Store } from "../db.ts";
 import { CampaignStore } from "../campaigns/store.ts";
+import { lookByKey } from "../campaigns/looks.ts";
 import { scoreVideos, type LabelDimension, type ScoredJob, type VideoScore } from "./score.ts";
 import { AnalyticsStore } from "./store.ts";
 import type { Source, VideoLabels } from "./types.ts";
@@ -49,6 +50,6 @@ export function labelNames(store: Store) {
   return {
     entries, entryName, typeName,
     nameOf: (dim: LabelDimension, key: string) =>
-      dim === "type" ? typeName.get(key) ?? key : dim === "hook" || dim === "angle" || dim === "cta" ? entryName.get(key) ?? key : key,
+      dim === "look" ? lookByKey(store, key)?.name ?? key : dim === "type" ? typeName.get(key) ?? key : dim === "hook" || dim === "angle" || dim === "cta" ? entryName.get(key) ?? key : key,
   };
 }

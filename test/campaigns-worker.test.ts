@@ -750,7 +750,7 @@ test("a campaign task (and a rule task) waits for tomorrow's AI budget instead o
 
 const tableRow = (s: ReturnType<typeof setup>, extra: Partial<Row> = {}): Row => ({
   id: 1, quantity: 1, hook: { pick: "random" }, angle: { pick: "random" }, cta: { pick: "named", id: s.cta }, style: "basic",
-  type: null, time: "09:00", days: ["tue"], sec: 9, origin: "create", text: "", ...extra, // the stand-in AI's scripts run 9 seconds
+  type: null, time: "09:00", days: ["tue"], sec: 9, origin: "create", look: null, text: "", ...extra, // the stand-in AI's scripts run 9 seconds
 });
 const tableCampaign = (s: ReturnType<typeof setup>, rows: Row[], name = "Table") => {
   const id = s.cs.create({ name, text: "", accountSetId: null, defaultPostTimes: [], dailyPostCap: 100 });
