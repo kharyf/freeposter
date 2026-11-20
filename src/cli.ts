@@ -1,5 +1,5 @@
-// freeposter: a command-line client for a running FreePoster. Every command is one MCP tool call to the app's
-// /mcp endpoint, so the CLI and agents can never disagree, and the CLI adds nothing new to secure.
+// freeposter: a command-line client for a running FreePoster. Every command is one op on the app's compact
+// /agent/v1 REST API (the same ops agents get over MCP), so the CLI and agents can never disagree, and the CLI adds nothing new to secure.
 // Standalone on purpose (no imports from the app): it is bundled into one file that runs on any Node 24.
 import { readFileSync } from "node:fs";
 
@@ -32,7 +32,10 @@ const USAGE = `usage: freeposter <command> [options]
   cancel <id> [--post]                       a production (or with --post, a post)
   posts [<id>]                               recent posts, or one
   tools                                      what productions can use (tools, templates, sound effects)
-  call <tool> [<json arguments>]             any MCP tool
+  ops                                        every op, with its arguments
+  help [<op|topic>]                          this text, or an op's doc, or a guide (rules events production campaigns limits)
+  <op> [key=value ...] [--fields a,b.c]      any op: freeposter get_post post_id=3; --fields keeps only those fields
+  call <tool> [<json arguments>]             any op, with a JSON object of arguments
 
   --json   print JSON (the default when output isn't a terminal)
 
@@ -43,6 +46,7 @@ exit codes: 0 ok, 1 FreePoster refused (message on stderr), 2 usage, 3 FreePoste
 
 class Exit extends Error {
   code: number;
+  status?: number;
   constructor(code: number, message: string) {
     super(message);
     this.code = code;
@@ -56,7 +60,7 @@ function parse(argv: string[]) {
     const a = argv[i];
     if (a.startsWith("--")) {
       const [k, inline] = a.slice(2).split("=", 2);
-      const takesValue = ["accounts", "caption", "title", "at", "since"].includes(k);
+      const takesValue = ["accounts", "caption", "title", "at", "since", "fields"].includes(k);
       flags[k] = inline ?? (takesValue ? argv[++i] ?? "" : true);
     } else {
       positional.push(a);
@@ -76,35 +80,48 @@ const ids = (raw: string | true | undefined) =>
 export async function main(argv: string[], io: CliIO): Promise<number> {
   const base = (io.env.FREEPOSTER_URL || "http://localhost:4400").replace(/\/$/, "");
   const password = io.env.FREEPOSTER_PASSWORD;
-  let rpcId = 0;
   const { positional, flags } = parse(argv);
   const asJson = flags.json === true || !io.isTTY;
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const pollMs = Number(io.env.FREEPOSTER_POLL_MS) || 5_000;
 
-  async function call(name: string, args: Record<string, unknown> = {}): Promise<any> {
+  const agent = io.env.FREEPOSTER_AGENT || "freeposter-cli";
+  const headers = (extra: Record<string, string> = {}) => ({
+    "x-freeposter-agent": agent,
+    ...(password ? { authorization: `Basic ${Buffer.from(`freeposter:${password}`).toString("base64")}` } : {}),
+    ...extra,
+  });
+  const send = async (path: string, init: RequestInit): Promise<Response> => {
     let res: Response;
     try {
-      res = await fetch(`${base}/mcp`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...(password ? { authorization: `Basic ${Buffer.from(`freeposter:${password}`).toString("base64")}` } : {}),
-        },
-        body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method: "tools/call", params: { name, arguments: args } }),
-      });
+      res = await fetch(`${base}/agent/v1${path}`, init);
     } catch {
       throw new Exit(EXIT.notRunning, `FreePoster isn't running at ${base} (start the app, or set FREEPOSTER_URL)`);
     }
     if (res.status === 401) throw new Exit(EXIT.auth, "FreePoster wants its app password: set FREEPOSTER_PASSWORD");
+    return res;
+  };
+
+  /** One op over the agent REST API; the result is already compact. */
+  async function call(name: string, args: Record<string, unknown> = {}): Promise<any> {
+    const fields = typeof flags.fields === "string" && flags.fields ? `?fields=${encodeURIComponent(flags.fields)}` : "";
+    const res = await send(`/${encodeURIComponent(name)}${fields}`, { method: "POST", headers: headers({ "content-type": "application/json" }), body: JSON.stringify(args) });
     const body = await res.json().catch(() => null) as any;
-    if (!res.ok || !body) throw new Exit(EXIT.toolError, body?.error?.message ?? `FreePoster answered ${res.status}`);
-    if (body.error) throw new Exit(EXIT.toolError, body.error.message);
-    if (body.result?.isError) throw new Exit(EXIT.toolError, body.result.content?.[0]?.text ?? "FreePoster refused");
-    return body.result.structuredContent;
+    if (!res.ok || body === null) {
+      const e = new Exit(EXIT.toolError, body?.error ?? `FreePoster answered ${res.status}`);
+      e.status = res.status;
+      throw e;
+    }
+    return body;
   }
 
-  const print = (value: unknown) => io.out(asJson ? JSON.stringify(value, null, 2) : readable(value));
+  /** Plain text from the agent API (the index, an op's doc, a guide); null when there is none. */
+  async function text(path: string): Promise<string | null> {
+    const res = await send(path, { headers: headers() });
+    return res.ok ? (await res.text()).trimEnd() : null;
+  }
+
+  const print = (value: unknown) => io.out(asJson ? JSON.stringify(value) : readable(value));
 
   const readJson = async (source: string | undefined, what: string) => {
     if (!source) throw new Exit(EXIT.usage, `give ${what} as a file, or - for stdin\n\n${USAGE}`);
@@ -200,12 +217,41 @@ export async function main(argv: string[], io: CliIO): Promise<number> {
         print(await call(a1, args));
         return EXIT.ok;
       }
+      case "ops": {
+        const index = await text("");
+        if (index === null) throw new Exit(EXIT.toolError, "FreePoster has no agent API index");
+        io.out(index);
+        return EXIT.ok;
+      }
+      case "help": {
+        if (!a1) { io.out(USAGE); return EXIT.ok; }
+        const doc = (await text(`/${encodeURIComponent(a1)}`)) ?? (await text(`/guide/${encodeURIComponent(a1)}`));
+        if (doc === null) throw new Exit(EXIT.usage, `no op or topic called ${a1}; run freeposter ops to list them`);
+        io.out(doc);
+        return EXIT.ok;
+      }
       case undefined:
-      case "help":
         io.out(USAGE);
-        return cmd ? EXIT.ok : EXIT.usage;
-      default:
-        throw new Exit(EXIT.usage, `unknown command ${cmd}\n\n${USAGE}`);
+        return EXIT.usage;
+      default: {
+        // Any other word is an op: freeposter get_post post_id=3
+        const args: Record<string, unknown> = {};
+        for (const pair of positional.slice(1)) {
+          const eq = pair.indexOf("=");
+          if (eq < 1) throw new Exit(EXIT.usage, `${pair}: give arguments as key=value\n\n${USAGE}`);
+          const raw = pair.slice(eq + 1);
+          let value: unknown = raw;
+          try { value = JSON.parse(raw); } catch { /* a plain string */ }
+          args[pair.slice(0, eq)] = value;
+        }
+        try {
+          print(await call(cmd, args));
+        } catch (err) {
+          if (err instanceof Exit && err.status === 404) throw new Exit(EXIT.usage, `unknown command ${cmd}\n\n${USAGE}`);
+          throw err;
+        }
+        return EXIT.ok;
+      }
     }
   } catch (err) {
     if (err instanceof Exit) { io.err(err.message); return err.code; }

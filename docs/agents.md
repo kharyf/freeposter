@@ -124,13 +124,17 @@ Hermes Agent has this relay ready-made as a plugin ([hermes.md](hermes.md#review
 
 ## 5. The command line
 
-Every `freeposter` command is one MCP call, so agents that only run shell commands get the same abilities:
+Every `freeposter` command is one call to the compact agent API (`/agent/v1`), so agents that only run shell commands get the same abilities, at the lowest token cost:
 
 ```bash
 freeposter events                 # what happened since an agent last looked
 freeposter events --watch         # keeps printing events as they happen (one JSON per line when piped)
 freeposter reviews --needs-agent  # redos waiting for an agent
 freeposter production 12 --watch
+freeposter ops                    # every op with its arguments, one line each
+freeposter help claim_brief       # one op's doc; `freeposter help events` prints a guide (rules events production campaigns limits)
+freeposter get_post post_id=3     # any op as key=value (values are read as JSON when they parse, else text)
+freeposter list_reviews needs_agent=true --fields reviews.id,reviews.state
 ```
 
 The installed app ships the CLI in `%LOCALAPPDATA%\Programs\FreePoster\resources\app.asar.unpacked\cli\`. Add that folder to your PATH, or from a source checkout run `npm run cli -- <command>`. `freeposter help` lists the commands. It needs Node 24 or later on PATH.

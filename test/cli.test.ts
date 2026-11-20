@@ -88,3 +88,30 @@ test("produce - reads the spec from stdin", async () => {
   assert.equal(await main(["produce", "-", "--dry-run"], t.io), 1);
   assert.match(t.err(), /productions aren't available/);
 });
+
+test("ops prints the agent API index", async () => {
+  const t = io();
+  assert.equal(await main(["ops"], t.io), 0);
+  assert.match(t.out(), /claim_brief task_id:int/);
+});
+
+test("any op runs as key=value, and a refusal exits 1", async () => {
+  const t = io();
+  assert.equal(await main(["get_post", "post_id=999"], t.io), 1);
+  assert.match(t.err(), /no post 999/);
+});
+
+test("--fields projects the result and --json is compact", async () => {
+  const t = io();
+  assert.equal(await main(["list_accounts", "--fields", "accounts.id", "--json"], t.io), 0);
+  assert.match(t.out(), /^\{"accounts":\[\{"id":\d+\}\]\}$/);
+});
+
+test("help <topic> prints the guide and help <op> its doc", async () => {
+  const t = io();
+  assert.equal(await main(["help", "events"], t.io), 0);
+  assert.match(t.out(), /review\.redo/);
+  const d = io();
+  assert.equal(await main(["help", "get_post"], d.io), 0);
+  assert.match(d.out(), /get_post/);
+});
