@@ -127,7 +127,8 @@ test("launches once for an open brief and not again while running", async () => 
   assert.equal(cmd, "C:\\bin\\claude.exe");
   assert.equal(args[0], "-p");
   const mcpPath = join(s.dir, "agent-mcp.json");
-  assert.deepEqual(args.slice(2), ["--mcp-config", mcpPath, "--permission-mode", "acceptEdits", "--allowedTools", "Bash,Read,Write,Edit,Skill,mcp__freeposter__*"]);
+  assert.deepEqual(args.slice(2), ["--mcp-config", mcpPath, "--permission-mode", "acceptEdits", "--allowedTools", "Bash,Read,Write,Edit,Skill,mcp__freeposter__list_briefs,mcp__freeposter__claim_brief,mcp__freeposter__renew_brief,mcp__freeposter__submit_brief,mcp__freeposter__give_up_brief"]);
+  assert.ok(!args.join(" ").includes("mcp__freeposter__*"), "only the brief tools, never all of FreePoster's");
   assert.equal(opts?.cwd, join(s.dir, "films"));
   assert.ok(existsSync(join(s.dir, "films")));
   assert.equal(opts?.timeoutMs, LEASE_MINUTES * MIN);

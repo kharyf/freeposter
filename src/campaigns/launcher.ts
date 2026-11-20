@@ -15,6 +15,12 @@ import type { Productions } from "./worker.ts";
 export const ENABLED_PREF = LAUNCH_PREF;
 export const STATUS_PREF = "agent.launch.status";
 const MIN = 60_000;
+/**
+ * The only FreePoster tools the launched Claude may use: the brief ones, never posting, campaigns or the kill
+ * switch. Bash stays open, since the lemo-opuscar skill runs sh, git, node, npm, ffmpeg and python.
+ */
+const ALLOWED_TOOLS = ["Bash", "Read", "Write", "Edit", "Skill",
+  ...["list_briefs", "claim_brief", "renew_brief", "submit_brief", "give_up_brief"].map((t) => `mcp__freeposter__${t}`)].join(",");
 
 /** Where the prompt ships: templates/, unpacked beside the bundle in the installed app. */
 const promptFile = () => join(codeDir.replace(/app\.asar$/, "app.asar.unpacked"), "templates", "agent", "brief-prompt.md");
@@ -98,7 +104,7 @@ export class AgentLauncher {
       mkdirSync(films, { recursive: true });
       this.writeMcpConfig(mcpConfig);
       const prompt = readFileSync(promptFile(), "utf8").replaceAll("{{task_id}}", String(task.id));
-      const args = ["-p", prompt, "--mcp-config", mcpConfig, "--permission-mode", "acceptEdits", "--allowedTools", "Bash,Read,Write,Edit,Skill,mcp__freeposter__*"];
+      const args = ["-p", prompt, "--mcp-config", mcpConfig, "--permission-mode", "acceptEdits", "--allowedTools", ALLOWED_TOOLS];
       const done = await this.borrowGpu(async () => {
         this.launched.set(task.id, this.now());
         this.status(`working on task ${task.id}`);
