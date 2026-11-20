@@ -1156,6 +1156,13 @@ function stepHtml(step) {
         ${field("NOTIFY_WEBHOOK_SECRET", "Webhook secret", "The same text as in your agent's webhook settings.")}
       </div>
       <p><button type="button" data-produce="webhook-test">Send a test event</button> <button type="button" data-produce="webhook-hermes">Fill in Hermes Agent's address</button> <span id="webhookTest"></span></p>
+      <h3 style="margin-top:12px">Campaign films</h3>
+      <label class="row" style="font-weight:400"><input type="checkbox" data-pref="agent.launch.enabled" style="width:auto;margin:0" ${settings.prefs["agent.launch.enabled"] ? "checked" : ""}> Start Claude for campaign films</label>
+      <div class="hint">When a campaign film is due, FreePoster starts Claude Code on this computer to make it. Uses your Claude plan; runs on this computer's GPU.</div>
+      ${settings.prefs["agent.launch.status"] ? `<div class="muted">${esc(settings.prefs["agent.launch.status"])}</div>` : ""}
+      <div class="grid2"><div class="field"><label for="p_language">Film language</label>
+        <input id="p_language" data-pref="agent.language" value="${esc(settings.prefs["agent.language"])}" autocomplete="off" spellcheck="false">
+        <div class="hint">The language agent films are made in, like en or pt-BR.</div></div></div>
       <h2 style="margin-top:16px">Review on Telegram</h2>
       <p>Your agent can't post on its own, and Drive videos wait for you too. When a video is ready to post, FreePoster sends you the exact file on Telegram with <strong>Approve</strong>, <strong>Reject</strong> and <strong>Redo</strong> buttons, and shows it here under <em>Waiting for your review</em>. Only those buttons post anything; telling your agent "yes" doesn't.</p>
       <div id="tgBody" class="muted">Loading…</div>`;
@@ -1217,6 +1224,8 @@ async function saveStep() {
   const step = setupSteps()[stepIndex];
   const values = {};
   for (const input of $("stepBody").querySelectorAll("[data-key]")) values[input.dataset.key] = input.value;
+  const prefs = {};
+  for (const input of $("stepBody").querySelectorAll("[data-pref]")) prefs[input.dataset.pref] = input.type === "checkbox" ? input.checked : input.value;
   if (step.id === "redirect") {
     if ($("useTunnel").checked) values.REDIRECT_PAGE_URL = "off";
     else if (values.REDIRECT_PAGE_URL.toLowerCase() === "off") values.REDIRECT_PAGE_URL = "";
@@ -1224,7 +1233,7 @@ async function saveStep() {
       throw new Error('Paste the address Cloudflare gave you, or open "Use a tunnel instead".');
     }
   }
-  if (!Object.keys(values).length) return;
+  if (!Object.keys(values).length && !Object.keys(prefs).length) return;
   if (step.platform) {
     const [[idKey, idLabel], [secretKey, secretLabel]] = SETUP_PLATFORMS[step.id].fields;
     if (!values[idKey].trim() || !(values[secretKey].trim() || settings.secretsSet[secretKey])) {
@@ -1232,7 +1241,7 @@ async function saveStep() {
     }
   }
   const hadPassword = settings.secretsSet.APP_PASSWORD;
-  const res = await fetch("/api/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ values }) });
+  const res = await fetch("/api/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ values, prefs }) });
   const body = await res.json();
   if (!res.ok) throw new Error(body.error);
   settings = body;

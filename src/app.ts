@@ -1,4 +1,5 @@
 import { basename, join } from "node:path";
+import { runProgram } from "./ai/cli.ts";
 import { AiService, setAi } from "./ai/router.ts";
 import { config, dataDir, isConfigured, isLocalUrl } from "./config.ts";
 import { loadKey } from "./crypto.ts";
@@ -14,6 +15,7 @@ import { sampleFrames } from "./media.ts";
 import { MetricsPoller } from "./analytics/poller.ts";
 import { backfillLabels, onPublished } from "./analytics/labels.ts";
 import { evaluateRules } from "./campaigns/rules.ts";
+import { AgentLauncher } from "./campaigns/launcher.ts";
 import { CampaignWorker } from "./campaigns/worker.ts";
 import { Notifier } from "./notify.ts";
 import { publishers } from "./platforms/index.ts";
@@ -106,6 +108,8 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
   });
   // Campaigns: today's instructions become tasks, made by plain code and sent for review like everything else.
   const campaigns = new CampaignWorker({ store, productions: producer, reviews, ai });
+  // Agent films: when the user turns it on, FreePoster starts Claude Code here for each open brief, on the GPU lane.
+  const launcher = new AgentLauncher({ store, campaigns: campaigns.campaigns, run: runProgram, borrowGpu: (fn) => producer.borrowGpu(fn) });
   // After each analytics refresh, campaign rules are checked against the new scores (plain code, no AI).
   poller.onRefresh = () => {
     try {
@@ -134,6 +138,7 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
   reviews.start();
   telegram.start();
   campaigns.start();
+  launcher.start();
   void intake.resume().catch((err) => console.error(`drive resume: ${(err as Error).message}`));
   const intakeTimer = setInterval(() => void intake.tick().catch((err) => console.error(`drive tick: ${(err as Error).message}`)), 10_000);
   watcher.start();
@@ -154,6 +159,7 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
       reviews.stop();
       telegram.stop();
       campaigns.stop();
+      launcher.stop();
       watcher.stop();
       clearInterval(intakeTimer);
       await app.close();

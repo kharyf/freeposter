@@ -6,7 +6,8 @@ import { delimiter, dirname, join } from "node:path";
 
 export const TIMEOUT_MS = 3 * 60_000;
 
-export type ProgramRun = (cmd: string, args: string[], stdin: string, opts?: { env?: NodeJS.ProcessEnv }) =>
+/** cwd defaults to the temp folder and timeoutMs to TIMEOUT_MS. */
+export type ProgramRun = (cmd: string, args: string[], stdin: string, opts?: { env?: NodeJS.ProcessEnv; cwd?: string; timeoutMs?: number }) =>
   Promise<{ code: number | null; stdout: string; stderr: string }>;
 
 /** Folders to look in besides PATH: desktop apps don't always get the shell's PATH. */
@@ -70,14 +71,15 @@ export const runProgram: ProgramRun = (cmd, args, stdin, opts = {}) => new Promi
       argv = args.map((a) => `"${a.replace(/\r?\n/g, " ").replace(/"/g, '""')}"`);
     }
   }
-  const child = spawn(file, argv, { cwd: tmpdir(), env: opts.env ?? process.env, windowsHide: true, timeout: TIMEOUT_MS, shell });
+  const timeout = opts.timeoutMs ?? TIMEOUT_MS;
+  const child = spawn(file, argv, { cwd: opts.cwd ?? tmpdir(), env: opts.env ?? process.env, windowsHide: true, timeout, shell });
   let stdout = "";
   let stderr = "";
   child.stdout.on("data", (d) => (stdout += d));
   child.stderr.on("data", (d) => (stderr += d));
   child.on("error", (err: NodeJS.ErrnoException) => reject(err.code === "ENOENT" ? new Error(`${cmd} couldn't be started`) : err));
   child.on("close", (code, signal) => signal
-    ? reject(new Error(`it didn't answer within ${TIMEOUT_MS / 60_000} minutes`))
+    ? reject(new Error(`it didn't answer within ${timeout / 60_000} minutes`))
     : resolve({ code, stdout, stderr }));
   child.stdin.on("error", () => {}); // a program that doesn't read stdin closes it early
   child.stdin.end(stdin);

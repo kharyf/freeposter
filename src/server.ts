@@ -390,6 +390,17 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
 
   // ---- setup ----
 
+  // Setup choices kept as prefs rather than in .env, each with its check (null = fine). A blank language is the default.
+  const SETUP_PREFS: Record<string, (v: unknown) => string | null> = {
+    "agent.launch.enabled": (v) => typeof v === "boolean" ? null : "must be true or false",
+    "agent.language": (v) => typeof v === "string" && (v.trim() === "" || /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/.test(v.trim())) ? null : "must be a language code, like en or pt-BR",
+  };
+  const prefsView = () => ({
+    "agent.launch.enabled": store.pref<boolean>("agent.launch.enabled") === true,
+    "agent.language": store.pref<string>("agent.language") ?? "en",
+    "agent.launch.status": store.pref<string>("agent.launch.status") ?? null,
+  });
+
   const settingsView = async () => {
     const [ffmpeg, ffprobe, claude] = await Promise.all([toolVersion(config.ffmpeg), toolVersion(config.ffprobe), toolVersion(findClaude(), "--version")]);
     const keys = Object.keys(SETTINGS) as SettingKey[];
@@ -410,16 +421,22 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
       tools: { ffmpeg, ffprobe, claude },
       values: Object.fromEntries(keys.filter((k) => !SETTINGS[k].secret).map((k) => [k, setting(k)])),
       secretsSet: Object.fromEntries(keys.filter((k) => SETTINGS[k].secret).map((k) => [k, Boolean(setting(k))])),
+      prefs: prefsView(),
     };
   };
 
   app.get("/api/settings", settingsView);
 
   // PUT with a JSON body: a cross-site page can't send this without a CORS preflight we never answer.
-  app.put<{ Body: { values?: Record<string, unknown> } }>("/api/settings", async (req, reply) => {
+  app.put<{ Body: { values?: Record<string, unknown>; prefs?: Record<string, unknown> } }>("/api/settings", async (req, reply) => {
     const input = req.body?.values ?? {};
     const out: Partial<Record<SettingKey, string>> = {};
     const problems: string[] = [];
+    const prefs = Object.entries(req.body?.prefs ?? {});
+    for (const [key, value] of prefs) {
+      const problem = Object.hasOwn(SETUP_PREFS, key) ? SETUP_PREFS[key](value) : "is not a setting";
+      if (problem) problems.push(`${key} ${problem}`);
+    }
     for (const [key, raw] of Object.entries(input)) {
       if (!(key in SETTINGS)) { problems.push(`${key} is not a setting`); continue; }
       const k = key as SettingKey;
@@ -453,6 +470,10 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     const portBefore = config.port;
     const pageBefore = config.redirectPage;
     saveSettings(out);
+    for (const [key, value] of prefs) {
+      if (typeof value === "string" && !value.trim()) store.deletePref(key);
+      else store.setPref(key, typeof value === "string" ? value.trim() : value);
+    }
     if (out.BLENDER_PATH !== undefined) forgetFancyNote();
     if (pageBefore && config.redirectPage !== pageBefore) store.setPref("redirect.changedFrom", pageBefore);
     return { ...(await settingsView()), restartNeeded: config.port !== portBefore };
