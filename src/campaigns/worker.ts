@@ -97,6 +97,8 @@ export interface TaskChoices {
   lease?: { holder: string; until: number };
   /** how many times the brief has been claimed */
   offers?: number;
+  /** which brief this is: 1, then one more for each retry, so each round's events are told afresh */
+  briefRound?: number;
   /** the agent's checked film, waiting for the worker to take it on */
   delivery?: Delivery;
 }
@@ -561,19 +563,36 @@ export class CampaignWorker {
     const now = this.now();
     const postAt = c.postTime === null ? null : localAt(t.date, c.postTime);
     if (postAt !== null && now < postAt - BRIEF_LEAD_HOURS * HOUR) return;
+    // Its deadline has already passed (the app was off, or the campaign stopped, through it): no brief is offered.
+    const deadline = postAt === null ? null : postAt - REVIEW_BUFFER_MINUTES * 60_000;
+    if (deadline !== null && now >= deadline) return this.missBrief(t, deadline);
     if (this.stopped(t)) return; // stopped: no new brief is offered
     const key = (c.instruction as MakeInstruction).look!;
     const look = lookByKey(this.store, key);
     if (!look || look.hidden) return this.fail(t.id, `look ${key} is no longer in the catalogue`);
     const brief = buildBrief(this.store, c, look, postAt, now);
-    this.setChoices(t.id, { brief, offers: 0 });
+    const round = c.briefRound ?? 1;
+    // Told first: a crash before the task is written tells it again next tick under the same key, never not at all.
+    this.announceBrief(t, brief, look.name, round);
+    this.setChoices(t.id, { brief, offers: 0, briefRound: round });
     this.campaigns.updateTask(t.id, { state: "awaiting_agent", error: null });
     log(t, `brief for a ${key} film, due by ${new Date(brief.deadline).toLocaleString()}`);
+  }
+
+  /** brief.requested, once per round of the task's brief. */
+  private announceBrief(t: CampaignTask, brief: Brief, lookName: string, round: number) {
     const { name, what } = this.describe(t);
-    const posts = postAt === null ? "a video to keep" : `posting ${new Date(postAt).toLocaleString()}`;
-    queueEvent(this.store, "brief.requested", `brief.requested:${t.id}`,
-      { campaign_id: t.campaignId, task_id: t.id, campaign_task_id: t.id, look: key, deadline: new Date(brief.deadline).toISOString(), post_at: postAt === null ? null : new Date(postAt).toISOString() },
-      `Campaign "${name}" wants a ${look.name} (${key}) film for ${what} (${posts}), delivered by ${new Date(brief.deadline).toLocaleString()}: call claim_brief with task_id ${t.id}`);
+    const posts = brief.postAt === null ? "a video to keep" : `posting ${new Date(brief.postAt).toLocaleString()}`;
+    queueEvent(this.store, "brief.requested", `brief.requested:${t.id}:${round}`,
+      { campaign_id: t.campaignId, task_id: t.id, campaign_task_id: t.id, look: brief.look, deadline: new Date(brief.deadline).toISOString(), post_at: brief.postAt === null ? null : new Date(brief.postAt).toISOString() },
+      `Campaign "${name}" wants a ${lookName} (${brief.look}) film for ${what} (${posts}), delivered by ${new Date(brief.deadline).toLocaleString()}: call claim_brief with task_id ${t.id}`);
+  }
+
+  /** No film by the deadline: the slot is skipped. */
+  private missBrief(t: CampaignTask, deadline: number) {
+    const when = new Date(deadline).toLocaleString();
+    this.campaigns.updateTask(t.id, { state: "missed", error: `the agent didn't deliver before ${when}` });
+    this.tell(this.campaigns.task(t.id)!, "campaign.missed", `the agent didn't deliver before ${when}; the slot was skipped`);
   }
 
   /**
@@ -584,16 +603,12 @@ export class CampaignWorker {
     if (c.delivery) return this.takeDelivery(t, c, c.delivery);
     if (!c.brief) return this.fail(t.id, "its brief is missing");
     const now = this.now();
-    if (now > c.brief.deadline) {
-      const when = new Date(c.brief.deadline).toLocaleString();
-      this.campaigns.updateTask(t.id, { state: "missed", error: `the agent didn't deliver before ${when}` });
-      this.tell(this.campaigns.task(t.id)!, "campaign.missed", `the agent didn't deliver before ${when}; the slot was skipped`);
-      return;
-    }
+    // A lease never outlasts the deadline, so at the deadline the slot is missed, not the lease expired.
+    if (now >= c.brief.deadline) return this.missBrief(t, c.brief.deadline);
     if (!c.lease || c.lease.until > now) return;
     const offers = c.offers ?? 0;
     const last = offers >= MAX_BRIEF_OFFERS;
-    queueEvent(this.store, "brief.expired", `brief.expired:${t.id}:${offers}`,
+    queueEvent(this.store, "brief.expired", `brief.expired:${t.id}:${c.briefRound ?? 1}:${offers}`,
       { campaign_id: t.campaignId, task_id: t.id, campaign_task_id: t.id, look: c.brief.look, holder: c.lease.holder, offers },
       `${c.lease.holder}'s lease on the brief for task ${t.id} ran out without a film; ${last ? "it has no offers left" : `call claim_brief with task_id ${t.id} to take it on`}`);
     if (last) return this.fail(t.id, `no agent delivered after ${MAX_BRIEF_OFFERS} tries`);
@@ -608,17 +623,20 @@ export class CampaignWorker {
     await this.requestReview(this.campaigns.task(t.id)!, c);
   }
 
-  /** A retried agent film with no film left to take on: a fresh brief, unclaimed, with its offers back. */
-  private freshBrief(t: CampaignTask, c: TaskChoices): Partial<TaskChoices> {
+  /** A retried agent film with no film left to take on: a fresh brief, unclaimed, with its offers back, told again. */
+  private freshBrief(t: CampaignTask, c: TaskChoices, round: number): Partial<TaskChoices> {
     const now = this.now();
     const old = c.brief!;
     // It keeps its look, even one hidden since.
     const look: Look = lookByKey(this.store, old.look)
       ?? { key: old.look, producer: old.producer, name: old.look, description: "", needsImageGen: old.needsImageGen, libraryVersion: "", hidden: true };
     let postAt = c.postTime === null ? null : localAt(t.date, c.postTime);
-    // Its slot is too close to make now: it's wanted within a day, and placed like any later approval.
+    // Its slot is too close to make now: it's wanted within a day, and placed like any later approval (the user
+    // asked for this retry, as a retried WanGP video that misses its slot posts at the next free time).
     if (postAt !== null && postAt - REVIEW_BUFFER_MINUTES * 60_000 <= now) postAt = null;
-    return { brief: buildBrief(this.store, c, look, postAt, now), offers: 0, lease: undefined, delivery: undefined };
+    const brief = buildBrief(this.store, c, look, postAt, now);
+    this.announceBrief(t, brief, look.name, round);
+    return { brief, offers: 0, lease: undefined, delivery: undefined };
   }
 
   /** The agent's film a task's video is (a post line's is its kept video's). */
@@ -949,12 +967,16 @@ export class CampaignWorker {
       // Its video is edited and ready: it goes back for approval (a fresh review).
       patch.state = "reviewing";
       patch.reviewId = null;
-    } else if (c.brief) {
+    } else if (c.instruction.kind === "make" && c.instruction.look) {
       // An agent film: a delivered film still on disk is taken on again; otherwise an agent is asked again, afresh.
-      patch.state = "awaiting_agent";
+      // (One that failed before its brief went out is offered again from the start.) Each retry is a new round,
+      // so what happens to it is told again.
+      const briefRound = (c.briefRound ?? 1) + 1;
+      patch.state = c.brief ? "awaiting_agent" : "queued";
       patch.editId = null;
       patch.reviewId = null;
-      if (!c.delivery || !existsSync(c.delivery.path)) this.setChoices(id, this.freshBrief(t, c));
+      const fresh = c.brief && (!c.delivery || !existsSync(c.delivery.path));
+      this.setChoices(id, { ...(fresh ? this.freshBrief(t, c, briefRound) : {}), briefRound });
     } else if (production && (production.state === "ready" || production.state === "approved") && production.outputPath) {
       // Its video is made: edit it again.
       patch.state = "rendering";
@@ -1004,10 +1026,12 @@ export class CampaignWorker {
 
   private tell(t: CampaignTask, type: "campaign.failed" | "campaign.missed", error: string) {
     const { name, what } = this.describe(t);
+    // A retried agent film is told again: each round after the first has its own key.
+    const round = (t.choices as unknown as TaskChoices).briefRound ?? 1;
     const summary = type === "campaign.missed"
       ? `Campaign "${name}" missed ${what} on ${t.date}: ${error}.`
       : `Campaign "${name}" couldn't finish ${what} for ${t.date}: ${error}`;
-    queueEvent(this.store, type, `${type}:${t.id}`, { campaign_id: t.campaignId, task_id: t.id, date: t.date, error }, summary);
+    queueEvent(this.store, type, round > 1 ? `${type}:${t.id}:${round}` : `${type}:${t.id}`, { campaign_id: t.campaignId, task_id: t.id, date: t.date, error }, summary);
   }
 
   // ---- stopping one campaign ----

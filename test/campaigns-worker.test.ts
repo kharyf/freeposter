@@ -993,7 +993,7 @@ test("two expired leases fail the task", async () => {
   let t = s.cs.task(s.task.id)!;
   assert.equal(t.state, "awaiting_agent", t.error ?? "");
   assert.equal((t.choices as any).lease, undefined, "the lapsed lease is cleared");
-  assert.ok(s.store.eventByKey(`brief.expired:${t.id}:1`));
+  assert.ok(s.store.eventByKey(`brief.expired:${t.id}:1:1`));
   await s.tick();
   assert.equal(s.events("brief.expired").length, 1, "told once per offer");
   assert.ok(claimBrief(s.cs, s.task.id, "agent-2", s.clock.now).ok);
@@ -1003,7 +1003,7 @@ test("two expired leases fail the task", async () => {
   t = s.cs.task(s.task.id)!;
   assert.equal(t.state, "failed");
   assert.equal(t.error, "no agent delivered after 2 tries");
-  assert.ok(s.store.eventByKey(`brief.expired:${t.id}:2`));
+  assert.ok(s.store.eventByKey(`brief.expired:${t.id}:1:2`));
   assert.ok(s.store.eventByKey(`campaign.failed:${t.id}`));
 });
 
@@ -1143,4 +1143,71 @@ test("a post line posts a kept agent film as it was delivered, labelled with its
   assert.equal(labels.look, LOOK.key);
   assert.equal(labels.producer, "lemo-opuscar");
   assert.deepEqual(s.asked, []);
+});
+
+test("a retried brief is announced again and its expiries and failure are told", async () => {
+  const s = setup();
+  syncLooks(s.store, "lemo-opuscar", [LOOK]);
+  const id = s.campaign({ tue: [s.make(1, null, { style: null, look: LOOK.key, sec: 5 })] });
+  s.worker.materialize();
+  const [task] = s.cs.tasksOn(id, "2026-11-17");
+  /** Two claims that both run out: the task fails. */
+  const twoLapses = async () => {
+    for (const holder of ["agent-1", "agent-2"]) {
+      assert.ok(claimBrief(s.cs, task.id, holder, s.clock.now).ok);
+      s.clock.now += 121 * 60_000;
+      await s.tick();
+    }
+    assert.equal(s.cs.task(task.id)!.state, "failed");
+  };
+  await s.tick();
+  assert.ok(s.store.eventByKey(`brief.requested:${task.id}:1`));
+  await twoLapses();
+  assert.ok(s.store.eventByKey(`brief.expired:${task.id}:1:1`));
+  assert.ok(s.store.eventByKey(`brief.expired:${task.id}:1:2`));
+  assert.ok(s.store.eventByKey(`campaign.failed:${task.id}`));
+
+  assert.equal(s.worker.retryTask(task.id), null);
+  assert.equal((s.cs.task(task.id)!.choices as any).briefRound, 2);
+  assert.ok(s.store.eventByKey(`brief.requested:${task.id}:2`), "the fresh brief is announced");
+  await twoLapses();
+  assert.ok(s.store.eventByKey(`brief.expired:${task.id}:2:1`));
+  assert.ok(s.store.eventByKey(`brief.expired:${task.id}:2:2`));
+  assert.ok(s.store.eventByKey(`campaign.failed:${task.id}:2`), "the second failure is told too");
+  assert.equal(s.store.feed(0, 100, ["brief.expired"]).length, 4);
+  assert.equal(s.store.feed(0, 100, ["brief.requested"]).length, 2);
+  assert.equal(s.store.feed(0, 100, ["campaign.failed"]).length, 2);
+});
+
+test("a brief that would open after its deadline is missed, not announced", async () => {
+  const s = agentSetup();
+  s.clock.now = at(2026, 11, 17, 17, 30); // the app was off until the deadline
+  await s.tick();
+  const t = s.cs.task(s.task.id)!;
+  assert.equal(t.state, "missed", t.error ?? "");
+  assert.equal((t.choices as any).brief, undefined);
+  assert.equal(s.events("brief.requested").length, 0);
+  assert.ok(s.store.eventByKey(`campaign.missed:${t.id}`));
+
+  // stopped through the slot: missed once it runs again, still never announced
+  const o = agentSetup();
+  o.worker.stopCampaign(o.id);
+  o.clock.now = at(2026, 11, 17, 19);
+  await o.tick();
+  assert.equal(o.cs.task(o.task.id)!.state, "missed");
+  assert.equal(o.events("brief.requested").length, 0);
+});
+
+test("at the deadline the slot is missed, not the lease expired", async () => {
+  const s = agentSetup();
+  s.clock.now = at(2026, 11, 17, 16);
+  await s.tick();
+  const lease = claimBrief(s.cs, s.task.id, "agent-1", s.clock.now);
+  assert.ok(lease.ok);
+  assert.equal(lease.leaseUntil, at(2026, 11, 17, 17, 30), "the lease ends at the deadline");
+  s.clock.now = at(2026, 11, 17, 17, 30);
+  await s.tick();
+  const t = s.cs.task(s.task.id)!;
+  assert.equal(t.state, "missed", t.error ?? "");
+  assert.equal(s.events("brief.expired").length, 0);
 });
