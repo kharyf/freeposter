@@ -1670,6 +1670,7 @@ function previewLayout() {
   ws.style.setProperty("--right-w", layout.areas.right.size + "px");
   ws.style.setProperty("--bottom-h", layout.areas.bottom.size + "px");
 }
+let sashDragging = false;
 document.querySelectorAll(".sash").forEach((sash) => {
   const area = sash.dataset.sash;
   let drag = null;
@@ -1677,6 +1678,7 @@ document.querySelectorAll(".sash").forEach((sash) => {
     if (e.button !== 0) return;
     e.preventDefault();
     sash.setPointerCapture(e.pointerId);
+    sashDragging = true;
     const ar = layout.areas[area];
     drag = { id: e.pointerId, start: layout, size0: ar.collapsed ? 0 : ar.size, x0: e.clientX, y0: e.clientY, px: null, raf: 0 };
     sash.classList.add("dragging");
@@ -1690,7 +1692,7 @@ document.querySelectorAll(".sash").forEach((sash) => {
     const mine = drag;
     drag.raf = requestAnimationFrame(() => {
       mine.raf = 0;
-      layout = FPL.resizeArea(layout, area, mine.px, workspaceSize());
+      layout = FPL.resizeArea(mine.start, area, mine.px, workspaceSize());
       previewLayout();
     });
   });
@@ -1701,13 +1703,16 @@ document.querySelectorAll(".sash").forEach((sash) => {
     if (d.raf) cancelAnimationFrame(d.raf);
     sash.classList.remove("dragging");
     document.body.style.userSelect = "";
-    if (d.px !== null) layout = FPL.resizeArea(layout, area, d.px, workspaceSize());
-    const final = layout;
+    sashDragging = false;
     layout = d.start; // so commitLayout sees which tabs became visible during the drag
-    commitLayout(final);
+    if (d.px === null) { previewLayout(); return; } // clicked without moving
+    // always derived from the pre-drag snapshot, so a collapsed result keeps the old size; clamped once for any window resize meanwhile
+    const ws = workspaceSize();
+    commitLayout(FPL.clampSizes(FPL.resizeArea(d.start, area, d.px, ws), ws));
   };
   sash.addEventListener("pointerup", end);
   sash.addEventListener("pointercancel", end);
+  sash.addEventListener("lostpointercapture", end);
 });
 
 let resizeRaf = 0;
@@ -1715,6 +1720,7 @@ window.addEventListener("resize", () => {
   if (resizeRaf) return;
   resizeRaf = requestAnimationFrame(() => {
     resizeRaf = 0;
+    if (sashDragging) return; // the drag clamps once when it ends
     const next = FPL.clampSizes(layout, workspaceSize());
     if (JSON.stringify(next) !== JSON.stringify(layout)) commitLayout(next);
   });
