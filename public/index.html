@@ -18,14 +18,13 @@
       --s-tiktok: #3987e5; --s-instagram: #d95926; --s-facebook: #199e70; --s-x: #c98500; --s-youtube: #d55181; }
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  header { padding: 18px 24px; border-bottom: 1px solid var(--line); display: flex; align-items: baseline; gap: 12px; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+  header { padding: 10px 16px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 12px; flex: none; }
+  .layout-actions { margin-left: auto; display: flex; gap: 4px; }
+  .layout-actions button { padding: 4px 6px; line-height: 0; color: var(--muted); }
+  .layout-actions button[aria-pressed="true"] { color: var(--ink); }
   header h1 { margin: 0; font-size: 20px; letter-spacing: -0.01em; }
   header span { color: var(--muted); font-size: 13px; }
-  main { display: grid; grid-template-columns: minmax(0, 420px) minmax(0, 1fr) minmax(0, 420px); gap: 20px; padding: 20px 24px; max-width: 1720px; }
-  @media (max-width: 1300px) { main { grid-template-columns: minmax(0, 420px) minmax(0, 1fr); } }
-  @media (max-width: 900px) { main { grid-template-columns: 1fr; padding: 16px; } }
-  main[hidden] { display: none; }
   section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 20px; }
   h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 12px; }
   label { display: block; font-weight: 600; font-size: 13px; margin: 12px 0 4px; }
@@ -117,15 +116,27 @@
   header .actions { margin-left: auto; display: flex; gap: 8px; }
   a.link { color: var(--accent); }
   /* ---- setup wizard ---- */
-  #setup { display: none; }
-  #setup.open { display: block; }
-  /* ---- tabs ---- */
-  .tabs { display: flex; gap: 4px; padding: 0 24px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
-  .tabs button { flex: none; white-space: nowrap; }
-  @media (max-width: 900px) { .tabs { padding: 0 16px; } }
-  .tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; color: var(--muted); padding: 6px 10px; font-size: 13px; font-weight: 600; margin-bottom: -1px; }
-  .tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+  /* ---- docked workspace ---- */
+  #workspace { flex: 1; min-height: 0; display: flex; }
+  .mid { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .area { display: flex; flex-direction: column; min-width: 0; min-height: 0; container-type: inline-size; background: var(--panel); }
+  .mid > .area[data-area="top"] { flex: 1 1 0; }
+  .area[data-area="left"] { flex: 0 0 var(--left-w, 340px); }
+  .area[data-area="right"] { flex: 0 0 var(--right-w, 380px); }
+  .area[data-area="bottom"] { flex: 0 0 var(--bottom-h, 280px); }
+  .area[data-collapsed] { display: none; }
+  .sash { flex: none; background: var(--line); }
+  .sash-v { width: 4px; cursor: col-resize; }
+  .sash-h { height: 4px; cursor: row-resize; }
+  .area-body { flex: 1; min-height: 0; position: relative; }
+  .panel { position: absolute; inset: 0; overflow: auto; padding: 16px; }
+  .panel[hidden] { display: none; }
+  .tabstrip { display: flex; flex: none; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
+  .tabstrip::-webkit-scrollbar { display: none; }
+  .tabstrip button { flex: none; white-space: nowrap; border: 0; border-top: 2px solid transparent; border-radius: 0; background: none; color: var(--muted); padding: 6px 12px; font-size: 13px; font-weight: 600; }
+  .tabstrip button[aria-selected="true"] { color: var(--ink); border-top-color: var(--accent); }
   .wiz { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; max-width: 1040px; margin: 0 auto; padding: 24px; }
+  @container (max-width: 760px) { .wiz { grid-template-columns: 1fr; padding: 0; gap: 12px; } .steps { display: flex; flex-wrap: wrap; gap: 4px; } }
   @media (max-width: 760px) { .wiz { grid-template-columns: 1fr; padding: 16px; } .steps { display: flex; flex-wrap: wrap; gap: 4px; } }
   .steps { list-style: none; margin: 0; padding: 0; }
   .steps li { padding: 8px 10px; border-radius: 6px; font-size: 14px; color: var(--muted); cursor: pointer; display: flex; gap: 8px; align-items: center; border: 1px solid transparent; }
@@ -190,9 +201,6 @@
   .badge.default { color: var(--accent); border-color: var(--accent); }
   .name-warn { color: var(--bad); font-size: 12px; margin: 0 0 8px 12px; }
   /* ---- Editing Styles tab ---- */
-  .page { padding: 20px 24px; max-width: 1200px; }
-  @media (max-width: 900px) { .page { padding: 16px; } }
-  .page[hidden] { display: none; }
   .styles-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; }
   .style-card { margin: 0; }
   .style-card .head { display: flex; align-items: center; gap: 8px; }
@@ -260,7 +268,6 @@
     .cal .entry { padding: 2px 3px; font-size: 11px; }
   }
   /* ---- Analytics tab ---- */
-  main.page { display: block; }
   .an-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 16px; }
   .an-filters select { width: auto; padding: 6px 8px; font-size: 13px; }
   .an-ai { margin-left: auto; font-variant-numeric: tabular-nums; }
@@ -429,31 +436,39 @@
 </head>
 <body>
 <header><h1>FreePoster</h1><span>one video → TikTok · Instagram · Facebook · X · YouTube</span>
+  <div class="layout-actions">
+    <button type="button" id="toggleLeft" title="Toggle left panel" aria-label="Toggle left panel" aria-pressed="true"><svg class="picon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M6 2.5v11"/></svg></button>
+    <button type="button" id="toggleBottom" title="Toggle bottom panel" aria-label="Toggle bottom panel" aria-pressed="true"><svg class="picon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M1.5 9.5h13"/></svg></button>
+    <button type="button" id="toggleRight" title="Toggle right panel" aria-label="Toggle right panel" aria-pressed="true"><svg class="picon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M10 2.5v11"/></svg></button>
+    <button type="button" id="resetLayout" title="Reset layout" aria-label="Reset layout"><svg class="picon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 8a5 5 0 1 0 1.6-3.7M3 2.5v3h3"/></svg></button>
+  </div>
   <div class="actions"><button type="button" id="quit" hidden>Quit</button></div>
 </header>
-<nav class="tabs" role="tablist">
-  <button type="button" role="tab" id="tabHome" aria-selected="true" aria-controls="home">Home</button>
-  <button type="button" role="tab" id="tabStyles" aria-selected="false" aria-controls="styles">Editing Styles</button>
-  <button type="button" role="tab" id="tabCalendar" aria-selected="false" aria-controls="calendar">Calendar</button>
-  <button type="button" role="tab" id="tabAnalytics" aria-selected="false" aria-controls="analytics">Analytics</button>
-  <button type="button" role="tab" id="tabCampaigns" aria-selected="false" aria-controls="campaigns">Campaigns</button>
-  <button type="button" role="tab" id="tabSetup" aria-selected="false" aria-controls="setup">Setup</button>
-</nav>
 <div id="redirectBanner"></div>
 <div id="banner"></div>
-<main id="home" role="tabpanel">
-  <div>
-    <section>
-      <div class="section-head"><h2>Accounts</h2><button type="button" class="icon-btn" id="addSet" title="Add Account Set" aria-label="Add Account Set"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg></button></div>
+<div id="workspace">
+  <div class="area" data-area="left"><div class="tabstrip" role="tablist"></div><div class="area-body"></div></div>
+  <div class="sash sash-v" data-sash="left"></div>
+  <div class="mid">
+    <div class="area" data-area="top"><div class="tabstrip" role="tablist"></div><div class="area-body"></div></div>
+    <div class="sash sash-h" data-sash="bottom"></div>
+    <div class="area" data-area="bottom"><div class="tabstrip" role="tablist"></div><div class="area-body"></div></div>
+  </div>
+  <div class="sash sash-v" data-sash="right"></div>
+  <div class="area" data-area="right"><div class="tabstrip" role="tablist"></div><div class="area-body"></div></div>
+</div>
+<div id="panels" hidden>
+<div class="panel" id="panel-accounts" data-tab="accounts" role="tabpanel" hidden>
+      <div class="section-head"><span></span><button type="button" class="icon-btn" id="addSet" title="Add Account Set" aria-label="Add Account Set"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg></button></div>
       <div id="accounts" class="muted">Loading…</div>
-    </section>
-    <section id="agents">
-      <h2>AI agents</h2>
+</div>
+<div class="panel" id="panel-agents" data-tab="agents" role="tabpanel" hidden>
+  <div id="agents">
       <p class="muted" style="margin-top:0">Claude Code, Codex, Cursor, Hermes or any other agent that speaks MCP can work with FreePoster through its MCP server, built in while FreePoster runs. Point your agent at this address:</p>
       <div id="agentsBody"></div>
-    </section>
-    <section>
-      <h2>New post</h2>
+  </div>
+</div>
+<div class="panel" id="panel-newpost" data-tab="newpost" role="tabpanel" hidden>
       <form id="form">
         <label for="file">Video</label>
         <input id="file" type="file" accept="video/*" required>
@@ -501,40 +516,33 @@
 
         <button class="primary" id="submit" type="submit">Publish</button>
       </form>
-    </section>
-    <section id="driveSection" class="drive">
-      <h2>Google Drive folder</h2>
-      <div id="driveBody" class="muted">Loading…</div>
-    </section>
-  </div>
-  <div>
-    <section id="reviewsSection" hidden>
-      <h2>Waiting for your review</h2>
+</div>
+<div class="panel" id="panel-reviews" data-tab="reviews" role="tabpanel" hidden>
+  <div id="reviewsSection" hidden>
       <p class="muted" style="margin-top:0">Videos your agent asked to post, and edits of videos from your Drive folder. Nothing goes out until you approve it, here or on Telegram.</p>
       <div id="reviews"></div>
-    </section>
-    <section id="driveFilesSection" hidden>
-      <div class="row" style="justify-content:space-between;align-items:center"><h2>From Drive</h2><button type="button" id="driveSync" title="Check the Drive folder now and take off videos you've deleted there">Sync</button></div>
+  </div>
+</div>
+<div class="panel" id="panel-drive" data-tab="drive" role="tabpanel" hidden>
+  <div id="driveFilesSection" hidden>
+      <div class="row" style="justify-content:space-between;align-items:center"><span></span><button type="button" id="driveSync" title="Check the Drive folder now and take off videos you've deleted there">Sync</button></div>
       <div id="driveFiles"></div>
-    </section>
-    <section id="upcomingSection" hidden>
-      <h2>Upcoming</h2>
+  </div>
+</div>
+<div class="panel" id="panel-upcoming" data-tab="upcoming" role="tabpanel" hidden>
+  <div id="upcomingSection" hidden>
       <div id="upcoming"></div>
-    </section>
-    <section>
-      <h2>Posts</h2>
+  </div>
+</div>
+<div class="panel" id="panel-posts" data-tab="posts" role="tabpanel" hidden>
       <div id="posts" class="muted">Nothing posted yet.</div>
-    </section>
-  </div>
-  <div>
-    <section id="aiSection">
-      <h2>AI Providers</h2>
+</div>
+<div class="panel" id="panel-ai" data-tab="ai" role="tabpanel" hidden>
+  <div id="aiSection">
       <div id="aiBody" class="muted">Loading…</div>
-    </section>
   </div>
-</main>
-
-<div id="styles" class="page" role="tabpanel" aria-label="Editing styles" hidden>
+</div>
+<div id="styles" class="panel page" data-tab="styles" role="tabpanel" aria-label="Editing styles" hidden>
   <div class="styles-head">
     <p class="muted">A Drive video is edited in the style its name gives, as in <code>Gatekeeping_11.1.26_5.30.pm_<strong>Basic</strong>.mp4</code>, or in the default style when its name gives none.</p>
     <button type="button" id="addStyle" aria-expanded="false" aria-controls="styleForm"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>Add Editing Style</button>
@@ -567,7 +575,7 @@
   <div id="stylesBody" class="styles-grid"></div>
 </div>
 
-<div id="calendar" class="page" role="tabpanel" aria-label="Calendar" hidden>
+<div id="calendar" class="panel page" data-tab="calendar" role="tabpanel" aria-label="Calendar" hidden>
   <div class="cal-head">
     <h2 id="calTitle"></h2>
     <button type="button" id="calPrev" aria-label="Previous month">&lsaquo;</button>
@@ -578,7 +586,7 @@
   <section id="calDetail" class="cal-detail" hidden></section>
 </div>
 
-<main id="analytics" class="page" role="tabpanel" aria-label="Analytics" hidden>
+<div id="analytics" class="panel page" data-tab="analytics" role="tabpanel" aria-label="Analytics" hidden>
   <div class="an-filters">
     <select id="anAccount" aria-label="Account"><option value="">All accounts</option></select>
     <select id="anDays" aria-label="Period">
@@ -596,9 +604,9 @@
   <div id="anPermission"></div>
   <div id="anBody"><div class="muted">Loading…</div></div>
   <section id="anDetail" class="an-detail" hidden></section>
-</main>
+</div>
 
-<main id="campaigns" class="page" role="tabpanel" aria-label="Campaigns" hidden>
+<div id="campaigns" class="panel page" data-tab="campaigns" role="tabpanel" aria-label="Campaigns" hidden>
   <div class="cp-top">
     <button type="button" id="cpNew">New campaign</button>
     <span id="cpAi" class="muted an-ai"></span>
@@ -621,14 +629,22 @@
     <ul><li>change CTA links or add CTAs</li><li>use a CTA this campaign doesn't already use</li><li>let a type post without approval, or add a type that posts without approval</li><li>start or stop the campaign</li><li>stop or resume campaigns</li><li>turn Autorun on or off</li></ul>
     <div class="cp-buttons"><button type="button" id="cpArCancel">Cancel</button><button type="button" id="cpArOk" class="go">Turn on Autorun</button></div>
   </dialog>
-</main>
+</div>
 
-<div id="setup" role="tabpanel" aria-label="FreePoster setup" hidden>
+<div id="setup" class="panel" data-tab="setup" role="tabpanel" aria-label="FreePoster setup" hidden>
   <div class="wiz">
     <nav><ul class="steps" id="steps"></ul></nav>
     <section id="stepBody"></section>
   </div>
 </div>
+</div>
+<div id="parking" hidden>
+    <section id="driveSection" class="drive">
+      <h2>Google Drive folder</h2>
+      <div id="driveBody" class="muted">Loading…</div>
+    </section>
+</div>
+<script src="/layout.js"></script>
 <script>
 const COLORS = { tiktok: "var(--tiktok)", instagram: "var(--instagram)", facebook: "var(--facebook)", x: "var(--x)", youtube: "var(--youtube)" };
 const ICON_SVG = {
@@ -1019,26 +1035,83 @@ function tiktokFileHtml() {
 async function openSetup(stepId) {
   settings = await (await fetch("/api/settings")).json();
   stepIndex = Math.max(0, setupSteps().findIndex((s) => s.id === stepId));
-  showTab("setup");
+  revealTab("setup");
   renderSetup();
 }
 
-/** Home, Editing Styles, Calendar, Analytics, Campaigns and Setup share the page; one shows at a time. */
-const TABS = { home: "tabHome", styles: "tabStyles", calendar: "tabCalendar", analytics: "tabAnalytics", campaigns: "tabCampaigns", setup: "tabSetup" };
-function showTab(name) {
-  $("setup").classList.toggle("open", name === "setup");
-  for (const [panel, tab] of Object.entries(TABS)) {
-    $(panel).hidden = panel !== name;
-    $(tab).setAttribute("aria-selected", String(panel === name));
+// ---- docked workspace: four areas of tabs, saved in localStorage["layout.v1"] ----
+const FPL = FreePosterLayout;
+const LAYOUT_KEY = "layout.v1";
+let layout;
+const workspaceSize = () => { const r = $("workspace").getBoundingClientRect(); return { width: r.width, height: r.height }; };
+function readSaved() {
+  try { return JSON.parse(localStorage.getItem(LAYOUT_KEY)); } catch { return null; }
+}
+function saveLayout() {
+  try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)); } catch {}
+}
+const panelEl = (id) => document.querySelector(`.panel[data-tab="${id}"]`);
+/** Tab ids that are on screen: an open area's active tab. */
+function visibleTabs(l) {
+  return FPL.AREAS.map((a) => l.areas[a]).filter((ar) => !ar.collapsed && ar.active).map((ar) => ar.active);
+}
+
+function onTabShown(id) {
+  if (id === "styles") renderStyles();
+  else if (id === "calendar") loadCalendar();
+  else if (id === "analytics") showAnalytics();
+  else if (id === "campaigns") loadCampaigns();
+}
+
+function applyLayout() {
+  const ws = $("workspace");
+  for (const a of FPL.AREAS) {
+    const ar = layout.areas[a];
+    const el = ws.querySelector(`.area[data-area="${a}"]`);
+    el.toggleAttribute("data-collapsed", ar.collapsed);
+    const strip = el.querySelector(".tabstrip");
+    strip.replaceChildren(...ar.tabs.map((id) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.setAttribute("role", "tab");
+      b.dataset.tab = id;
+      b.setAttribute("aria-selected", String(id === ar.active));
+      b.textContent = FPL.TAB_LABELS[id];
+      return b;
+    }));
+    const body = el.querySelector(".area-body");
+    for (const id of ar.tabs) {
+      const p = panelEl(id);
+      if (p.parentNode !== body) body.appendChild(p);
+      p.hidden = ar.collapsed || id !== ar.active;
+    }
   }
-  if (name === "styles") renderStyles();
-  if (name === "calendar") loadCalendar();
-  if (name === "analytics") showAnalytics();
-  if (name === "campaigns") loadCampaigns();
+  ws.style.setProperty("--left-w", layout.areas.left.size + "px");
+  ws.style.setProperty("--right-w", layout.areas.right.size + "px");
+  ws.style.setProperty("--bottom-h", layout.areas.bottom.size + "px");
+  for (const a of ["left", "bottom", "right"]) $("toggle" + a[0].toUpperCase() + a.slice(1)).setAttribute("aria-pressed", String(!layout.areas[a].collapsed));
+}
+
+function commitLayout(next) {
+  if (!next) return;
+  const before = new Set(visibleTabs(layout));
+  layout = next;
+  saveLayout();
+  applyLayout();
+  for (const id of visibleTabs(layout)) if (!before.has(id)) onTabShown(id);
+}
+
+function revealTab(id) {
+  commitLayout(FPL.activateTab(FPL.setCollapsed(layout, FPL.areaOf(layout, id), false), id));
+}
+
+function resetLayout() {
+  try { localStorage.removeItem(LAYOUT_KEY); } catch {}
+  commitLayout(FPL.clampSizes(FPL.defaultLayout(), workspaceSize()));
 }
 
 function closeSetup() {
-  showTab("home");
+  revealTab("ai");
   sessionStorage.removeItem("setupStep");
   loadStatus();
 }
@@ -1561,18 +1634,21 @@ $("setup").addEventListener("change", async (e) => {
   renderSetup();
 });
 
-$("tabSetup").addEventListener("click", () => { if (!$("setup").classList.contains("open")) openSetup(sessionStorage.getItem("setupStep") ?? undefined); });
-$("tabHome").addEventListener("click", () => { if ($("setup").classList.contains("open")) closeSetup(); else showTab("home"); });
 document.addEventListener("click", (e) => {
   const link = e.target.closest("[data-open-tab]");
-  if (link) { e.preventDefault(); $(TABS[link.dataset.openTab]).click(); }
+  if (link) { e.preventDefault(); revealTab(link.dataset.openTab); }
 });
-for (const name of ["styles", "calendar", "analytics", "campaigns"]) {
-  $(TABS[name]).addEventListener("click", () => {
-    if ($("setup").classList.contains("open")) closeSetup();
-    showTab(name);
-  });
+$("workspace").addEventListener("click", (e) => {
+  const b = e.target.closest(".tabstrip button[data-tab]");
+  if (!b) return;
+  if (b.dataset.tab === "setup" && !$("setup").hidden) return;
+  if (b.dataset.tab === "setup") openSetup(sessionStorage.getItem("setupStep") ?? undefined);
+  else revealTab(b.dataset.tab);
+});
+for (const a of ["left", "bottom", "right"]) {
+  $("toggle" + a[0].toUpperCase() + a.slice(1)).addEventListener("click", () => commitLayout(FPL.setCollapsed(layout, a, !layout.areas[a].collapsed)));
 }
+$("resetLayout").addEventListener("click", resetLayout);
 $("quit").addEventListener("click", async () => {
   const { pendingJobs } = await (await fetch("/api/status")).json();
   const waiting = pendingJobs
@@ -1826,7 +1902,7 @@ document.addEventListener("click", async (e) => {
     const path = new URL(connect.href).pathname;
     const label = status.platforms.find((p) => path === `/connect/${p.platform}`)?.label ?? (path === "/connect/openrouter" ? "OpenRouter" : "the platform");
     const note = `Your browser opened so you can sign in to ${label}. FreePoster updates here as soon as you're done.`;
-    if ($("setup").classList.contains("open")) $("setupError").innerHTML = `<div class="banner ok" style="margin:16px 0 0">${esc(note)}</div>`;
+    if (!$("setup").hidden) $("setupError").innerHTML = `<div class="banner ok" style="margin:16px 0 0">${esc(note)}</div>`;
     else banner("ok", note);
   }
   const setupLink = e.target.closest("[data-setup]");
@@ -3576,6 +3652,11 @@ setInterval(() => { if (!aiBusy.size && !$("aiBody").contains(document.activeEle
     setTimeout(() => (copy.textContent = "Copy"), 1500);
   });
 }
+
+// Start last, so every tab's loader can use the state declared above.
+layout = FPL.clampSizes(FPL.normalizeLayout(readSaved()), workspaceSize());
+applyLayout();
+for (const id of visibleTabs(layout)) onTabShown(id);
 </script>
 </body>
 </html>
