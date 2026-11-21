@@ -20,7 +20,7 @@
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
   header { padding: 10px 16px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 12px; flex: none; }
-  .layout-actions { margin-left: auto; display: flex; gap: 4px; }
+  .layout-actions { display: flex; gap: 4px; }
   .layout-actions button { padding: 4px 6px; line-height: 0; color: var(--muted); }
   .layout-actions button[aria-pressed="true"] { color: var(--ink); }
   header h1 { margin: 0; font-size: 20px; letter-spacing: -0.01em; }
@@ -125,9 +125,14 @@
   .area[data-area="right"] { flex: 0 0 var(--right-w, 380px); }
   .area[data-area="bottom"] { flex: 0 0 var(--bottom-h, 280px); }
   .area[data-collapsed] { display: none; }
-  .sash { flex: none; background: var(--line); }
-  .sash-v { width: 4px; cursor: col-resize; }
-  .sash-h { height: 4px; cursor: row-resize; }
+  /* 5px hit area with a 1px visible line */
+  .sash { flex: none; position: relative; touch-action: none; z-index: 1; }
+  .sash::after { content: ""; position: absolute; background: var(--line); }
+  .sash:hover::after, .sash.dragging::after { background: var(--accent); }
+  .sash-v { width: 5px; cursor: col-resize; }
+  .sash-v::after { top: 0; bottom: 0; left: 2px; width: 1px; }
+  .sash-h { height: 5px; cursor: row-resize; }
+  .sash-h::after { left: 0; right: 0; top: 2px; height: 1px; }
   .area-body { flex: 1; min-height: 0; position: relative; }
   .panel { position: absolute; inset: 0; overflow: auto; padding: 16px; }
   .panel[hidden] { display: none; }
@@ -436,13 +441,13 @@
 </head>
 <body>
 <header><h1>FreePoster</h1><span>one video → TikTok · Instagram · Facebook · X · YouTube</span>
+  <div class="actions"><button type="button" id="quit" hidden>Quit</button></div>
   <div class="layout-actions">
     <button type="button" id="toggleLeft" title="Toggle left panel" aria-label="Toggle left panel" aria-pressed="true"><svg class="picon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M6 2.5v11"/></svg></button>
     <button type="button" id="toggleBottom" title="Toggle bottom panel" aria-label="Toggle bottom panel" aria-pressed="true"><svg class="picon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M1.5 9.5h13"/></svg></button>
     <button type="button" id="toggleRight" title="Toggle right panel" aria-label="Toggle right panel" aria-pressed="true"><svg class="picon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M10 2.5v11"/></svg></button>
     <button type="button" id="resetLayout" title="Reset layout" aria-label="Reset layout"><svg class="picon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 8a5 5 0 1 0 1.6-3.7M3 2.5v3h3"/></svg></button>
   </div>
-  <div class="actions"><button type="button" id="quit" hidden>Quit</button></div>
 </header>
 <div id="redirectBanner"></div>
 <div id="banner"></div>
@@ -1649,6 +1654,71 @@ for (const a of ["left", "bottom", "right"]) {
   $("toggle" + a[0].toUpperCase() + a.slice(1)).addEventListener("click", () => commitLayout(FPL.setCollapsed(layout, a, !layout.areas[a].collapsed)));
 }
 $("resetLayout").addEventListener("click", resetLayout);
+
+// ---- sash dragging: live preview touches only CSS vars and data-collapsed; one commit on release ----
+function previewLayout() {
+  const ws = $("workspace");
+  for (const a of ["left", "bottom", "right"]) {
+    const ar = layout.areas[a];
+    const el = ws.querySelector(`.area[data-area="${a}"]`);
+    el.toggleAttribute("data-collapsed", ar.collapsed);
+    const p = ar.active && panelEl(ar.active);
+    if (p) p.hidden = ar.collapsed;
+    $("toggle" + a[0].toUpperCase() + a.slice(1)).setAttribute("aria-pressed", String(!ar.collapsed));
+  }
+  ws.style.setProperty("--left-w", layout.areas.left.size + "px");
+  ws.style.setProperty("--right-w", layout.areas.right.size + "px");
+  ws.style.setProperty("--bottom-h", layout.areas.bottom.size + "px");
+}
+document.querySelectorAll(".sash").forEach((sash) => {
+  const area = sash.dataset.sash;
+  let drag = null;
+  sash.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    sash.setPointerCapture(e.pointerId);
+    const ar = layout.areas[area];
+    drag = { id: e.pointerId, start: layout, size0: ar.collapsed ? 0 : ar.size, x0: e.clientX, y0: e.clientY, px: null, raf: 0 };
+    sash.classList.add("dragging");
+    document.body.style.userSelect = "none";
+  });
+  sash.addEventListener("pointermove", (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const d = area === "left" ? e.clientX - drag.x0 : area === "right" ? drag.x0 - e.clientX : drag.y0 - e.clientY;
+    drag.px = drag.size0 + d;
+    if (drag.raf) return;
+    const mine = drag;
+    drag.raf = requestAnimationFrame(() => {
+      mine.raf = 0;
+      layout = FPL.resizeArea(layout, area, mine.px, workspaceSize());
+      previewLayout();
+    });
+  });
+  const end = (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const d = drag;
+    drag = null;
+    if (d.raf) cancelAnimationFrame(d.raf);
+    sash.classList.remove("dragging");
+    document.body.style.userSelect = "";
+    if (d.px !== null) layout = FPL.resizeArea(layout, area, d.px, workspaceSize());
+    const final = layout;
+    layout = d.start; // so commitLayout sees which tabs became visible during the drag
+    commitLayout(final);
+  };
+  sash.addEventListener("pointerup", end);
+  sash.addEventListener("pointercancel", end);
+});
+
+let resizeRaf = 0;
+window.addEventListener("resize", () => {
+  if (resizeRaf) return;
+  resizeRaf = requestAnimationFrame(() => {
+    resizeRaf = 0;
+    const next = FPL.clampSizes(layout, workspaceSize());
+    if (JSON.stringify(next) !== JSON.stringify(layout)) commitLayout(next);
+  });
+});
 $("quit").addEventListener("click", async () => {
   const { pendingJobs } = await (await fetch("/api/status")).json();
   const waiting = pendingJobs
