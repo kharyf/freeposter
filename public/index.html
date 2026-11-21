@@ -152,9 +152,9 @@
   .edge-drop[data-area="left"] { left: 0; top: 0; bottom: 0; width: 24px; }
   .edge-drop[data-area="right"] { right: 0; top: 0; bottom: 0; width: 24px; }
   .edge-drop[data-area="bottom"] { left: 0; right: 0; bottom: 0; height: 24px; }
-  .wiz { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; max-width: 1040px; margin: 0 auto; padding: 24px; }
-  @container (max-width: 760px) { .wiz { grid-template-columns: 1fr; padding: 0; gap: 12px; } .steps { display: flex; flex-wrap: wrap; gap: 4px; } }
-  @media (max-width: 760px) { .wiz { grid-template-columns: 1fr; padding: 16px; } .steps { display: flex; flex-wrap: wrap; gap: 4px; } }
+  .wiz { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; padding: 24px; }
+  .step-select { display: none; width: 100%; }
+  @container (max-width: 640px) { .wiz { grid-template-columns: 1fr } .wiz nav { display: none } .step-select { display: block } }
   .steps { list-style: none; margin: 0; padding: 0; }
   .steps li { padding: 8px 10px; border-radius: 6px; font-size: 14px; color: var(--muted); cursor: pointer; display: flex; gap: 8px; align-items: center; border: 1px solid transparent; }
   .steps li.on { background: var(--panel); color: var(--ink); font-weight: 600; border-color: var(--line); }
@@ -657,12 +657,6 @@
   </div>
 </div>
 </div>
-<div id="parking" hidden>
-    <section id="driveSection" class="drive">
-      <h2>Google Drive folder</h2>
-      <div id="driveBody" class="muted">Loading…</div>
-    </section>
-</div>
 <script src="/layout.js"></script>
 <script>
 const COLORS = { tiktok: "var(--tiktok)", instagram: "var(--instagram)", facebook: "var(--facebook)", x: "var(--x)", youtube: "var(--youtube)" };
@@ -1036,6 +1030,7 @@ const SETUP_STEPS = [
   { id: "limits", title: "Limits" },
   { id: "production", title: "Production tools" },
   { id: "connect", title: "Connect accounts" },
+  { id: "drive", title: "Google Drive folder" },
 ];
 let settings = null;
 let stepIndex = 0;
@@ -1170,6 +1165,7 @@ const stepDone = (s) =>
   : s.id === "welcome" ? Boolean(settings.tools.ffmpeg && settings.tools.ffprobe)
   : s.platform ? settings.configured[s.id]
   : s.id === "connect" ? status.accounts.length > 0
+  : s.id === "drive" ? Boolean(driveView?.folderId)
   : false;
 
 function field(key, label, hint = "", type = "text") {
@@ -1215,6 +1211,9 @@ const tool = (name, version) => version
   : `<span class="check-bad">✗ ${name} not found</span>`;
 
 function stepHtml(step) {
+  if (step.id === "drive") {
+    return `<h1>${esc(step.title)}</h1><p class="muted">FreePoster watches this folder and posts the videos you put in it.</p><div id="driveBody" class="drive muted">Loading…</div>`;
+  }
   if (step.id === "redirect") {
     const done = settings.redirectDone;
     return `<h1>Set up FreePoster</h1>
@@ -1350,22 +1349,34 @@ function stepHtml(step) {
 function renderSetup() {
   const step = setupSteps()[stepIndex];
   sessionStorage.setItem("setupStep", step.id);
-  $("steps").innerHTML = setupSteps().map((s, i) => `
-    <li class="${i === stepIndex ? "on" : ""}" data-step="${i}"><span class="tick ${stepDone(s) ? "done" : ""}">${stepDone(s) ? "✓" : i + 1}</span>${esc(s.title)}</li>`).join("");
   const last = stepIndex === setupSteps().length - 1;
-  const skip = step.platform ? `I don't use ${SETUP_PLATFORMS[step.id].short}` : null;
-  $("stepBody").innerHTML = `${stepHtml(step)}
+  const skip = step.platform ? `I don't use ${SETUP_PLATFORMS[step.id].short}` : step.id === "drive" ? "I don't use Google Drive" : null;
+  const skippable = step.id === "drive" ? !driveView?.folderId : step.platform && !settings.configured[step.id];
+  $("stepBody").innerHTML = `<select id="stepSelect" class="step-select" aria-label="Setup step"></select>
+    ${stepHtml(step)}
     <div id="setupError"></div>
     <div class="nav">
       ${stepIndex > 0 ? `<button type="button" data-nav="back">Back</button>` : ""}
-      ${skip && !settings.configured[step.id] ? `<button type="button" data-nav="skip">${esc(skip)}</button>` : ""}
+      ${skip && skippable ? `<button type="button" data-nav="skip">${esc(skip)}</button>` : ""}
       <button type="button" class="primary" data-nav="next">${last ? "Finish" : "Save & continue"}</button>
     </div>`;
+  renderStepList();
+  if (step.id === "drive" && driveView) renderDrive(driveView);
   if (step.id === "production") { void loadProductionHealth(); void loadWangpModels(); void loadTelegram(); }
+}
+
+/** The side list of steps and the dropdown that stands in for it in a narrow area. */
+function renderStepList() {
+  const steps = setupSteps();
+  $("steps").innerHTML = steps.map((s, i) => `
+    <li class="${i === stepIndex ? "on" : ""}" data-step="${i}"><span class="tick ${stepDone(s) ? "done" : ""}">${stepDone(s) ? "✓" : i + 1}</span>${esc(s.title)}</li>`).join("");
+  const select = $("stepSelect");
+  if (select) select.innerHTML = steps.map((s, i) => `<option value="${i}" ${i === stepIndex ? "selected" : ""}>${esc((stepDone(s) ? "✓ " : `${i + 1}. `) + s.title)}</option>`).join("");
 }
 
 async function saveStep() {
   const step = setupSteps()[stepIndex];
+  if (step.id === "drive") return; // the folder form saves itself
   const values = {};
   for (const input of $("stepBody").querySelectorAll("[data-key]")) values[input.dataset.key] = input.value;
   const prefs = {};
@@ -1403,6 +1414,12 @@ async function saveStep() {
   }
 }
 
+$("setup").addEventListener("change", (e) => {
+  if (e.target.id !== "stepSelect") return;
+  stepIndex = Number(e.target.value);
+  renderSetup();
+});
+
 $("setup").addEventListener("click", async (e) => {
   const copy = e.target.closest("[data-copy]");
   if (copy) {
@@ -1415,6 +1432,10 @@ $("setup").addEventListener("click", async (e) => {
   if (jump) { stepIndex = Number(jump.dataset.step); return renderSetup(); }
   const nav = e.target.closest("[data-nav]")?.dataset.nav;
   if (nav === "back") { stepIndex--; return renderSetup(); }
+  if (nav === "skip" && stepIndex === setupSteps().length - 1) {
+    await fetch("/api/setup", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ complete: true }) });
+    return closeSetup();
+  }
   if (nav === "next") {
     try {
       await saveStep();
@@ -2223,7 +2244,8 @@ async function loadDrive() {
   const view = await fetch("/api/drive").then((r) => r.json());
   driveView = view;
   // Don't redraw a form someone is typing in.
-  if (!$("driveBody").contains(document.activeElement)) renderDrive(view);
+  if ($("driveBody") && !$("driveBody").contains(document.activeElement)) renderDrive(view);
+  if ($("stepSelect") && !$("stepSelect").contains(document.activeElement)) renderStepList();
   if (!$("driveFiles").contains(document.activeElement)) renderDriveFiles(view.files, Boolean(view.connected && view.folderId));
 }
 
@@ -2273,6 +2295,7 @@ let driveWatching = false;
 function renderDriveFiles(files, watching) {
   driveFilesShown = files;
   driveWatching = watching;
+  $("driveSync").hidden = !watching;
   if (!files.length) {
     $("driveFiles").innerHTML = watching
       ? `<div class="muted">No videos from your Drive folder yet.</div>`
@@ -3645,6 +3668,13 @@ loadStatus().then(() => {
   for (const el of document.querySelectorAll(".desktop-only")) el.hidden = !status.desktop;
   // First run, or back from a platform's sign-in page during setup.
   const resume = sessionStorage.getItem("setupStep");
+  if (!status.setupComplete) {
+    // A side area is too narrow for the wizard: give Setup's area at least 480px on first run.
+    const where = FPL.areaOf(layout, "setup");
+    if ((where === "left" || where === "right") && layout.areas[where].size < 480) {
+      commitLayout(FPL.resizeArea(layout, where, 480, workspaceSize()));
+    }
+  }
   if (!status.setupComplete || resume) openSetup(resume || "redirect");
   loadDrive();
   setInterval(loadDrive, 5000);
