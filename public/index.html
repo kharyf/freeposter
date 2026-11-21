@@ -92,6 +92,10 @@
   .banner { padding: 10px 14px; border-radius: 8px; margin: 0 24px; margin-top: 16px; white-space: pre-line; }
   .banner.err { background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad); }
   .banner.ok { background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); }
+  .banner:has(> .banner-close) { display: flex; align-items: flex-start; gap: 12px; }
+  .banner-text { flex: 1; min-width: 0; }
+  .banner-close { flex: none; background: none; border: 0; padding: 0 4px; margin: -2px -6px 0 0; font-size: 20px; line-height: 1; color: inherit; cursor: pointer; opacity: .7; }
+  .banner-close:hover, .banner-close:focus-visible { opacity: 1; }
   .post { border-top: 1px solid var(--line); padding: 12px 0; }
   .post:first-child { border-top: 0; padding-top: 0; }
   .post .cap { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 3em; overflow: hidden; }
@@ -646,9 +650,27 @@ let edit = null;
 let editPoll;
 let creators = {}; // tiktok account id -> creator_info
 
-function banner(kind, text) {
-  $("banner").innerHTML = text ? `<div class="banner ${kind}">${esc(text)}</div>` : "";
+let bannerTimer;
+/** Shows a message at the top of the page (or clears it with no text). `hideAfter` ms takes it away on its own. */
+function banner(kind, text, { hideAfter } = {}) {
+  clearTimeout(bannerTimer);
+  $("banner").innerHTML = text
+    ? `<div class="banner ${kind}"><span class="banner-text">${esc(text)}</span><button type="button" class="banner-close" aria-label="Dismiss">×</button></div>`
+    : "";
+  if (text && hideAfter) {
+    const shown = $("banner").firstElementChild;
+    bannerTimer = setTimeout(() => { if ($("banner").firstElementChild === shown) banner(); }, hideAfter);
+  }
 }
+/** The banner's message, without its close button. */
+const bannerText = () => $("banner").querySelector(".banner-text")?.textContent ?? "";
+// Setup copies the banner into its own screen, so a close button may be outside #banner.
+document.addEventListener("click", (e) => {
+  const close = e.target.closest(".banner-close");
+  if (!close) return;
+  if (close.closest("#banner")) banner();
+  else close.closest(".banner").remove();
+});
 
 // X's counting: URLs are 23, characters above U+10FF count 2.
 function xLength(t) {
@@ -2020,7 +2042,7 @@ $("driveFiles").addEventListener("change", (e) => {
 
 const params = new URLSearchParams(location.search);
 if (params.get("error")) banner("err", params.get("error"));
-if (params.get("connected")) banner("ok", `Connected ${params.get("connected")}`);
+if (params.get("connected")) banner("ok", `Connected ${params.get("connected")}`, { hideAfter: 5000 });
 if (params.size) history.replaceState(null, "", "/");
 // ---- Editing Styles tab: each style with its thumbnail and sample, which one is the default, and adding new ones ----
 
@@ -2357,7 +2379,7 @@ async function loadAnalytics() {
     if (seq !== anSeq) return;
     if (!res.ok) { anFail(body.error ?? "Couldn't load the analytics"); return; }
     an = body;
-    if (anBannerText && $("banner").textContent === anBannerText) banner(); // not another tab's message
+    if (anBannerText && bannerText() === anBannerText) banner(); // not another tab's message
     anBannerText = null;
     keepFocus(renderAnalytics); // the 60 s refresh mustn't move the keyboard off the row it's on
   } catch {
@@ -2755,7 +2777,7 @@ async function loadCampaigns() {
     }
     return;
   }
-  if (cpBannerText && $("banner").textContent === cpBannerText) banner(); // only if it's still this tab's message
+  if (cpBannerText && bannerText() === cpBannerText) banner(); // only if it's still this tab's message
   cpBannerText = null;
   cp = camps.body;
   for (const c of cp.campaigns) cpToday[c.id] = { tasks: c.today ?? [] };

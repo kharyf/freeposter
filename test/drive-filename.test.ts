@@ -104,11 +104,18 @@ test("the time may be written with a colon, without dots, or as a bare hour", ()
   for (const [name, h, m] of [
     ["Everyday_7:33AM", 7, 33], ["Everyday_7:33AM.mp4", 7, 33], ["Everyday_7:33 pm.mov", 19, 33],
     ["Everyday_7.33am", 7, 33], ["Everyday_7.33am.mp4", 7, 33], ["Everyday_11.1.26_7pm", 19, 0], ["Everyday_12am.mp4", 0, 0],
+    ["Everyday_10.00AM", 10, 0], ["Everyday_10.00AM.mp4", 10, 0], ["Everyday_11.1.26_10.00AM.mp4", 10, 0],
+    ["Everyday_11.1.26_10.45PM.mov", 22, 45], ["Everyday_09.15AM.mp4", 9, 15], ["Everyday_10.00 AM.mp4", 10, 0],
   ] as const) {
     const r = ok(name);
     assert.equal(r.name, "Everyday", name);
     assert.equal(r.at, at(h, m), name);
+    // The same names read by the current rules, which also know styles and sets.
+    const current = parseDriveName(name, UPLOADED, { styles: [{ id: "basic", token: "Basic" }], sets: [] });
+    assert.ok(current.ok && current.at === at(h, m), `${name} (current rules): ${!current.ok && current.reason}`);
   }
+  const styled = parseDriveName("Everyday_11.1.26_10.00AM_Basic.mp4", UPLOADED, { styles: [{ id: "basic", token: "Basic" }], sets: [] });
+  assert.ok(styled.ok && styled.at === at(10, 0) && styled.styleId === "basic");
   bad("Everyday_7:3AM", /not a time/);
   bad("Everyday_13:00pm", /not a valid time/);
 });

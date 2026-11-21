@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { probe, render, sampleFrames, specProblems } from "../src/media.ts";
-import { landscape60, sha256, tmp, verticalSilent } from "./helpers.ts";
+import { fullRange, landscape60, sha256, tmp, verticalSilent } from "./helpers.ts";
 
 // Edge cases from the acceptance set: wrong aspect ratio + 60 fps + 44.1 kHz audio, and a silent clip.
 
@@ -24,6 +24,14 @@ test("silent clip gets a silent AAC track and keeps its length", async () => {
   assert.equal(out.probe.hasAudio, true);
   assert.deepEqual(specProblems(out.probe), []);
   assert.ok(Math.abs(out.probe.durationSec - 4) < 0.2, `duration ${out.probe.durationSec}`);
+});
+
+test("a full-range (yuvj420p) clip renders to TV-range yuv420p", async () => {
+  const dir = tmp();
+  const src = fullRange(dir);
+  assert.equal((await probe(src)).pixFmt, "yuvj420p", "source should be full range");
+  const out = await render(src, sha256(src), dir);
+  assert.deepEqual(specProblems(out.probe), []);
 });
 
 test("non-video input is rejected with a clear reason", async () => {

@@ -36,7 +36,15 @@ export const verticalSilent = (dir: string, seconds = 4) =>
     "-f", "lavfi", "-i", "testsrc2=size=720x1280:rate=24", "-t", String(seconds), "-c:v", "libx264", "-pix_fmt", "yuv420p",
   ]);
 
-export const sha256 = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
+/** A full-range (yuvj420p) clip, as phones and some editors export: the render must bring it to TV range. */
+export const fullRange = (dir: string, seconds = 2) =>
+  makeVideo(dir, "full-range.mp4", [
+    "-f", "lavfi", "-i", "testsrc2=size=1080x1920:rate=30",
+    "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+    "-t", String(seconds), "-vf", "scale=out_range=pc,format=yuvj420p", "-c:v", "libx264", "-color_range", "pc", "-c:a", "aac",
+  ]);
+
+export const sha256 =(path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
 
 export function newStore(dir = tmp()) {
   return new Store(join(dir, "test.db"), randomBytes(32));

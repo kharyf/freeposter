@@ -97,7 +97,9 @@ export const TARGET = { width: 1080, height: 1920, fps: 30, maxBitrate: "10M" } 
 
 export function ffmpegArgs(input: string, output: string, hasAudio: boolean): string[] {
   const vf = [
-    `scale=${TARGET.width}:${TARGET.height}:force_original_aspect_ratio=decrease`,
+    // out_range=tv: full-range sources (yuvj420p, as phones export) are converted to TV range. format=yuv420p
+    // alone keeps a full-range frame full range in current ffmpeg, which platforms and players handle unevenly.
+    `scale=${TARGET.width}:${TARGET.height}:force_original_aspect_ratio=decrease:out_range=tv`,
     `pad=${TARGET.width}:${TARGET.height}:(ow-iw)/2:(oh-ih)/2:color=black`,
     "setsar=1",
     `fps=${TARGET.fps}`,
@@ -110,7 +112,7 @@ export function ffmpegArgs(input: string, output: string, hasAudio: boolean): st
     ...(hasAudio ? [] : ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]),
     "-map", "0:v:0", "-map", hasAudio ? "0:a:0" : "1:a:0",
     "-vf", vf,
-    "-c:v", "libx264", "-profile:v", "high", "-level:v", "4.1", "-preset", "medium", "-crf", "20",
+    "-c:v", "libx264", "-profile:v", "high", "-level:v", "4.1", "-preset", "medium", "-crf", "20", "-color_range", "tv",
     "-maxrate", TARGET.maxBitrate, "-bufsize", "20M", "-g", String(TARGET.fps * 2), "-keyint_min", String(TARGET.fps),
     "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
     ...(hasAudio ? [] : ["-shortest"]),

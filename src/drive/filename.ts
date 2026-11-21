@@ -3,7 +3,7 @@
 // e.g. "Gatekeeping_11.1.26_5.30.pm_Basic_PersonalBrand.mp4" posts at 5:30 PM on 1 November 2026 (this computer's
 // local time), edited in the Basic style, to the accounts in the "Personal Brand" set. Underscores only separate
 // parts, so the name itself has none. With no time it posts as soon as possible on the date, and with no date the
-// date is the day it was uploaded. The time may also be written 5:30pm, 5:30PM, 5.30pm or 5pm. The style and set
+// date is the day it was uploaded. The time may also be written 5:30pm, 5:30PM, 5.30pm, 10.00AM or 5pm. The style and set
 // are matched to the ones that exist, ignoring case (a set is written without its spaces: PersonalBrand); left off,
 // they are the defaults. A last part of _RAW (any case) means the video was already edited elsewhere: it posts as
 // uploaded, so it takes no style. Anything that isn't clearly one of these refuses the file, with the reason.
