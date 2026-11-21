@@ -141,6 +141,9 @@
   .tabstrip::-webkit-scrollbar { display: none; }
   .tabstrip button { flex: none; white-space: nowrap; border: 0; border-top: 2px solid transparent; border-radius: 0; background: none; color: var(--muted); padding: 6px 12px; font-size: 13px; font-weight: 600; }
   .tabstrip button[aria-selected="true"] { color: var(--ink); border-top-color: var(--accent); }
+  .tabstrip .tab-badge { display: inline-block; margin-left: 6px; min-width: 16px; padding: 0 5px; border-radius: 8px; background: var(--accent); color: var(--bg); font-size: 11px; line-height: 16px; text-align: center; }
+  .tabstrip button.pulse { animation: tab-pulse 1.2s ease-in-out 2; }
+  @keyframes tab-pulse { 0%, 100% { background: transparent; } 50% { background: color-mix(in srgb, var(--accent) 25%, transparent); } }
   .drop-bar { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent); pointer-events: none; z-index: 2; }
   .area-body.drop-over::after { content: ""; position: absolute; inset: 0; outline: 2px solid var(--accent); outline-offset: -2px; pointer-events: none; z-index: 2; }
   .edge-drop { display: none; position: absolute; z-index: 5; background: color-mix(in srgb, var(--accent) 12%, transparent); }
@@ -534,19 +537,19 @@
       </form>
 </div>
 <div class="panel" id="panel-reviews" data-tab="reviews" role="tabpanel" hidden>
-  <div id="reviewsSection" hidden>
+  <div id="reviewsSection">
       <p class="muted" style="margin-top:0">Videos your agent asked to post, and edits of videos from your Drive folder. Nothing goes out until you approve it, here or on Telegram.</p>
       <div id="reviews"></div>
   </div>
 </div>
 <div class="panel" id="panel-drive" data-tab="drive" role="tabpanel" hidden>
-  <div id="driveFilesSection" hidden>
+  <div id="driveFilesSection">
       <div class="row" style="justify-content:space-between;align-items:center"><span></span><button type="button" id="driveSync" title="Check the Drive folder now and take off videos you've deleted there">Sync</button></div>
       <div id="driveFiles"></div>
   </div>
 </div>
 <div class="panel" id="panel-upcoming" data-tab="upcoming" role="tabpanel" hidden>
-  <div id="upcomingSection" hidden>
+  <div id="upcomingSection">
       <div id="upcoming"></div>
   </div>
 </div>
@@ -1079,6 +1082,32 @@ function onTabShown(id) {
   else if (id === "campaigns") loadCampaigns();
 }
 
+// Per-tab count badges, kept here because applyLayout rebuilds the strip buttons.
+const badges = {};
+function badgeEl(n) {
+  const s = document.createElement("span");
+  s.className = "tab-badge";
+  s.textContent = String(n);
+  return s;
+}
+function tabButton(id) { return document.querySelector(`.tabstrip button[data-tab="${id}"]`); }
+function setTabBadge(id, count) {
+  badges[id] = count;
+  const b = tabButton(id);
+  if (!b) return;
+  b.querySelector(".tab-badge")?.remove();
+  if (count > 0) b.append(badgeEl(count));
+}
+/** Flash a tab button without switching to it. */
+function pulseTab(id) {
+  const b = tabButton(id);
+  if (!b) return;
+  b.classList.remove("pulse");
+  void b.offsetWidth;
+  b.classList.add("pulse");
+  b.addEventListener("animationend", () => b.classList.remove("pulse"), { once: true });
+}
+
 function applyLayout() {
   const ws = $("workspace");
   for (const a of FPL.AREAS) {
@@ -1096,6 +1125,7 @@ function applyLayout() {
       b.draggable = true;
       b.setAttribute("aria-selected", String(id === ar.active));
       b.textContent = FPL.TAB_LABELS[id];
+      if (badges[id]) b.append(badgeEl(badges[id]));
       return b;
     }));
     const body = el.querySelector(".area-body");
@@ -1520,6 +1550,7 @@ const WHY_TEXT = {
   reject: { title: "Reject this video", reason: "Why reject it?", note: "Anything to add? (optional)", send: "Reject video" },
 };
 let reviewsShown = "";
+let reviewCount = null; // unknown until the first load, so page load never pulses
 async function loadReviews() {
   const res = await fetch("/api/reviews");
   if (!res.ok) return;
@@ -1528,8 +1559,11 @@ async function loadReviews() {
   const key = JSON.stringify(pending.map((r) => [r.id, r.state, r.waiting_for, r.sent_to_telegram]));
   if (key === reviewsShown) return;
   reviewsShown = key;
-  $("reviewsSection").hidden = !pending.length;
-  $("reviews").innerHTML = pending.map((r) => `
+  const grew = reviewCount !== null && pending.length > reviewCount;
+  reviewCount = pending.length;
+  setTabBadge("reviews", pending.length);
+  if (grew && layout.areas[FPL.areaOf(layout, "reviews")].active !== "reviews") pulseTab("reviews");
+  $("reviews").innerHTML = !pending.length ? `<div class="muted">Nothing waiting for review.</div>` : pending.map((r) => `
     <div class="review" data-review="${r.id}">
       <div><strong>${esc(r.label)}</strong>${r.duration_sec ? ` <span class="muted">· ${r.duration_sec.toFixed(1)} s</span>` : ""}</div>
       ${r.state === "preparing" ? `<div class="muted">Making the exact file${r.caption_pending ? " and writing the caption" : ""}…</div>` : `
@@ -1984,8 +2018,7 @@ function renderUpcoming(posts) {
   // Don't redraw under someone who is picking a new time.
   if ($("upcoming").contains(document.activeElement)) return;
   const upcoming = posts.filter(isUpcoming).sort((a, b) => a.scheduledAt - b.scheduledAt);
-  $("upcomingSection").hidden = !upcoming.length;
-  $("upcoming").innerHTML = upcoming.map((p) => `
+  $("upcoming").innerHTML = !upcoming.length ? `<div class="muted">Nothing scheduled.</div>` : upcoming.map((p) => `
     <div class="post">
       <div><span class="when-at">${new Date(p.scheduledAt).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>${p.title ? ` <span class="muted">· ${esc(p.title)}</span>` : ""}
         ${p.editId ? ` <a class="badge" href="/api/edits/${p.editId}/video" target="_blank" rel="noopener">${p.requireEdit ? "From Drive · edited" : "Edited"} ▶</a>` : ""}</div>
@@ -2240,8 +2273,12 @@ let driveWatching = false;
 function renderDriveFiles(files, watching) {
   driveFilesShown = files;
   driveWatching = watching;
-  $("driveFilesSection").hidden = !files.length && !watching;
-  if (!files.length) { $("driveFiles").innerHTML = `<div class="muted">Nothing from Drive yet.</div>`; return; }
+  if (!files.length) {
+    $("driveFiles").innerHTML = watching
+      ? `<div class="muted">No videos from your Drive folder yet.</div>`
+      : `<div class="muted">No Drive folder set yet. <a href="#" class="link" data-setup="drive">Choose one in Setup</a>.</div>`;
+    return;
+  }
   const pages = Math.ceil(files.length / drivePageSize);
   drivePage = Math.min(drivePage, pages - 1); // stays put as videos arrive; only pulls back if the list shrank
   const when = (ms) => new Date(ms).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
@@ -3632,7 +3669,7 @@ const ago = (t) => {
 
 async function loadAi() {
   const res = await fetch("/api/ai");
-  if (!res.ok) { $("aiSection").hidden = true; return; }
+  if (!res.ok) { $("aiBody").className = "muted"; $("aiBody").textContent = "Couldn't load AI providers."; return; }
   ai = await res.json();
   renderAi();
 }
