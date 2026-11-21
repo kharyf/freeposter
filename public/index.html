@@ -23,6 +23,9 @@
   .layout-actions { display: flex; gap: 4px; }
   .layout-actions button { padding: 4px 6px; line-height: 0; color: var(--muted); }
   .layout-actions button[aria-pressed="true"] { color: var(--ink); }
+  .layout-actions button { position: relative; }
+  .layout-actions .tab-badge { position: absolute; top: -5px; right: -5px; min-width: 14px; padding: 0 4px; border-radius: 7px; background: var(--accent); color: var(--bg); font-size: 10px; line-height: 14px; text-align: center; pointer-events: none; }
+  .layout-actions button.pulse { animation: tab-pulse 1.2s ease-in-out 2; }
   header h1 { margin: 0; font-size: 20px; letter-spacing: -0.01em; }
   header span { color: var(--muted); font-size: 13px; }
   section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 20px; }
@@ -107,7 +110,7 @@
   .upcoming-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }
   .state.scheduled { color: var(--accent); }
   .job { display: grid; grid-template-columns: 130px 110px 1fr auto; gap: 8px; align-items: start; font-size: 13px; padding: 4px 0; }
-  @media (max-width: 600px) { .job { grid-template-columns: 1fr 1fr; } }
+  @container (max-width: 600px) { .job { grid-template-columns: 1fr 1fr; } }
   .state { font-weight: 600; }
   .state.published { color: var(--ok); } .state.failed { color: var(--bad); }
   .state.retry, .state.waiting_quota { color: var(--warn); } .state.running, .state.queued { color: var(--accent); }
@@ -165,7 +168,7 @@
   .copy { display: flex; gap: 6px; margin: 6px 0; }
   .copy code { flex: 1; padding: 7px 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; font-size: 13px; overflow-wrap: anywhere; }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
-  @media (max-width: 600px) { .grid2 { grid-template-columns: 1fr; } }
+  @container (max-width: 600px) { .grid2 { grid-template-columns: 1fr; } }
   .field .hint { color: var(--muted); font-size: 12px; margin-top: 3px; }
   .nav { display: flex; gap: 8px; margin-top: 20px; align-items: center; }
   .nav .primary { width: auto; margin: 0 0 0 auto; }
@@ -239,11 +242,11 @@
   .styles-head p { margin: 0; flex: 1; }
   .styles-head button { flex: none; display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
   .styles-head button svg { width: 14px; height: 14px; stroke: currentColor; stroke-width: 2; stroke-linecap: round; fill: none; }
-  @media (max-width: 600px) { .styles-head { flex-direction: column; gap: 10px; } }
+  @container (max-width: 600px) { .styles-head { flex-direction: column; gap: 10px; } }
   .style-form { max-width: 820px; }
   .style-form[hidden] { display: none; }
   .style-form .layout { display: grid; grid-template-columns: minmax(0, 1fr) 180px; gap: 24px; }
-  @media (max-width: 700px) { .style-form .layout { grid-template-columns: 1fr; } .style-form .preview { order: -1; } }
+  @container (max-width: 700px) { .style-form .layout { grid-template-columns: 1fr; } .style-form .preview { order: -1; } }
   .style-form h3 { margin: 0; font-size: 17px; }
   .style-form textarea { min-height: 70px; }
   .style-form fieldset { border: 0; padding: 0; margin: 12px 0 0; }
@@ -278,7 +281,7 @@
   .cal .entry .s { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cal-detail { margin-top: 16px; }
   .cal-detail .acc { display: flex; gap: 8px; align-items: center; font-size: 13px; padding: 2px 0; }
-  @media (max-width: 700px) {
+  @container (max-width: 700px) {
     .cal .day { min-height: 64px; padding: 2px 3px; }
     .cal .dow { padding: 4px 2px; font-size: 10px; text-align: center; }
     .cal .entry .s { display: none; }
@@ -294,7 +297,7 @@
   .an-dims > .dim { font-size: 13px; font-weight: 600; padding: 10px 0; border-top: 1px solid var(--line); }
   .an-dims > .vals { display: flex; flex-wrap: wrap; gap: 6px 24px; padding: 8px 0; border-top: 1px solid var(--line); min-width: 0; }
   .an-dims > :nth-child(-n+2) { border-top: 0; }
-  @media (max-width: 700px) { .an-dims { grid-template-columns: 1fr; } .an-dims > .vals { border-top: 0; padding-top: 0; } .an-dims > .dim { padding-bottom: 4px; } }
+  @container (max-width: 700px) { .an-dims { grid-template-columns: 1fr; } .an-dims > .vals { border-top: 0; padding-top: 0; } .an-dims > .dim { padding-bottom: 4px; } }
   .an-val { display: grid; grid-template-columns: minmax(0, 180px) 2.2em 96px auto; align-items: center; gap: 8px; font-size: 13px; min-width: 0; border-radius: 4px; }
   .an-val:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .an-val .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -421,7 +424,7 @@
   .cp-row .src { color: var(--muted); font-style: italic; overflow-wrap: anywhere; }
   .cp-row .ins { overflow-wrap: anywhere; }
   .cp-row.empty .ins { color: var(--muted); }
-  @media (max-width: 700px) { .cp-row { grid-template-columns: 38px minmax(0, 1fr); } .cp-row .src { grid-column: 2; } }
+  @container (max-width: 700px) { .cp-row { grid-template-columns: 38px minmax(0, 1fr); } .cp-row .src { grid-column: 2; } }
   .cp-warn { color: var(--warn); font-weight: 600; white-space: nowrap; }
   .cp-unread { border-left: 3px solid var(--bad); background: color-mix(in srgb, var(--bad) 8%, transparent); border-radius: 6px; padding: 6px 10px; font-size: 13px; margin-top: 8px; }
   .cp-unread ul { margin: 4px 0 0; padding-left: 18px; overflow-wrap: anywhere; }
@@ -1049,8 +1052,8 @@ function tiktokFileHtml() {
 async function openSetup(stepId) {
   settings = await (await fetch("/api/settings")).json();
   stepIndex = Math.max(0, setupSteps().findIndex((s) => s.id === stepId));
+  renderSetup(); // before revealing: onTabShown("setup") then sees a drawn wizard and does not open it again
   revealTab("setup");
-  renderSetup();
 }
 
 // ---- docked workspace: four areas of tabs, saved in localStorage["layout.v1"] ----
@@ -1071,7 +1074,13 @@ function visibleTabs(l) {
 }
 
 function onTabShown(id) {
-  if (id === "styles") renderStyles();
+  if (id === "setup") {
+    // Drawn on demand: a relaunch (or a drag into view) shows Setup without anyone having opened it.
+    if (!settings || !$("steps").innerHTML.trim()) {
+      let resume; try { resume = sessionStorage.getItem("setupStep") ?? undefined; } catch {}
+      void openSetup(resume);
+    }
+  } else if (id === "styles") renderStyles();
   else if (id === "calendar") loadCalendar();
   else if (id === "analytics") showAnalytics();
   else if (id === "campaigns") loadCampaigns();
@@ -1089,9 +1098,34 @@ function tabButton(id) { return document.querySelector(`.tabstrip button[data-ta
 function setTabBadge(id, count) {
   badges[id] = count;
   const b = tabButton(id);
-  if (!b) return;
-  b.querySelector(".tab-badge")?.remove();
-  if (count > 0) b.append(badgeEl(count));
+  if (b) {
+    b.querySelector(".tab-badge")?.remove();
+    if (count > 0) b.append(badgeEl(count));
+  }
+  syncToggleBadge();
+}
+const toggleBtn = (a) => $("toggle" + a[0].toUpperCase() + a.slice(1));
+/** The reviews count shows on the header toggle of a collapsed area holding the Reviews tab (its own strip is hidden then). */
+function collapsedHolder() {
+  const a = layout && FPL.areaOf(layout, "reviews");
+  return a && a !== "top" && layout.areas[a].collapsed ? a : null;
+}
+function syncToggleBadge() {
+  const holder = collapsedHolder();
+  for (const a of ["left", "bottom", "right"]) {
+    const btn = toggleBtn(a);
+    btn.querySelector(".tab-badge")?.remove();
+    if (a === holder && badges.reviews > 0) { btn.append(badgeEl(badges.reviews)); btn.title = `${btn.getAttribute("aria-label")} (${badges.reviews} waiting for review)`; }
+    else btn.title = btn.getAttribute("aria-label");
+  }
+}
+/** Flash the toggle of the collapsed area that holds a tab. */
+function pulseToggle(a) {
+  const b = toggleBtn(a);
+  b.classList.remove("pulse");
+  void b.offsetWidth;
+  b.classList.add("pulse");
+  b.addEventListener("animationend", () => b.classList.remove("pulse"), { once: true });
 }
 /** Flash a tab button without switching to it. */
 function pulseTab(id) {
@@ -1134,6 +1168,8 @@ function applyLayout() {
   ws.style.setProperty("--right-w", layout.areas.right.size + "px");
   ws.style.setProperty("--bottom-h", layout.areas.bottom.size + "px");
   for (const a of ["left", "bottom", "right"]) $("toggle" + a[0].toUpperCase() + a.slice(1)).setAttribute("aria-pressed", String(!layout.areas[a].collapsed));
+  syncToggleBadge();
+  if (dragTab) endTabDrag(); // the rebuilt strip dropped the drag's source button, so its dragend never comes
 }
 
 function commitLayout(next) {
@@ -1155,8 +1191,12 @@ function resetLayout() {
 }
 
 function closeSetup() {
-  revealTab("ai");
-  sessionStorage.removeItem("setupStep");
+  // Finish makes AI Providers active in Setup's area; tabs are never moved to do it.
+  const area = FPL.areaOf(layout, "setup");
+  const tabs = layout.areas[area].tabs;
+  const target = tabs.includes("ai") ? "ai" : tabs.find((t) => t !== "setup");
+  if (target) commitLayout(FPL.activateTab(layout, target));
+  try { sessionStorage.removeItem("setupStep"); } catch {}
   loadStatus();
 }
 
@@ -1247,7 +1287,7 @@ function stepHtml(step) {
       <p>FreePoster uses ffmpeg to convert each video into the format every platform accepts.</p>
       <p>${tool("ffmpeg", settings.tools.ffmpeg)}<br>${tool("ffprobe", settings.tools.ffprobe)}</p>
       ${missing ? `<p>Install ffmpeg (on Windows, run <code>winget install Gyan.FFmpeg</code> or download a build from ${ext("https://www.gyan.dev/ffmpeg/builds/", "gyan.dev")}) and restart FreePoster, or enter where the programs are:</p>` : ""}
-      <p>Titles and captions are written by the AI providers you connect under <strong>AI Providers</strong> on the main screen: Claude, ChatGPT, Google AI, GitHub Copilot, Cursor, Grok or Muse Code on the plan you already pay for, or OpenRouter, paid per use. Optional: without one, a blank caption becomes <code>#fyp</code>.</p>
+      <p>Titles and captions are written by the AI providers you connect in the <strong>AI Providers</strong> tab: Claude, ChatGPT, Google AI, GitHub Copilot, Cursor, Grok or Muse Code on the plan you already pay for, or OpenRouter, paid per use. Optional: without one, a blank caption becomes <code>#fyp</code>.</p>
       <details ${missing ? "open" : ""}><summary>Program locations</summary><div class="grid2">
         ${field("FFMPEG_PATH", "ffmpeg", "Blank uses ffmpeg from PATH; or the full path to ffmpeg.exe")}
         ${field("FFPROBE_PATH", "ffprobe", "Blank uses ffprobe from PATH; or the full path to ffprobe.exe")}
@@ -1348,7 +1388,7 @@ function stepHtml(step) {
 
 function renderSetup() {
   const step = setupSteps()[stepIndex];
-  sessionStorage.setItem("setupStep", step.id);
+  try { sessionStorage.setItem("setupStep", step.id); } catch {}
   const last = stepIndex === setupSteps().length - 1;
   const skip = step.platform ? `I don't use ${SETUP_PLATFORMS[step.id].short}` : step.id === "drive" ? "I don't use Google Drive" : null;
   const skippable = step.id === "drive" ? !driveView?.folderId : step.platform && !settings.configured[step.id];
@@ -1361,7 +1401,7 @@ function renderSetup() {
       <button type="button" class="primary" data-nav="next">${last ? "Finish" : "Save & continue"}</button>
     </div>`;
   renderStepList();
-  if (step.id === "drive" && driveView) renderDrive(driveView);
+  if (step.id === "drive") { if (driveView) renderDrive(driveView); else void loadDrive(); }
   if (step.id === "production") { void loadProductionHealth(); void loadWangpModels(); void loadTelegram(); }
 }
 
@@ -1376,7 +1416,12 @@ function renderStepList() {
 
 async function saveStep() {
   const step = setupSteps()[stepIndex];
-  if (step.id === "drive") return; // the folder form saves itself
+  if (step.id === "drive") {
+    // Finish/Continue also saves a folder link that was typed but not yet saved with the form's own Save.
+    const typed = $("driveFolder")?.value.trim();
+    if (typed && typed !== (driveView?.folderUrl ?? "")) await saveDrive({ throwOnError: true });
+    return;
+  }
   const values = {};
   for (const input of $("stepBody").querySelectorAll("[data-key]")) values[input.dataset.key] = input.value;
   const prefs = {};
@@ -1583,7 +1628,10 @@ async function loadReviews() {
   const grew = reviewCount !== null && pending.length > reviewCount;
   reviewCount = pending.length;
   setTabBadge("reviews", pending.length);
-  if (grew && layout.areas[FPL.areaOf(layout, "reviews")].active !== "reviews") pulseTab("reviews");
+  if (grew && !visibleTabs(layout).includes("reviews")) { // never reveals or opens anything
+    const holder = collapsedHolder();
+    if (holder) pulseToggle(holder); else pulseTab("reviews");
+  }
   $("reviews").innerHTML = !pending.length ? `<div class="muted">Nothing waiting for review.</div>` : pending.map((r) => `
     <div class="review" data-review="${r.id}">
       <div><strong>${esc(r.label)}</strong>${r.duration_sec ? ` <span class="muted">· ${r.duration_sec.toFixed(1)} s</span>` : ""}</div>
@@ -1715,9 +1763,7 @@ document.addEventListener("click", (e) => {
 $("workspace").addEventListener("click", (e) => {
   const b = e.target.closest(".tabstrip button[data-tab]");
   if (!b) return;
-  if (b.dataset.tab === "setup" && !$("setup").hidden) return;
-  if (b.dataset.tab === "setup") openSetup(sessionStorage.getItem("setupStep") ?? undefined);
-  else revealTab(b.dataset.tab);
+  revealTab(b.dataset.tab);
 });
 for (const a of ["left", "bottom", "right"]) {
   $("toggle" + a[0].toUpperCase() + a.slice(1)).addEventListener("click", () => commitLayout(FPL.setCollapsed(layout, a, !layout.areas[a].collapsed)));
@@ -1768,7 +1814,10 @@ wsEl.addEventListener("dragstart", (e) => {
   e.dataTransfer.effectAllowed = "move";
   document.body.classList.add("dragging-tab");
 });
-wsEl.addEventListener("dragend", () => { clearDropUi(); dragTab = null; });
+// on document: applyLayout can remove the source button mid-drag, and its dragend then never reaches wsEl
+const endTabDrag = () => { if (dragTab) { clearDropUi(); dragTab = null; } };
+document.addEventListener("dragend", endTabDrag);
+document.addEventListener("drop", () => setTimeout(endTabDrag)); // after the area's own drop handler has used dragTab
 wsEl.addEventListener("dragover", (e) => {
   if (!hasTab(e)) return;
   const strip = e.target.closest(".tabstrip");
@@ -1812,6 +1861,7 @@ function previewLayout() {
   ws.style.setProperty("--left-w", layout.areas.left.size + "px");
   ws.style.setProperty("--right-w", layout.areas.right.size + "px");
   ws.style.setProperty("--bottom-h", layout.areas.bottom.size + "px");
+  syncToggleBadge();
 }
 let sashDragging = false;
 document.querySelectorAll(".sash").forEach((sash) => {
@@ -1863,8 +1913,10 @@ window.addEventListener("resize", () => {
   if (resizeRaf) return;
   resizeRaf = requestAnimationFrame(() => {
     resizeRaf = 0;
-    if (sashDragging) return; // the drag clamps once when it ends
-    const next = FPL.clampSizes(layout, workspaceSize());
+    if (sashDragging || dragTab) return; // a sash drag clamps once when it ends; a tab drag must keep its source button
+    const ws = workspaceSize();
+    if (!ws.width || !ws.height) return; // minimized: clamping to nothing would wipe the saved sizes
+    const next = FPL.clampSizes(layout, ws);
     if (JSON.stringify(next) !== JSON.stringify(layout)) commitLayout(next);
   });
 });
@@ -1982,7 +2034,7 @@ async function submit(allowDuplicate = false) {
     const writing = !fd.get("caption").trim() ? " Your AI provider is writing its caption first." : "";
     banner("ok", (scheduledAt
       ? `Scheduled for ${new Date(scheduledAt).toLocaleString()}. It's listed under Upcoming, where you can change the time or cancel it.`
-      : "Queued. Each platform's status updates below.") + writing);
+      : "Queued. Each platform's status updates under Posts.") + writing);
     $("form").reset(); $("preview").style.display = "none"; videoDuration = null; checkDuration();
     $("editBox").hidden = true; resetEdit();
     $("tiktokBox").style.display = "none";
@@ -2272,12 +2324,16 @@ function renderDrive(v) {
     <div class="actions"><button type="button" id="driveSave">Save</button><button type="button" id="driveDisconnect">Disconnect</button></div>`;
 }
 
-async function saveDrive() {
+async function saveDrive({ throwOnError = false } = {}) {
   banner();
   const body = { folder: $("driveFolder").value };
   if (!body.folder.trim()) delete body.folder;
   const res = await fetch("/api/drive", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-  if (!res.ok) return banner("err", (await res.json()).error);
+  if (!res.ok) {
+    const message = (await res.json()).error;
+    if (throwOnError) throw new Error(message); // the wizard shows it in #setupError
+    return banner("err", message);
+  }
   document.activeElement?.blur();
   banner("ok", "Saved. FreePoster checks the folder every couple of minutes while it's running.");
   loadDrive();
@@ -2296,16 +2352,18 @@ function renderDriveFiles(files, watching) {
   driveFilesShown = files;
   driveWatching = watching;
   $("driveSync").hidden = !watching;
+  const err = driveView?.error
+    ? `<div class="banner err" style="margin:0 0 10px">${esc(driveView.error)} ${driveView.connected ? `<a href="/connect/drive">Reconnect</a>` : `<a href="#" data-setup="drive">Fix it in Setup</a>`}</div>` : "";
   if (!files.length) {
-    $("driveFiles").innerHTML = watching
+    $("driveFiles").innerHTML = err + (watching
       ? `<div class="muted">No videos from your Drive folder yet.</div>`
-      : `<div class="muted">No Drive folder set yet. <a href="#" class="link" data-setup="drive">Choose one in Setup</a>.</div>`;
+      : `<div class="muted">No Drive folder set yet. <a href="#" class="link" data-setup="drive">Choose one in Setup</a>.</div>`);
     return;
   }
   const pages = Math.ceil(files.length / drivePageSize);
   drivePage = Math.min(drivePage, pages - 1); // stays put as videos arrive; only pulls back if the list shrank
   const when = (ms) => new Date(ms).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-  $("driveFiles").innerHTML = files.slice(drivePage * drivePageSize, (drivePage + 1) * drivePageSize).map((f) => `
+  $("driveFiles").innerHTML = err + files.slice(drivePage * drivePageSize, (drivePage + 1) * drivePageSize).map((f) => `
     <div class="dfile">
       <div class="drow">
         <strong class="dname" title="${esc(f.name)}">${esc(f.name)}</strong><span class="state ${esc(f.state)}">${DRIVE_STATE[f.state] ?? esc(f.state)}</span>
@@ -2347,6 +2405,7 @@ if (params.size) history.replaceState(null, "", "/");
 // ---- Editing Styles tab: each style with its thumbnail and sample, which one is the default, and adding new ones ----
 
 function renderStyles() {
+  if (!status.editingStyles) return; // status not loaded yet; loadStatus redraws
   const many = status.editingStyles.length > 1;
   const steps = status.styleSteps;
   $("stylesBody").innerHTML = status.editingStyles.map((s) => `
@@ -2977,8 +3036,12 @@ $("anDetail").addEventListener("change", (e) => {
     if (!input.hidden) input.focus();
   }
 });
-let anResize;
-window.addEventListener("resize", () => { clearTimeout(anResize); anResize = setTimeout(anDrawCharts, 150); });
+// Charts are drawn at the width they have, so redraw whenever the panel's width changes (window, sash, or a move to another area).
+let anResizeRaf = 0;
+new ResizeObserver(() => {
+  if (anResizeRaf) return;
+  anResizeRaf = requestAnimationFrame(() => { anResizeRaf = 0; anDrawCharts(); });
+}).observe($("analytics"));
 // Numbers arrive as the poller reads them; the list keeps up while it's showing (the open detail isn't redrawn under an edit).
 setInterval(() => { if (!$("analytics").hidden) loadAnalytics(); }, 60000);
 
@@ -3667,7 +3730,8 @@ loadStatus().then(() => {
   $("quit").hidden = !status.desktop;
   for (const el of document.querySelectorAll(".desktop-only")) el.hidden = !status.desktop;
   // First run, or back from a platform's sign-in page during setup.
-  const resume = sessionStorage.getItem("setupStep");
+  let resume = null;
+  try { resume = sessionStorage.getItem("setupStep"); } catch {}
   if (!status.setupComplete) {
     // A side area is too narrow for the wizard: give Setup's area at least 480px on first run.
     const where = FPL.areaOf(layout, "setup");
@@ -3675,7 +3739,10 @@ loadStatus().then(() => {
       commitLayout(FPL.resizeArea(layout, where, 480, workspaceSize()));
     }
   }
-  if (!status.setupComplete || resume) openSetup(resume || "redirect");
+  const opening = !status.setupComplete || resume;
+  if (opening) openSetup(resume || "redirect");
+  // Tabs already on screen at startup load now that status is in (Setup is drawn by openSetup above, or on demand).
+  for (const id of visibleTabs(layout)) if (!(opening && id === "setup")) onTabShown(id);
   loadDrive();
   setInterval(loadDrive, 5000);
 });
@@ -3885,9 +3952,13 @@ setInterval(() => { if (!aiBusy.size && !$("aiBody").contains(document.activeEle
 }
 
 // Start last, so every tab's loader can use the state declared above.
-layout = FPL.clampSizes(FPL.normalizeLayout(readSaved()), workspaceSize());
+{
+  const ws = workspaceSize();
+  layout = FPL.normalizeLayout(readSaved());
+  if (ws.width && ws.height) layout = FPL.clampSizes(layout, ws);
+}
 applyLayout();
-for (const id of visibleTabs(layout)) onTabShown(id);
+// the visible tabs' loaders run once status is in (see loadStatus().then above)
 </script>
 </body>
 </html>
