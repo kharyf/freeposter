@@ -133,3 +133,11 @@ test("setCollapsed ignores top and never mutates", () => {
   L.resizeArea(before, "left", 10, ws);
   assert.deepEqual(j(before), snap);
 });
+
+test("moveTab within a single-tab top is a no-op, not null", () => {
+  let t = d();
+  for (const id of ["reviews", "analytics", "campaigns", "calendar"]) t = L.moveTab(t, id, "left");
+  const m = L.moveTab(t, "styles", "top", 0);
+  assert.notEqual(m, null);
+  assert.deepEqual(j(m), j(t));
+});

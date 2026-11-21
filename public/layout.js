@@ -79,7 +79,7 @@
     var src = out.areas[from];
     var at = src.tabs.indexOf(id);
     src.tabs.splice(at, 1);
-    if (from === "top" && !src.tabs.length) return null;
+    if (from === "top" && toArea !== "top" && !src.tabs.length) return null;
     if (from !== toArea && src.active === id) {
       src.active = src.tabs.length ? (src.tabs[at] !== undefined ? src.tabs[at] : src.tabs[src.tabs.length - 1]) : null;
     }
