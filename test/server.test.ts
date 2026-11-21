@@ -53,3 +53,11 @@ test("upload → render → publish → history, with the duplicate guard", asyn
 
   await app.close();
 });
+
+test("GET /layout.js serves the layout model as javascript", async () => {
+  const app = buildServer(newStore(), new Runner(newStore(), real, tmp()), real);
+  const res = await app.inject({ method: "GET", url: "/layout.js" });
+  assert.equal(res.statusCode, 200);
+  assert.match(String(res.headers["content-type"]), /javascript/);
+  assert.match(res.body, /FreePosterLayout/);
+});

@@ -124,6 +124,8 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
 
   const html = readFileSync(join(codeDir, "public", "index.html"), "utf8");
   app.get("/", (_req, reply) => reply.type("text/html").send(html));
+  const layoutJs = readFileSync(join(codeDir, "public", "layout.js"), "utf8");
+  app.get("/layout.js", (_req, reply) => reply.type("text/javascript").send(layoutJs));
 
   /** The editing styles as the window lists them. */
   const styleViews = () => {
