@@ -3532,9 +3532,12 @@ function cpRowFor(el) {
 const cpClamp = (v, [lo, hi]) => Math.min(hi, Math.max(lo, Math.round(v)));
 
 const CP_FLASH_MS = 1200;
+/** The selects whose change can alter other cells (the style and model lists, the Model column): the table redraws at once for them. */
+const CP_REDRAW_FIELDS = new Set(["origin", "style", "model"]);
 
 /** One cell changed: the row takes the new value (whole numbers kept in range), and the table's rules
- * (FreePosterRows.applyChange) say what else that changes. `key` ("<campaign>:<row>") names the row for the model highlight. */
+ * (FreePosterRows.applyChange) say what else that changes. `key` ("<campaign>:<row>") names the row for the model highlight.
+ * Returns whether other cells may have changed, so the table should redraw before the save comes back. */
 function cpSetField(row, field, el, key) {
   const v = el.value;
   let value;
@@ -3569,6 +3572,7 @@ function cpSetField(row, field, el, key) {
       document.getElementById(`cpR${cid}_${rid}_model`)?.classList.remove("cp-flash");
     }, CP_FLASH_MS + 20);
   }
+  return CP_REDRAW_FIELDS.has(field) || out.flash !== undefined;
 }
 
 async function cpLoadDrawer(id, kind) {
@@ -3690,8 +3694,10 @@ $("cpList").addEventListener("change", async (e) => {
   if (t.dataset.cpRow && t.dataset.cpField) {
     const { cid, row } = cpRowFor(t);
     if (!row) return;
-    cpSetField(row, t.dataset.cpField, t, t.dataset.cpRow);
-    keepFocus(renderCampaigns); // the row's other cells may follow the change (a model switched, the Model column shown)
+    // Redraw now only when other cells follow the change (a model switched, the Model column shown). A text or number
+    // field's change fires on blur, at the mousedown of the next click: redrawing then would replace the element under
+    // the pointer and swallow that click, so those wait for the save's redraw.
+    if (cpSetField(row, t.dataset.cpField, t, t.dataset.cpRow)) keepFocus(renderCampaigns);
     return cpSaveRows(cid);
   }
   if (t.dataset.cpAutorun) {
