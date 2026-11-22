@@ -61,7 +61,7 @@ export function agentTools(opts: {
     {
       name: "sync_looks",
       title: "Sync film looks",
-      description: "Tells FreePoster which film looks a producer offers (send the whole list each time: a look left out is hidden, not deleted). producer is \"lemo-opuscar\", whose look keys all start \"lemo:\" (lowercase letters, digits and dashes, e.g. lemo:impasto-oil). library_version is the producer's library version, for every look in the call. Returns how many looks were added, updated and hidden.",
+      description: "Tells FreePoster which Lemo styles a producer offers. FreePoster now reads the Lemo library on this computer itself, so you only need this if your library is somewhere else (send the whole list each time: a look left out is hidden, not deleted). producer is \"lemo-opuscar\", whose look keys all start \"lemo:\" (lowercase letters, digits and dashes, e.g. lemo:impasto-oil). library_version is the producer's library version, for every look in the call. Returns how many looks were added, updated and hidden.",
       inputSchema: {
         type: "object",
         properties: {
