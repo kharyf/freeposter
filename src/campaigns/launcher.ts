@@ -5,7 +5,7 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { lastWords, planEnv, type ProgramRun } from "../ai/cli.ts";
-import { CLAUDE_MODEL, findClaude } from "../claude.ts";
+import { findClaude } from "../claude.ts";
 import { codeDir, config, dataDir } from "../config.ts";
 import type { Store } from "../db.ts";
 import { LAUNCH_PREF, LEASE_MINUTES, openBriefs } from "./briefs.ts";
@@ -25,10 +25,10 @@ const BRIEF_TOOLS = ["list_briefs", "claim_brief", "renew_brief", "submit_brief"
 const ALLOWED_TOOLS = ["Bash", "Read", "Write", "Edit", "Skill", ...BRIEF_TOOLS.map((t) => `mcp__freeposter__${t}`)].join(",");
 
 /**
- * The model Claude Code runs on: the brief's (its `claude:` id, which the row's checks keep to a Claude model), or
- * the default for a brief with none (or one made before briefs had one).
+ * The `--model` Claude Code runs on: the brief's (its `claude:` id, which the row's checks keep to a Claude model).
+ * A brief with none (or one made before briefs had one) passes no flag, so Claude Code uses the user's own setting.
  */
-const claudeModel = (model: string | null | undefined) => (model?.startsWith("claude:") ? model.slice("claude:".length) : CLAUDE_MODEL);
+const modelArgs = (model: string | null | undefined): string[] => (model?.startsWith("claude:") ? ["--model", model.slice("claude:".length)] : []);
 
 /** Where the prompt ships: templates/, unpacked beside the bundle in the installed app. */
 const promptFile = () => join(codeDir.replace(/app\.asar$/, "app.asar.unpacked"), "templates", "agent", "brief-prompt.md");
@@ -153,7 +153,7 @@ export class AgentLauncher {
       this.writeMcpConfig(mcpConfig);
       const prompt = readFileSync(promptFile(), "utf8").replaceAll("{{task_id}}", String(task.id));
       const brief = (task.choices as unknown as TaskChoices).brief!;
-      const args = ["-p", prompt, "--mcp-config", mcpConfig, "--permission-mode", "acceptEdits", "--allowedTools", ALLOWED_TOOLS, "--model", claudeModel(brief.model)];
+      const args = ["-p", prompt, "--mcp-config", mcpConfig, "--permission-mode", "acceptEdits", "--allowedTools", ALLOWED_TOOLS, ...modelArgs(brief.model)];
       const deadline = brief.deadline;
       const done = await this.borrowGpu(async () => {
         startedAt = this.now();

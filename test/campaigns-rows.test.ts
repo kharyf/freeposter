@@ -168,3 +168,12 @@ test("rows saved before looks and models existed still parse", () => {
   assert.equal(r.model, null);
   assert.equal((r as Row & { look?: unknown }).look, undefined);
 });
+
+test("a style with a colon that isn't a Lemo style is refused like any unknown style", () => {
+  for (const style of ["lemo-opuscar:impasto", "looks:impasto"]) {
+    const r = parseRows([create({ style, model: "claude:claude-opus-5-5" })], vocab);
+    assert.equal(r.ok, false, style);
+    if (!r.ok) assert.deepEqual(r.problems, ['row 1: style must be one of the editing styles (Fancy) or a Lemo style like "lemo:ukiyo-e"']);
+  }
+  assert.equal(parseRows([create({ style: "lemo:impasto", model: "claude:claude-opus-5-5" })], vocab).ok, true);
+});

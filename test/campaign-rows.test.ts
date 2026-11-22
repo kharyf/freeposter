@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import vm from "node:vm";
+import { rowIssues as serverRowIssues, type Row } from "../src/campaigns/rows.ts";
+import type { Vocabulary } from "../src/campaigns/spec.ts";
 
 const g: any = { structuredClone };
 vm.runInNewContext(readFileSync("public/campaign-rows.js", "utf8"), g);
@@ -80,7 +82,7 @@ test("an Agent row offers only Lemo styles and only Claude models", () => {
   assert.deepEqual(out.map((x: any) => x.label), ["Lemo-Opuscar films (Claude): Explainer", "Lemo-Opuscar films (Claude): Painting"]);
   assert.equal(out.some((x: any) => x.options.some((o: any) => o.disabled)), false);
   const m = j(R.modelOptions(row({ origin: "agent", model: null }), ctx()));
-  assert.deepEqual(m[0].options, [{ value: "", label: "Default (Opus 5.5)" }]);
+  assert.deepEqual(m[0].options, [{ value: "", label: "Default (Claude Code's setting)" }]);
   assert.deepEqual(m.slice(1).map((x: any) => x.label), ["Claude"]);
 });
 
@@ -189,4 +191,70 @@ test("rowIssues: a Lemo style that left the catalogue, or no catalogue", () => {
 
 test("rowIssues: a Drive row's model is not checked", () => {
   assert.deepEqual(j(R.rowIssues(row({ origin: "drive", text: "f", model: "claude:gone" }), ctx())), []);
+});
+
+test("rowIssues: an empty catalogue is worded by whether Lemo-Opuscar is installed", () => {
+  const r = row({ style: "lemo:ukiyo-e", model: OPUS });
+  assert.deepEqual(j(R.rowIssues(r, ctx({ lemo: [], lemoInstalled: false }))), ["Lemo-Opuscar isn't installed on this computer"]);
+  assert.deepEqual(j(R.rowIssues(r, ctx({ lemo: [], lemoInstalled: true }))), ["No Lemo styles found"]);
+});
+
+test("rowIssues: a catalogue filled by sync_looks runs Lemo rows even when the library isn't on this computer", () => {
+  assert.deepEqual(j(R.rowIssues(row({ style: "lemo:ukiyo-e", model: OPUS }), ctx({ lemoInstalled: false }))), []);
+  assert.deepEqual(j(R.rowIssues(row({ origin: "agent", style: "lemo:ukiyo-e" }), ctx({ lemoInstalled: false }))), []);
+});
+
+test("switching an Agent row with a Lemo style and the default model to Create picks the default Claude model", () => {
+  const r = change(row({ origin: "agent", style: "lemo:ukiyo-e", model: null }), "origin", "create");
+  assert.equal(r.row.origin, "create");
+  assert.equal(r.row.model, OPUS);
+  assert.equal(r.flash, "model");
+  assert.deepEqual(j(R.rowIssues(r.row, ctx())), []);
+  const plain = change(row({ origin: "agent", style: "bold", model: null }), "origin", "create");
+  assert.equal(plain.row.model, null, "a FreePoster style keeps Use AI settings");
+  assert.equal(plain.flash, undefined);
+  const chosen = change(row({ origin: "agent", style: "lemo:ukiyo-e", model: "claude:claude-sonnet-5-5" }), "origin", "create");
+  assert.equal(chosen.row.model, "claude:claude-sonnet-5-5", "a chosen model is kept");
+  assert.equal(chosen.flash, undefined);
+  // The add-row path makes its new Create row through the same change (copying the last row's Lemo style, no model).
+  assert.equal(change(row({ style: "lemo:ukiyo-e", model: null }), "origin", "create").row.model, OPUS);
+});
+
+test("parity: the server's and the browser's rowIssues agree", () => {
+  // lemoInstalled false: the browser words an empty catalogue as the server does (it refines it only when installed).
+  const c = ctx({ lemoInstalled: false });
+  const vocab = (over: Partial<Vocabulary> = {}): Vocabulary => ({
+    styles: c.styles.map((s: any) => ({ id: s.id, token: s.id })), types: [], hooks: [], angles: [], ctas: [],
+    looks: c.lemo.map((l: any) => ({ key: l.key })), models: c.models.flatMap((p: any) => p.models.map((m: any) => m.id)), ...over,
+  });
+  const cases: [string, any, any?][] = [
+    ["runnable Create", row()],
+    ["runnable Create with Lemo", row({ style: "lemo:ukiyo-e", model: OPUS })],
+    ["runnable Agent", row({ origin: "agent", style: "lemo:impasto", model: null })],
+    ["runnable Drive", row({ origin: "drive", text: "clip", model: "claude:gone" })],
+    ["no days, no length", row({ days: [], sec: null })],
+    ["Drive with nothing", row({ origin: "drive", text: " ", time: null, sec: null })],
+    ["Lemo styles need a Claude model", row({ style: "lemo:ukiyo-e" })],
+    ["Lemo with a non-Claude model", row({ style: "lemo:ukiyo-e", model: "openrouter:anthropic/claude-x" })],
+    ["an Agent row needs a Lemo style", row({ origin: "agent", style: "bold" })],
+    ["an Agent row needs a Claude model", row({ origin: "agent", style: "lemo:ukiyo-e", model: "openrouter:anthropic/claude-x" })],
+    ["Drive videos can't use a Lemo style", row({ origin: "drive", text: "f", style: "lemo:ukiyo-e" })],
+    ["model isn't available", row({ model: "claude:gone" })],
+    ["no editing style", row({ origin: "agent", style: null })],
+    ["no longer in Lemo-Opuscar", row({ style: "lemo:nope", model: OPUS })],
+    ["not installed", row({ origin: "agent", style: "lemo:ukiyo-e" }), { lemo: [] }],
+    ["everything at once", row({ origin: "agent", style: "bold", model: "claude:gone", days: [], sec: null })],
+    ["Agent with a gone Lemo style and gone model", row({ origin: "agent", style: "lemo:nope", model: "claude:gone", days: [] })],
+  ];
+  const seen = new Set<string>();
+  for (const [name, r, over] of cases) {
+    const bc = over ? ctx({ lemoInstalled: false, ...over }) : c;
+    const v = vocab(over?.lemo ? { looks: over.lemo } : {});
+    const server = serverRowIssues(r as Row, v);
+    assert.deepEqual(j(R.rowIssues(r, bc)), server, name);
+    server.forEach((x) => seen.add(x));
+  }
+  for (const text of ["Lemo styles need a Claude model", "an Agent row needs a Lemo style", "an Agent row needs a Claude model",
+    "Drive videos can't use a Lemo style", "claude:gone isn't available; pick another model", "no editing style",
+    "lemo:nope is no longer in Lemo-Opuscar", "Lemo-Opuscar isn't installed on this computer"]) assert.ok(seen.has(text), `a case gives "${text}"`);
 });

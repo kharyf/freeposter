@@ -20,7 +20,7 @@ export interface Row {
    * lemo-opuscar skill makes the film in. Null only on an Agent row whose style hasn't been chosen.
    */
   style: string | null;
-  /** the AI model (`provider:model`) that writes it; null means the AI settings' choice (Create) or the default (Agent) */
+  /** the AI model (`provider:model`) that writes it; null means the AI settings' choice (Create) or Claude Code's own setting (Agent) */
   model: string | null;
   /** a video type id, or none */
   type: number | null;
@@ -109,7 +109,7 @@ export function parseRows(raw: unknown, vocab: Vocabulary): { ok: true; value: R
     // A Lemo style is checked against the catalogue by rowIssues: one that left it is kept, and reported.
     const style = (r.style === null || r.style === undefined) && agentRow ? null
       : typeof r.style !== "string" ? undefined
-      : LOOK_KEY.test(r.style) ? r.style
+      : isLemo(r.style) && LOOK_KEY.test(r.style) ? r.style
       : vocab.styles.find((s) => s.id.toLowerCase() === (r.style as string).toLowerCase())?.id;
     if (style === undefined) problem(`style must be one of the editing styles (${vocab.styles.map((s) => s.id).join(", ")}) or a Lemo style like "lemo:ukiyo-e"`);
     if (r.model !== null && !isModelId(r.model)) problem('model must be a model id like "claude:claude-opus-5-5", or null');
@@ -151,6 +151,8 @@ export function rowIssues(r: Row, vocab?: Vocabulary): string[] {
   if (r.origin === "create" && lemo && !isClaudeModel(r.model)) out.push("Lemo styles need a Claude model");
   if (r.origin === "drive" && lemo) out.push("Drive videos can't use a Lemo style");
   if (lemo && vocab?.looks) {
+    // An empty catalogue alone decides (one filled by sync_looks runs without the library on this computer). The
+    // server can't tell whether the library is installed, so it says so; the browser refines the wording when it is.
     if (!vocab.looks.length) out.push("Lemo-Opuscar isn't installed on this computer");
     else if (!vocab.looks.some((l) => l.key === r.style)) out.push(`${r.style} is no longer in Lemo-Opuscar`);
   }

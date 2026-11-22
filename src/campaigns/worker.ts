@@ -593,7 +593,7 @@ export class CampaignWorker {
     if (this.stopped(t)) return; // stopped: no new brief is offered
     const key = (c.instruction as MakeInstruction).look!;
     const look = lookByKey(this.store, key);
-    if (!look || look.hidden) return this.fail(t.id, `look ${key} is no longer in the catalogue`);
+    if (!look || look.hidden) return this.fail(t.id, `the Lemo style ${key} is no longer in Lemo-Opuscar`);
     const brief = buildBrief(this.store, c, look, postAt, now);
     const round = c.briefRound ?? 1;
     // Told first: a crash before the task is written tells it again next tick under the same key, never not at all.

@@ -52,16 +52,20 @@ export function readLemoLibrary(dir: string): { version: string; styles: LemoSty
   let names: string[];
   try { names = readdirSync(stylesDir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort(); } catch { return null; }
   const styles: LemoStyle[] = [];
+  const skip = (name: string, why: string) => console.error(`Lemo-Opuscar: skipped styles/${name}/style.json: ${why}`);
   for (const name of names) {
     if (name === "_template") continue;
     const raw = readText(join(stylesDir, name, "style.json"));
-    if (!raw) continue;
+    if (!raw) { skip(name, "missing, empty or unreadable"); continue; }
     let j: Record<string, unknown>;
-    try { j = JSON.parse(raw); } catch { continue; }
-    if (!j || typeof j !== "object" || typeof j.slug !== "string" || !SLUG.test(j.slug)) continue;
+    try { j = JSON.parse(raw); } catch { skip(name, "not valid JSON"); continue; }
+    if (!j || typeof j !== "object" || typeof j.slug !== "string" || !SLUG.test(j.slug)) { skip(name, "no valid slug"); continue; }
+    const key = `lemo:${j.slug}`;
+    // Folders are read in sorted order, so the first one with a slug wins; the catalogue can't hold a key twice.
+    if (styles.some((s) => s.key === key)) { skip(name, `${key} is already used by an earlier folder`); continue; }
     const title = typeof j.en === "string" && j.en.trim() ? j.en.trim() : j.slug;
     styles.push({
-      key: `lemo:${j.slug}`,
+      key,
       name: title.slice(0, NAME_MAX),
       description: typeof j.line === "string" ? j.line.slice(0, DESCRIPTION_MAX) : "",
       category: typeof j.category_en === "string" && j.category_en.trim() ? j.category_en.trim() : null,

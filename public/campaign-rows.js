@@ -66,7 +66,7 @@
   function modelOptions(row, ctx) {
     if (row.origin === "drive") return [];
     var agent = row.origin === "agent";
-    var groups = [{ label: "", options: [{ value: "", label: agent ? "Default (Opus 5.5)" : "Use AI settings" }] }];
+    var groups = [{ label: "", options: [{ value: "", label: agent ? "Default (Claude Code's setting)" : "Use AI settings" }] }];
     ctx.models.forEach(function (p) {
       if (agent && p.provider !== CLAUDE_GROUP) return;
       groups.push({ label: p.label, options: p.models.map(function (m) { return { value: m.id, label: m.name }; }) });
@@ -92,6 +92,11 @@
       next.model = ctx.defaultClaude;
       flash = "model";
     }
+    // A Create row's null model means the AI settings, which can't write a Lemo film: it gets the default Claude model.
+    if (field === "origin" && value === "create" && isLemo(next.style) && next.model === null) {
+      next.model = ctx.defaultClaude;
+      flash = "model";
+    }
     return flash ? { row: next, flash: flash } : { row: next };
   }
 
@@ -111,7 +116,9 @@
     if (r.origin === "create" && lemo && !isClaudeModel(r.model)) out.push("Lemo styles need a Claude model");
     if (r.origin === "drive" && lemo) out.push("Drive videos can't use a Lemo style");
     if (lemo) {
-      if (!ctx.lemoInstalled || !ctx.lemo.length) out.push("Lemo-Opuscar isn't installed on this computer");
+      // The catalogue alone decides, as on the server; whether the library is installed only picks the wording (the
+      // dropdown's). The server, which can't tell, always says "isn't installed".
+      if (!ctx.lemo.length) out.push(ctx.lemoInstalled ? "No Lemo styles found" : "Lemo-Opuscar isn't installed on this computer");
       else if (!ctx.lemo.some(function (l) { return l.key === r.style; })) out.push(r.style + " is no longer in Lemo-Opuscar");
     }
     if (r.origin !== "drive" && r.model !== null && ctx.models) {

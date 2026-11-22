@@ -1297,7 +1297,7 @@ test("a look gone from the catalogue before its brief fails the task", async () 
   await s.tick();
   const t = s.cs.task(s.task.id)!;
   assert.equal(t.state, "failed");
-  assert.equal(t.error, `look ${LOOK.key} is no longer in the catalogue`);
+  assert.equal(t.error, `the Lemo style ${LOOK.key} is no longer in Lemo-Opuscar`);
   assert.ok(s.store.eventByKey(`campaign.failed:${t.id}`));
   assert.equal(s.events("brief.requested").length, 0);
 });

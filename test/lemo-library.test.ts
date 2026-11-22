@@ -2,10 +2,16 @@ import "./isolated-home.ts";
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { test } from "node:test";
+import { afterEach, beforeEach, test } from "node:test";
 import { lemoLibraryDir, readLemoLibrary, syncLemoLibrary } from "../src/campaigns/lemo-library.ts";
 import { allLooks } from "../src/campaigns/looks.ts";
 import { newStore, tmp } from "./helpers.ts";
+
+// The fixture has broken styles, which are logged: the log is caught here so the test output stays clean.
+let logged: string[] = [];
+const realError = console.error;
+beforeEach(() => { logged = []; console.error = (...a: unknown[]) => { logged.push(a.map(String).join(" ")); }; });
+afterEach(() => { console.error = realError; });
 
 function fixture(opts: { git?: boolean; pkg?: boolean } = {}): string {
   const dir = tmp();
@@ -17,6 +23,7 @@ function fixture(opts: { git?: boolean; pkg?: boolean } = {}): string {
   style("manga-panels", JSON.stringify({ slug: "manga-panels", en: "Manga Panels", line: "Inked panels", needs: ["image-generation"] }));
   style("_template", JSON.stringify({ slug: "template", en: "Template" }));
   style("broken", "{not json");
+  style("no-slug", JSON.stringify({ en: "No Slug" }));
   if (opts.pkg !== false) writeFileSync(join(dir, "package.json"), JSON.stringify({ version: "2.0.0" }));
   if (opts.git !== false) {
     mkdirSync(join(dir, ".git", "refs", "heads"), { recursive: true });
@@ -70,4 +77,28 @@ test("a style removed from the library is hidden", () => {
 test("lemoLibraryDir prefers LEMO_OPUSCAR_HOME", () => {
   assert.equal(lemoLibraryDir({ LEMO_OPUSCAR_HOME: "/x/lemo" }, "/home/u"), "/x/lemo");
   assert.equal(lemoLibraryDir({}, join("/home", "u")), join("/home", "u", "lemo-opuscar"));
+});
+
+test("each style.json that can't be read is skipped and logged with its folder", () => {
+  const dir = fixture();
+  mkdirSync(join(dir, "styles", "empty"), { recursive: true }); // no style.json at all
+  const lib = readLemoLibrary(dir);
+  assert.deepEqual(lib?.styles.map((s) => s.key), ["lemo:impasto", "lemo:manga-panels"]);
+  assert.equal(logged.length, 3);
+  assert.ok(logged.some((l) => l.includes("broken") && l.includes("style.json")), logged.join(" | "));
+  assert.ok(logged.some((l) => l.includes("no-slug")), logged.join(" | "));
+  assert.ok(logged.some((l) => l.includes("empty")), logged.join(" | "));
+  assert.ok(!logged.some((l) => l.includes("_template")), "the template isn't a style, so it isn't logged");
+});
+
+test("two folders with the same slug keep the first, log the other, and the sync still runs", () => {
+  const dir = fixture();
+  mkdirSync(join(dir, "styles", "zz-impasto-copy"), { recursive: true });
+  writeFileSync(join(dir, "styles", "zz-impasto-copy", "style.json"), JSON.stringify({ slug: "impasto", en: "Impasto Copy" }));
+  const lib = readLemoLibrary(dir);
+  assert.deepEqual(lib?.styles.map((s) => s.key), ["lemo:impasto", "lemo:manga-panels"]);
+  assert.equal(lib?.styles[0].name, "Impasto Oil Painting");
+  assert.ok(logged.some((l) => l.includes("zz-impasto-copy") && l.includes("lemo:impasto")), logged.join(" | "));
+  const store = newStore();
+  assert.deepEqual(syncLemoLibrary(store, dir), { installed: true, added: 2, updated: 0, hidden: 0 });
 });

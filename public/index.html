@@ -3618,10 +3618,12 @@ $("cpList").addEventListener("click", async (e) => {
     const id = Number(add.dataset.cpAddrow);
     const rows = cpEditRows(id);
     const last = rows[rows.length - 1];
-    rows.push({
+    const fresh = {
       id: Math.max(0, ...rows.map((r) => r.id)) + 1, quantity: 1, hook: { pick: "random" }, angle: { pick: "random" }, cta: { pick: "random" },
       style: last?.style ?? cpDefaultStyle(), type: null, time: null, days: [], sec: 30, origin: "create", model: last?.model ?? null, text: "",
-    });
+    };
+    // Made a Create row by the same rule as switching one to Create: a Lemo style copied with no model gets the default Claude.
+    rows.push(FreePosterRows.applyChange(fresh, "origin", "create", cpCtx()).row);
     return cpSaveRows(id);
   }
   const del = e.target.closest("[data-cp-del]");
