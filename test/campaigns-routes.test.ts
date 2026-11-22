@@ -322,7 +322,8 @@ test("campaign vocabulary route lists visible looks", async () => {
   syncLooks(store, "lemo-opuscar", [{ key: "lemo:ukiyo-e", name: "Ukiyo-e", ...entry, needsImageGen: true }]);
   const res = await send("GET", "/api/campaigns");
   assert.equal(res.statusCode, 200, res.body);
-  assert.deepEqual(res.json().looks, [{ key: "lemo:ukiyo-e", name: "Ukiyo-e", producer: "lemo-opuscar", needsImageGen: true }]);
+  assert.deepEqual(res.json().looks, [{ key: "lemo:ukiyo-e", name: "Ukiyo-e", producer: "lemo-opuscar", needsImageGen: true, category: null, description: "" }]);
+  assert.equal(res.json().lemoInstalled, false); // the isolated test home has no library
 });
 
 test("saving an agent row with a null style round-trips", async () => {

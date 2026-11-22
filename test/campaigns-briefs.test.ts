@@ -9,7 +9,7 @@ import { makeVideo, newStore, tmp } from "./helpers.ts";
 
 const MIN = 60_000;
 const T0 = Date.UTC(2026, 10, 19, 8, 0);
-const look: Look = { key: "lemo:ukiyo-e", producer: "lemo-opuscar", name: "Ukiyo-e", description: "", needsImageGen: true, libraryVersion: "1", hidden: false };
+const look: Look = { key: "lemo:ukiyo-e", producer: "lemo-opuscar", name: "Ukiyo-e", description: "", needsImageGen: true, libraryVersion: "1", category: null, hidden: false };
 const ch = (cs: CampaignStore, id: number) => cs.task(id)!.choices as unknown as TaskChoices;
 const manifest = { look: "lemo:ukiyo-e", libraryVersion: "1" };
 /** Claims the brief and returns its claim token. */

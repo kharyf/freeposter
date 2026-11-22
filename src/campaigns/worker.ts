@@ -667,7 +667,7 @@ export class CampaignWorker {
   /** The look a brief already out was made in: it keeps it, even one hidden or gone since. */
   private briefLook(old: Brief): Look {
     return lookByKey(this.store, old.look)
-      ?? { key: old.look, producer: old.producer, name: old.look, description: "", needsImageGen: old.needsImageGen, libraryVersion: "", hidden: true };
+      ?? { key: old.look, producer: old.producer, name: old.look, description: "", needsImageGen: old.needsImageGen, libraryVersion: "", category: null, hidden: true };
   }
 
   /**

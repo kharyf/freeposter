@@ -14,6 +14,7 @@ import { EditWorker } from "./edit/worker.ts";
 import { sampleFrames } from "./media.ts";
 import { MetricsPoller } from "./analytics/poller.ts";
 import { backfillLabels, onPublished } from "./analytics/labels.ts";
+import { syncLemoLibrary } from "./campaigns/lemo-library.ts";
 import { evaluateRules } from "./campaigns/rules.ts";
 import { AgentLauncher, abortOnStop } from "./campaigns/launcher.ts";
 import { CampaignWorker } from "./campaigns/worker.ts";
@@ -67,6 +68,13 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
     if (added) console.log(`labels: ${added} published post${added === 1 ? "" : "s"} given bare labels`);
   } catch (err) {
     console.error(`labels: backfill: ${(err as Error).message}`);
+  }
+  // The Lemo-Opuscar film styles come from the library on this computer; a broken library never stops startup.
+  try {
+    const r = syncLemoLibrary(store);
+    if (r.installed) console.log(`lemo: ${r.added} styles added, ${r.updated} updated, ${r.hidden} hidden`);
+  } catch (err) {
+    console.error(`lemo: sync: ${(err as Error).message}`);
   }
   const editor = new EditWorker(store);
   const notifier = new Notifier(store);

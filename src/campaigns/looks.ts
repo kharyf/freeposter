@@ -13,6 +13,8 @@ export interface Look {
   name: string;
   description: string;
   needsImageGen: boolean;
+  /** the library's grouping (e.g. "Painting & Illustration"), when it has one */
+  category: string | null;
   libraryVersion: string;
   hidden: boolean;
 }
@@ -26,15 +28,23 @@ CREATE TABLE IF NOT EXISTS looks (
   needs_image_gen INTEGER NOT NULL,
   library_version TEXT NOT NULL,
   hidden INTEGER NOT NULL DEFAULT 0,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  category TEXT
 );`;
 
+/** Creates the table, and adds the category column to one made before it existed. */
+function ensureSchema(db: Store["db"]): void {
+  db.exec(SCHEMA);
+  const cols = db.prepare("PRAGMA table_info(looks)").all() as { name: string }[];
+  if (!cols.some((c) => c.name === "category")) db.exec("ALTER TABLE looks ADD COLUMN category TEXT");
+}
+
 interface LookRow {
-  key: string; producer: string; name: string; description: string; needs_image_gen: number; library_version: string; hidden: number;
+  key: string; producer: string; name: string; description: string; needs_image_gen: number; library_version: string; hidden: number; category: string | null;
 }
 const toLook = (r: LookRow): Look => ({
   key: r.key, producer: r.producer, name: r.name, description: r.description,
-  needsImageGen: r.needs_image_gen === 1, libraryVersion: r.library_version, hidden: r.hidden === 1,
+  needsImageGen: r.needs_image_gen === 1, libraryVersion: r.library_version, hidden: r.hidden === 1, category: r.category ?? null,
 });
 
 /**
@@ -42,7 +52,7 @@ const toLook = (r: LookRow): Look => ({
  * producer no longer lists become hidden.
  */
 export function syncLooks(
-  store: Store, producer: string, looks: Omit<Look, "producer" | "hidden">[],
+  store: Store, producer: string, looks: (Omit<Look, "producer" | "hidden" | "category"> & { category?: string | null })[],
 ): { added: number; updated: number; hidden: number } {
   const problems: string[] = [];
   const namespace = NAMESPACES[producer];
@@ -62,7 +72,7 @@ export function syncLooks(
   if (problems.length) throw new Error(problems.join("; "));
 
   const db = store.db;
-  db.exec(SCHEMA);
+  ensureSchema(db);
   const now = Date.now();
   let added = 0, updated = 0, hidden = 0;
   db.exec("BEGIN");
@@ -71,10 +81,10 @@ export function syncLooks(
       const was = db.prepare("SELECT producer FROM looks WHERE key = ?").get(l.key) as { producer: string } | undefined;
       if (was && was.producer !== producer) throw new Error(`look key ${l.key} belongs to ${was.producer}`);
       db.prepare(
-        `INSERT INTO looks (key, producer, name, description, needs_image_gen, library_version, hidden, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)
+        `INSERT INTO looks (key, producer, name, description, needs_image_gen, library_version, hidden, updated_at, category) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
          ON CONFLICT(key) DO UPDATE SET name = excluded.name, description = excluded.description, needs_image_gen = excluded.needs_image_gen,
-           library_version = excluded.library_version, hidden = 0, updated_at = excluded.updated_at`,
-      ).run(l.key, producer, l.name, l.description, l.needsImageGen ? 1 : 0, l.libraryVersion, now);
+           library_version = excluded.library_version, hidden = 0, updated_at = excluded.updated_at, category = excluded.category`,
+      ).run(l.key, producer, l.name, l.description, l.needsImageGen ? 1 : 0, l.libraryVersion, now, l.category ?? null);
       if (was) updated++; else added++;
     }
     const mine = db.prepare("SELECT key FROM looks WHERE producer = ? AND hidden = 0").all(producer) as { key: string }[];
@@ -93,14 +103,14 @@ export function syncLooks(
 
 /** The catalogue, hidden looks left out unless asked for. */
 export function allLooks(store: Store, opts: { includeHidden?: boolean } = {}): Look[] {
-  store.db.exec(SCHEMA);
+  ensureSchema(store.db);
   const rows = store.db.prepare(`SELECT * FROM looks ${opts.includeHidden ? "" : "WHERE hidden = 0"} ORDER BY key`).all() as unknown as LookRow[];
   return rows.map(toLook);
 }
 
 /** One look by key, hidden or not. */
 export function lookByKey(store: Store, key: string): Look | undefined {
-  store.db.exec(SCHEMA);
+  ensureSchema(store.db);
   const r = store.db.prepare("SELECT * FROM looks WHERE key = ?").get(key) as LookRow | undefined;
   return r && toLook(r);
 }

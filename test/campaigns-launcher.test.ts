@@ -14,7 +14,7 @@ import { newStore, tmp } from "./helpers.ts";
 
 const MIN = 60_000;
 const T0 = Date.UTC(2026, 10, 19, 8, 0);
-const look: Look = { key: "lemo:ukiyo-e", producer: "lemo-opuscar", name: "Ukiyo-e", description: "", needsImageGen: false, libraryVersion: "1", hidden: false };
+const look: Look = { key: "lemo:ukiyo-e", producer: "lemo-opuscar", name: "Ukiyo-e", description: "", needsImageGen: false, libraryVersion: "1", category: null, hidden: false };
 
 interface Call { cmd: string; args: string[]; opts?: Parameters<ProgramRun>[3] }
 

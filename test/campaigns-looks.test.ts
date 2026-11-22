@@ -24,3 +24,12 @@ test("refuses a bad key or another producer's namespace", () => {
   assert.throws(() => syncLooks(store, "lemo-opuscar", [look("wan:foo")]), /namespace/);
   assert.equal(allLooks(store, { includeHidden: true }).length, 0);
 });
+
+test("a look keeps its category, and a catalogue made before categories gains the column", () => {
+  const store = newStore();
+  store.db.exec("CREATE TABLE looks (key TEXT PRIMARY KEY, producer TEXT NOT NULL, name TEXT NOT NULL, description TEXT NOT NULL, needs_image_gen INTEGER NOT NULL, library_version TEXT NOT NULL, hidden INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL)");
+  store.db.exec("INSERT INTO looks VALUES ('lemo:old','lemo-opuscar','Old','d',0,'1',0,1)");
+  assert.equal(allLooks(store)[0].category, null);
+  syncLooks(store, "lemo-opuscar", [look("lemo:old", { category: "Painting" }), look("lemo:new")]);
+  assert.deepEqual(allLooks(store).map((l) => l.category), [null, "Painting"]);
+});

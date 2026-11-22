@@ -6,6 +6,7 @@ import { budget, todayUse } from "../ai/budget.ts";
 import type { Store } from "../db.ts";
 import { trustedRequest } from "../mcp.ts";
 import { campaignVocabulary, undoChange } from "./autorun.ts";
+import { lemoIsInstalled, lemoSyncedAt, syncLemoLibrary } from "./lemo-library.ts";
 import { allLooks } from "./looks.ts";
 import { parseRows } from "./rows.ts";
 import { CampaignStore, filesHeldBy, HIDDEN_CAP, releaseHeldFile, type Campaign, type LibraryKind, type TaskState } from "./store.ts";
@@ -77,12 +78,18 @@ function campaignRoutes(app: FastifyInstance, store: Store, worker?: CampaignWor
   /** Every campaign; with ?today=1 each carries its tasks for today too (the tab's Today panels, in one call). */
   app.get("/api/campaigns", async (req) => {
     const today = (req.query as { today?: string }).today === "1" ? dayKey(Date.now()) : null;
+    // The library on disk changes when the user updates it; looking again at most every 5 minutes keeps this cheap.
+    if (Date.now() - lemoSyncedAt() > 5 * 60_000) {
+      try { syncLemoLibrary(store); } catch (err) { console.error(`lemo: sync: ${(err as Error).message}`); }
+    }
     return {
       killed: cs.killed(),
       campaigns: cs.campaigns().map((c) => (today ? { ...view(c), today: cs.tasksOn(c.id, today) } : view(c))),
       ai: { ...todayUse(store), max: budget(store) },
+      /** whether the Lemo-Opuscar library was found on this computer at the last look */
+      lemoInstalled: lemoIsInstalled(),
       /** the looks an Agent row can pick (hidden ones left out) */
-      looks: allLooks(store).map((l) => ({ key: l.key, name: l.name, producer: l.producer, needsImageGen: l.needsImageGen })),
+      looks: allLooks(store).map((l) => ({ key: l.key, name: l.name, producer: l.producer, needsImageGen: l.needsImageGen, category: l.category, description: l.description })),
     };
   });
 
