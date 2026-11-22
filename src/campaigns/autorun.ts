@@ -5,6 +5,7 @@
 // approval", touch the kill switch, start or stop the campaign, or turn Autorun on or off. Every change needs a
 // reason, is logged whole (the campaign before and after) and notified, and can be undone while nothing has changed
 // since.
+import type { AiService } from "../ai/router.ts";
 import { AnalyticsStore } from "../analytics/store.ts";
 import type { Store } from "../db.ts";
 import { allStyles, defaultStyleId, styleToken } from "../edit/styles.ts";
@@ -47,8 +48,15 @@ const FORBIDDEN: Record<string, string> = {
   compiled: "campaigns are a table now: send rows (get_campaign shows them); the schedule is made from them",
 };
 
-/** What the compiler may name right now: the user's styles, video types and library. */
-export function campaignVocabulary(store: Store, cs: CampaignStore): Vocabulary {
+/** The models a row can pick right now (`provider:model`), or undefined with no AI service to ask. */
+export const modelIds = (ai: AiService | null | undefined): string[] | undefined =>
+  ai ? ai.modelChoices().flatMap((g) => g.models.map((m) => m.id)) : undefined;
+
+/**
+ * What the compiler may name right now: the user's styles, video types, library and Lemo styles, and the models a row
+ * may pick (without `models` a row's model isn't checked for being available).
+ */
+export function campaignVocabulary(store: Store, cs: CampaignStore, models?: string[]): Vocabulary {
   return {
     styles: allStyles(store).map((s) => ({ id: s.id, token: styleToken(s) })),
     defaultStyle: defaultStyleId(store),
@@ -57,6 +65,7 @@ export function campaignVocabulary(store: Store, cs: CampaignStore): Vocabulary 
     angles: cs.entries("angle"),
     ctas: cs.entries("cta"),
     looks: allLooks(store).map((l) => ({ key: l.key })),
+    ...(models ? { models } : {}),
   };
 }
 
@@ -180,7 +189,7 @@ export async function applyAgentChange(
   agent: string,
   reason: string,
   vocab: Vocabulary,
-): Promise<{ ok: true; changeId: number } | { ok: false; problems: string[] }> {
+): Promise<{ ok: true; changeId: number; warnings: string[] } | { ok: false; problems: string[] }> {
   const c = cs.campaign(campaignId);
   if (!c) return { ok: false, problems: [`no campaign ${campaignId}`] };
   const pre = precheck(c, change, reason);
@@ -198,10 +207,12 @@ export async function applyAgentChange(
 
   let rows: Row[] | null = null;
   let compiled: CompiledCampaign | null = null;
+  let warnings: string[] = [];
   if (change.rows !== undefined) {
     const r = parseRows(change.rows, withAdds);
     if (!r.ok) return { ok: false, problems: r.problems };
     rows = r.value;
+    warnings = r.warnings;
     compiled = compileRows(rows, withAdds);
   }
 
@@ -245,7 +256,7 @@ export async function applyAgentChange(
   queueEvent(cs.store, "campaign.changed", `campaign.changed:${changeId}`,
     { campaign_id: campaignId, change_id: changeId, agent, reason: reason.trim() },
     `Autorun (${agent}) changed campaign "${c.name}": ${what}. Reason: ${reason.trim()}`);
-  return { ok: true, changeId };
+  return { ok: true, changeId, warnings };
 }
 
 /** Whether anything still uses a library entry: a campaign's schedule, a campaign task, or a video's labels. */

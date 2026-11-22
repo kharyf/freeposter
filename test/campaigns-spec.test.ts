@@ -107,3 +107,22 @@ test("parseCompiled accepts look and refuses null style without one", () => {
   assert.equal(parseCompiled(doc({}, [make({ style: null, look: "lemo:nope" })]), v).ok, false);
   assert.equal(parseCompiled(doc({}, [make({ look: "lemo:ukiyo-e" })]), vocab).ok, false);
 });
+
+test("make accepts model and scripted", () => {
+  const v = { ...vocab, looks: [{ key: "lemo:ukiyo-e" }] } as Vocabulary;
+  const r = parseCompiled(doc({}, [make({ style: null, look: "lemo:ukiyo-e", scripted: true, model: "claude:claude-sonnet-5-5" })]), v);
+  assert.ok(r.ok, r.ok ? "" : r.problems.join("; "));
+  const ins = (r as any).value.days.tue[0];
+  assert.equal(ins.scripted, true);
+  assert.equal(ins.model, "claude:claude-sonnet-5-5");
+  const plain = parseCompiled(doc({}, [make({ model: "chatgpt:default" })]), vocab);
+  assert.ok(plain.ok && (plain.value.days.tue[0] as any).model === "chatgpt:default");
+  assert.ok(plain.ok && !("scripted" in plain.value.days.tue[0]));
+  for (const model of ["acme:x", "", 3, null]) assert.ok(bad(doc({}, [make({ model })])).some((p) => p.includes("days.tue[0].model")), String(model));
+  const notTrue = parseCompiled(doc({}, [make({ style: null, look: "lemo:ukiyo-e", scripted: false })]), v);
+  assert.ok(!notTrue.ok && notTrue.problems.some((p) => p.includes("days.tue[0].scripted")), "scripted is true or absent");
+});
+
+test("make refuses scripted without a look", () => {
+  assert.ok(bad(doc({}, [make({ scripted: true })])).some((p) => p.includes("days.tue[0].scripted")));
+});

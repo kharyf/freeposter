@@ -46,7 +46,7 @@ function setup() {
   });
   const row = (extra: Partial<Row> = {}): Row => ({
     id: 1, quantity: 1, hook: { pick: "named", id: hook }, angle: { pick: "random" }, cta: { pick: "named", id: cta }, style: "basic",
-    type: null, time: "09:00", days: ["tue"], sec: 30, origin: "create", look: null, text: "", ...extra,
+    type: null, time: "09:00", days: ["tue"], sec: 30, origin: "create", model: null, text: "", ...extra,
   });
   const send = (method: string, url: string, payload?: unknown) => app.inject({ method: method as "GET", url, headers: OWN, ...(payload === undefined ? {} : { payload: payload as object }) });
   return { store, cs, app, calls, hook, cta, campaignId, compiled, row, send };
@@ -326,14 +326,24 @@ test("campaign vocabulary route lists visible looks", async () => {
   assert.equal(res.json().lemoInstalled, false); // the isolated test home has no library
 });
 
-test("saving an agent row with a null style round-trips", async () => {
+test("saving an agent row with a Lemo style round-trips", async () => {
   const { send, store, campaignId, row } = setup();
   syncLooks(store, "lemo-opuscar", [{ key: "lemo:ukiyo-e", name: "Ukiyo-e", description: "", needsImageGen: false, libraryVersion: "1" }]);
-  const agent = row({ origin: "agent", look: "lemo:ukiyo-e", style: null, id: 2 });
+  const agent = row({ origin: "agent", style: "lemo:ukiyo-e", id: 2 });
   const res = await send("PUT", `/api/campaigns/${campaignId}/rows`, { rows: [agent] });
   assert.equal(res.statusCode, 200, res.body);
   const saved = (await send("GET", "/api/campaigns")).json().campaigns.find((c: { id: number }) => c.id === campaignId);
-  assert.equal(saved.rows[0].style, null);
+  assert.equal(saved.rows[0].style, "lemo:ukiyo-e");
   assert.equal(saved.rows[0].origin, "agent");
-  assert.equal(saved.rows[0].look, "lemo:ukiyo-e");
+  assert.equal(saved.rows[0].model, null);
+  assert.equal("look" in saved.rows[0], false);
+  assert.equal(saved.compiled.days.tue[0].look, "lemo:ukiyo-e");
+});
+
+test("an agent row with no style saves, and is left out of the schedule", async () => {
+  const { send, campaignId, row } = setup();
+  const res = await send("PUT", `/api/campaigns/${campaignId}/rows`, { rows: [row({ origin: "agent", style: null })] });
+  assert.equal(res.statusCode, 200, res.body);
+  assert.equal(res.json().rows[0].style, null);
+  assert.deepEqual(res.json().compiled.days.tue, []);
 });

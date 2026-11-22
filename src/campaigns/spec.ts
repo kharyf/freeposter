@@ -1,5 +1,6 @@
 // The compiled campaign: what a campaign's plain-English text becomes once the user confirms it. Types only here;
 // the strict parser lives with the format code.
+import { PROVIDER_IDS } from "../ai/providers.ts";
 import type { LibraryEntry } from "./store.ts";
 
 export type Day = "sun" | "mon" | "tue" | "wed" | "thu" | "fri" | "sat";
@@ -12,8 +13,12 @@ export interface MakeInstruction {
   count: number;
   /** the editing style; null only for an agent film, which names a look instead */
   style: string | null;
-  /** an agent film's look (a catalogue key): the lemo-opuscar skill makes the video instead of the script writer */
+  /** a Lemo film's look (a catalogue key): the lemo-opuscar skill makes the video instead of the script writer */
   look?: string;
+  /** the AI model (`provider:model`) that writes it; absent means the AI settings' choice (Create) or the default (Agent) */
+  model?: string;
+  /** a Create row's Lemo film: FreePoster's script writer writes the script the Lemo film is made from */
+  scripted?: true;
   /** target length in seconds ("30 second ads"), or null/absent to let the script decide */
   sec?: number | null;
   hook: Pick;
@@ -75,7 +80,14 @@ export interface Vocabulary {
   ctas: LibraryEntry[];
   /** the looks catalogue an agent row may name; absent means none */
   looks?: { key: string }[];
+  /** the models (`provider:model`) that can be picked right now; absent means they aren't checked */
+  models?: string[];
 }
+
+const MODEL_ID = /^[a-z]+:\S{1,200}$/;
+/** A model id written `provider:model`, of a provider FreePoster knows. */
+export const isModelId = (v: unknown): v is string =>
+  typeof v === "string" && MODEL_ID.test(v) && (PROVIDER_IDS as readonly string[]).includes(v.slice(0, v.indexOf(":")));
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -153,7 +165,7 @@ export function parseCompiled(raw: unknown, vocab: Vocabulary): { ok: true; valu
   const instruction = (o: unknown, where: string): MakeInstruction | PostInstruction | null => {
     if (!isObj(o)) { problem(`${where} must be an object`); return null; }
     if (o.kind === "make") {
-      only(o, ["kind", "count", "style", "look", "sec", "hook", "angle", "cta", "types", "post", "source", "instructions", "row"], where);
+      only(o, ["kind", "count", "style", "look", "model", "scripted", "sec", "hook", "angle", "cta", "types", "post", "source", "instructions", "row"], where);
       if (!intIn(o.count, 1, 20)) problem(`${where}.count must be a whole number from 1 to 20`);
       let post: { at: string } | null = null;
       if (o.post !== null) {
@@ -174,6 +186,15 @@ export function parseCompiled(raw: unknown, vocab: Vocabulary): { ok: true; valu
         types: types(o.types, `${where}.types`), post, source: source(o, where),
       };
       if (look !== undefined) out.look = look;
+      if (o.model !== undefined) {
+        if (!isModelId(o.model)) problem(`${where}.model must be a model id like "claude:claude-opus-5-5"`);
+        else out.model = o.model;
+      }
+      if (o.scripted !== undefined) {
+        if (o.scripted !== true) problem(`${where}.scripted must be true, or left out`);
+        else if (o.look === undefined) problem(`${where}.scripted needs a look`);
+        else out.scripted = true;
+      }
       const sec = targetSec(o.sec, `${where}.sec`);
       if (sec !== undefined) out.sec = sec;
       if (o.instructions !== undefined) {

@@ -5,7 +5,7 @@ import { accountSets } from "../accounts.ts";
 import { budget, todayUse } from "../ai/budget.ts";
 import type { Store } from "../db.ts";
 import { trustedRequest } from "../mcp.ts";
-import { campaignVocabulary, undoChange } from "./autorun.ts";
+import { campaignVocabulary, modelIds, undoChange } from "./autorun.ts";
 import { lemoIsInstalled, lemoSyncedAt, syncLemoLibrary } from "./lemo-library.ts";
 import { allLooks } from "./looks.ts";
 import { parseRows } from "./rows.ts";
@@ -107,7 +107,7 @@ function campaignRoutes(app: FastifyInstance, store: Store, worker?: CampaignWor
   app.put("/api/campaigns/:id/rows", async (req, reply) => {
     const c = campaignOf(req.params, reply);
     if (!c) return;
-    const r = parseRows(bodyOf(req).rows, campaignVocabulary(store, cs));
+    const r = parseRows(bodyOf(req).rows, campaignVocabulary(store, cs, modelIds(worker?.ai)));
     if (!r.ok) return bad(reply, "the table couldn't be saved", r.problems);
     cs.setRows(c.id, r.value);
     return view(cs.campaign(c.id)!);

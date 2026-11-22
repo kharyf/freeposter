@@ -1,8 +1,9 @@
 // The campaign table: what the Campaigns tab edits (and an Autorun agent sends), one row per kind of video. Rows
 // compile into the day-by-day schedule the worker runs. A row the table can hold but can't run yet (no days ticked,
-// a Drive row with no file name or time, a Create row with no length) is kept as it is and left out of the schedule.
+// a Drive row with no file name or time, a Create row with no length, a Lemo style with no Claude model to write it) is
+// kept as it is and left out of the schedule.
 import { LOOK_KEY } from "./looks.ts";
-import { DAYS, type CompiledCampaign, type Day, type MakeInstruction, type PostInstruction, type Vocabulary } from "./spec.ts";
+import { DAYS, isModelId, type CompiledCampaign, type Day, type MakeInstruction, type PostInstruction, type Vocabulary } from "./spec.ts";
 
 export type RowPick = { pick: "random" } | { pick: "best" } | { pick: "named"; id: number };
 
@@ -14,8 +15,13 @@ export interface Row {
   hook: RowPick;
   angle: RowPick;
   cta: RowPick;
-  /** the editing style id; null only for an Agent row, which has a look instead */
+  /**
+   * The editing style: a FreePoster style id, or a Lemo style (a looks catalogue key like "lemo:ukiyo-e"), which the
+   * lemo-opuscar skill makes the film in. Null only on an Agent row whose style hasn't been chosen.
+   */
   style: string | null;
+  /** the AI model (`provider:model`) that writes it; null means the AI settings' choice (Create) or the default (Agent) */
+  model: string | null;
   /** a video type id, or none */
   type: number | null;
   /** 24-hour "HH:MM" it posts at, or null: a Create video made and kept, not posted */
@@ -24,8 +30,6 @@ export interface Row {
   /** seconds: a Create video's length; a Drive row's, recorded for analytics. Null until it's filled in. */
   sec: number | null;
   origin: "create" | "drive" | "agent";
-  /** Agent: the looks catalogue key the film is made in. Null for every other origin. */
-  look: string | null;
   /** Drive: the file name (the `{name}` part of the Drive filename). Create and Agent: instructions for the script writer or the agent. */
   text: string;
 }
@@ -40,19 +44,45 @@ export const ROW_INSTRUCTION_BASE = 100_000;
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
-const KEYS = ["id", "quantity", "hook", "angle", "cta", "style", "type", "time", "days", "sec", "origin", "look", "text"];
+const KEYS = ["id", "quantity", "hook", "angle", "cta", "style", "model", "type", "time", "days", "sec", "origin", "text"];
 
-/** The strict check of a table. Unknown fields are refused; every problem is collected. On success, a normalized copy. */
-export function parseRows(raw: unknown, vocab: Vocabulary): { ok: true; value: Row[] } | { ok: false; problems: string[] } {
+/** A Lemo style (a looks catalogue key), not a FreePoster editing style id (which never contains ":"). */
+export const isLemo = (style: string | null): boolean => style !== null && style.startsWith("lemo:");
+/** A Claude model run by the Claude program (an OpenRouter "anthropic/..." model doesn't count). */
+export const isClaudeModel = (model: string | null): boolean => model !== null && model.startsWith("claude:");
+
+/**
+ * A row as saved before the Lemo style moved into `style`: an Agent row's `look` becomes its style (any FreePoster
+ * style it had is dropped), `look` goes, and a missing `model` is null. A row already in today's shape is unchanged.
+ */
+export function migrateRow(raw: Record<string, unknown>): Record<string, unknown> {
+  const { look, ...out } = raw;
+  if (raw.origin === "agent" && look !== undefined && look !== null) out.style = look;
+  if (out.model === undefined) out.model = null;
+  return out;
+}
+
+/**
+ * The strict check of a table. Unknown fields are refused; every problem is collected. On success, a normalized copy,
+ * with a warning for each row sent in the old shape (with "look").
+ */
+export function parseRows(raw: unknown, vocab: Vocabulary): { ok: true; value: Row[]; warnings: string[] } | { ok: false; problems: string[] } {
   const problems: string[] = [];
+  const warnings: string[] = [];
   if (!Array.isArray(raw)) return { ok: false, problems: ["rows must be a list"] };
   if (raw.length > ROWS_MAX) return { ok: false, problems: [`at most ${ROWS_MAX} rows`] };
   const ids = new Set<number>();
   const value: Row[] = [];
-  raw.forEach((r, i) => {
+  raw.forEach((sent, i) => {
     const at = `row ${i + 1}`;
     const problem = (msg: string) => problems.push(`${at}: ${msg}`);
-    if (!isObj(r)) return problem("must be an object");
+    if (!isObj(sent)) return problem("must be an object");
+    if ("look" in sent) {
+      warnings.push(`${at}: "look" is now part of "style"; send the Lemo style as style`);
+      if (sent.look !== null && (typeof sent.look !== "string" || !LOOK_KEY.test(sent.look))) problem('look must be a Lemo style like "lemo:ukiyo-e", or null');
+      else if (sent.look !== null && sent.origin !== "agent") problem("only an Agent row had a look; send the Lemo style as style");
+    }
+    const r = migrateRow(sent);
     for (const k of Object.keys(r)) if (!KEYS.includes(k)) problem(`unknown field "${k}"`);
     const int = (v: unknown, min: number, max: number) => typeof v === "number" && Number.isInteger(v) && v >= min && v <= max;
     if (!int(r.id, 1, 1_000_000_000)) problem("id must be a whole number from 1");
@@ -76,8 +106,13 @@ export function parseRows(raw: unknown, vocab: Vocabulary): { ok: true; value: R
     };
     const hook = pick(r.hook, "hook", vocab.hooks), angle = pick(r.angle, "angle", vocab.angles), cta = pick(r.cta, "cta", vocab.ctas);
     const agentRow = r.origin === "agent";
-    const style = (r.style === null || r.style === undefined) && agentRow ? null : typeof r.style === "string" ? vocab.styles.find((s) => s.id.toLowerCase() === (r.style as string).toLowerCase())?.id : undefined;
-    if (style === undefined) problem(`style must be one of the editing styles (${vocab.styles.map((s) => s.id).join(", ")})`);
+    // A Lemo style is checked against the catalogue by rowIssues: one that left it is kept, and reported.
+    const style = (r.style === null || r.style === undefined) && agentRow ? null
+      : typeof r.style !== "string" ? undefined
+      : LOOK_KEY.test(r.style) ? r.style
+      : vocab.styles.find((s) => s.id.toLowerCase() === (r.style as string).toLowerCase())?.id;
+    if (style === undefined) problem(`style must be one of the editing styles (${vocab.styles.map((s) => s.id).join(", ")}) or a Lemo style like "lemo:ukiyo-e"`);
+    if (r.model !== null && !isModelId(r.model)) problem('model must be a model id like "claude:claude-opus-5-5", or null');
     // Compacted results drop null and empty fields, so a missing one reads as null (text: "").
     if (r.type !== null && r.type !== undefined && !(typeof r.type === "number" && vocab.types.some((t) => t.id === r.type))) problem(`no video type with id ${String(r.type)}`);
     if (r.time !== null && r.time !== undefined && !(typeof r.time === "string" && TIME.test(r.time))) problem('time must be a 24-hour "HH:MM" time, or null');
@@ -86,24 +121,17 @@ export function parseRows(raw: unknown, vocab: Vocabulary): { ok: true; value: R
     else days = DAYS.filter((d) => (r.days as unknown[]).includes(d)); // Sunday first, each once
     if (r.sec !== null && r.sec !== undefined && !int(r.sec, SEC_MIN, SEC_MAX)) problem(`length must be a whole number of seconds from ${SEC_MIN} to ${SEC_MAX}, or null`);
     if (r.origin !== "create" && r.origin !== "drive" && r.origin !== "agent") problem('origin must be "create", "drive" or "agent"');
-    // Rows saved before looks existed have no look field; that reads as no look.
-    let look: string | null = null;
-    if (r.look !== undefined && r.look !== null) {
-      if (typeof r.look !== "string" || !LOOK_KEY.test(r.look)) problem('look must be a looks catalogue key like "lemo:ukiyo-e", or null');
-      else if (!agentRow) problem("only an Agent row has a look");
-      else look = r.look;
-    }
     let text = "";
     if (r.text === undefined) text = "";
     else if (typeof r.text !== "string" || r.text.length > ROW_TEXT_MAX) problem(`text must be text of at most ${ROW_TEXT_MAX} characters`);
     else text = r.text;
     if (r.origin === "drive" && text.includes("_")) problem("a Drive file name is the part before the first underscore, so it can't contain one");
     value.push({
-      id: r.id as number, quantity: r.quantity as number, hook, angle, cta, style: style === undefined ? String(r.style) : style, type: (r.type as number | null) ?? null,
-      time: (r.time as string | null) ?? null, days, sec: (r.sec as number | null) ?? null, origin: r.origin as Row["origin"], look, text,
+      id: r.id as number, quantity: r.quantity as number, hook, angle, cta, style: style === undefined ? String(r.style) : style, model: r.model as string | null,
+      type: (r.type as number | null) ?? null, time: (r.time as string | null) ?? null, days, sec: (r.sec as number | null) ?? null, origin: r.origin as Row["origin"], text,
     });
   });
-  return problems.length ? { ok: false, problems } : { ok: true, value };
+  return problems.length ? { ok: false, problems } : { ok: true, value, warnings };
 }
 
 /** Why a row isn't in the schedule yet; empty when it runs. */
@@ -113,13 +141,20 @@ export function rowIssues(r: Row, vocab?: Vocabulary): string[] {
   if (r.origin === "drive") {
     if (!r.text.trim()) out.push("no file name");
     if (r.time === null) out.push("a Drive video needs a time");
-  } else {
-    if (r.origin === "agent") {
-      if (r.look === null) out.push("no look");
-      else if (vocab && !(vocab.looks ?? []).some((l) => l.key === r.look)) out.push("look no longer in the catalogue");
-    }
-    if (r.sec === null) out.push("no length");
+  } else if (r.sec === null) out.push("no length");
+  const lemo = isLemo(r.style);
+  if (r.origin === "agent") {
+    if (r.style === null) out.push("no editing style");
+    else if (!lemo) out.push("an Agent row needs a Lemo style");
+    if (r.model !== null && !isClaudeModel(r.model)) out.push("an Agent row needs a Claude model");
   }
+  if (r.origin === "create" && lemo && !isClaudeModel(r.model)) out.push("Lemo styles need a Claude model");
+  if (r.origin === "drive" && lemo) out.push("Drive videos can't use a Lemo style");
+  if (lemo && vocab?.looks) {
+    if (!vocab.looks.length) out.push("Lemo-Opuscar isn't installed on this computer");
+    else if (!vocab.looks.some((l) => l.key === r.style)) out.push(`${r.style} is no longer in Lemo-Opuscar`);
+  }
+  if (r.origin !== "drive" && r.model !== null && vocab?.models && !vocab.models.includes(r.model)) out.push(`${r.model} isn't available; pick another model`);
   return out;
 }
 
@@ -134,7 +169,9 @@ export function compileRows(rows: Row[], vocab?: Vocabulary): CompiledCampaign {
     const types = r.type === null ? [] : [r.type];
     const ins: MakeInstruction | PostInstruction = r.origin !== "drive"
       ? {
-        kind: "make", count: r.quantity, style: r.style, ...(r.origin === "agent" && r.look !== null ? { look: r.look } : {}), sec: r.sec, hook: { ...r.hook }, angle: { ...r.angle }, cta: { ...r.cta }, types,
+        kind: "make", count: r.quantity, ...(isLemo(r.style) ? { style: null, look: r.style! } : { style: r.style }),
+        ...(isLemo(r.style) && r.origin === "create" ? { scripted: true as const } : {}), ...(r.model !== null ? { model: r.model } : {}),
+        sec: r.sec, hook: { ...r.hook }, angle: { ...r.angle }, cta: { ...r.cta }, types,
         post: r.time === null ? null : { at: r.time }, source, row: r.id, ...(r.text.trim() ? { instructions: r.text.trim() } : {}),
       }
       : {

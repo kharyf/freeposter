@@ -17,7 +17,7 @@ function setup(opts: { autorun?: boolean } = {}) {
   const type = cs.addType({ name: "Clip", color: "#f00" });
   const row = (extra: Partial<Row> = {}): Row => ({
     id: 1, quantity: 2, hook: { pick: "named", id: hook }, angle: { pick: "random" }, cta: { pick: "named", id: cta }, style: "basic",
-    type: null, time: "09:00", days: ["tue"], sec: 30, origin: "create", look: null, text: "", ...extra,
+    type: null, time: "09:00", days: ["tue"], sec: 30, origin: "create", model: null, text: "", ...extra,
   });
   const id = cs.create({ name: "Weekday Growth", text: "", accountSetId: null, defaultPostTimes: [], dailyPostCap: 100 });
   cs.setRows(id, [row()]);
@@ -240,4 +240,21 @@ test("a hook or angle an agent adds may not carry a link, however it's written",
   assert.equal(angle.ok, false, "nor in its name");
   assert.equal(s.cs.entries("hook").length, hooks);
   assert.equal((await s.change({ addEntries: [{ kind: "hook", name: "Plain", text: "Nobody tells you this" }] })).ok, true);
+});
+
+test("a row sent in the old shape is saved in the new one, with a warning", async () => {
+  const s = setup();
+  const { model: _model, ...old } = s.row({ quantity: 3 });
+  const r = await s.change({ rows: [{ ...old, look: null }] });
+  assert.ok(r.ok, r.ok ? "" : r.problems.join("; "));
+  assert.deepEqual(r.ok && r.warnings, ['row 1: "look" is now part of "style"; send the Lemo style as style']);
+  assert.equal(s.cs.campaign(s.id)!.rows[0].model, null);
+  const plain = await s.change({ rows: [s.row({ quantity: 4 })] });
+  assert.deepEqual(plain.ok && plain.warnings, []);
+});
+
+test("the vocabulary carries the models it's given, and none without", () => {
+  const s = setup();
+  assert.equal("models" in campaignVocabulary(s.store, s.cs), false);
+  assert.deepEqual(campaignVocabulary(s.store, s.cs, ["claude:claude-opus-5-5"]).models, ["claude:claude-opus-5-5"]);
 });

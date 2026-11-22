@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import type { Store } from "../db.ts";
 import type { DriveFileRecord } from "../types.ts";
-import { compileRows, type Row } from "./rows.ts";
+import { compileRows, isLemo, migrateRow, type Row } from "./rows.ts";
 import type { CompiledCampaign } from "./spec.ts";
 
 const SCHEMA = `
@@ -169,7 +169,7 @@ const toEntry = (r: any): LibraryEntry => ({
 });
 const toType = (r: any): VideoType => ({ id: r.id, name: r.name, color: r.color, autoPost: Boolean(r.auto_post), createdAt: r.created_at });
 const toCampaign = (r: any): Campaign => ({
-  id: r.id, name: r.name, rows: r.rows ? JSON.parse(r.rows) : [], text: r.text, textSha: r.text_sha, compiled: r.compiled ? JSON.parse(r.compiled) : null,
+  id: r.id, name: r.name, rows: r.rows ? (JSON.parse(r.rows) as Record<string, unknown>[]).map(migrateRow) as unknown as Row[] : [], text: r.text, textSha: r.text_sha, compiled: r.compiled ? JSON.parse(r.compiled) : null,
   compiledSha: r.compiled_sha, confirmedAt: r.confirmed_at, enabled: Boolean(r.enabled), autorun: Boolean(r.autorun),
   accountSetId: r.account_set_id, defaultPostTimes: JSON.parse(r.default_post_times), dailyPostCap: r.daily_post_cap,
   createdAt: r.created_at, updatedAt: r.updated_at,
@@ -314,6 +314,36 @@ export class CampaignStore {
         store.db.exec("COMMIT");
       } catch (err) {
         store.db.exec("ROLLBACK");
+        throw err;
+      }
+    }
+    this.migrateLooks();
+  }
+
+  /**
+   * Agent rows saved with a `look` hold it as their editing style now. Each campaign that still has one is saved in
+   * the new shape once, and the change is logged; a FreePoster edit such a row had is dropped (Lemo films aren't
+   * edited by FreePoster), and the log says so.
+   */
+  private migrateLooks() {
+    const saved = this.db.prepare(`SELECT id, rows FROM campaigns WHERE rows LIKE '%"look":"%'`).all() as { id: number; rows: string }[];
+    for (const { id, rows } of saved) {
+      const old = JSON.parse(rows) as Record<string, unknown>[];
+      if (!old.some((r) => r.look !== undefined && r.look !== null)) continue;
+      const notes = old.flatMap((r, i) =>
+        r.origin === "agent" && typeof r.look === "string" && typeof r.style === "string" && !isLemo(r.style)
+          ? [`Row ${i + 1}: Lemo films are no longer edited by FreePoster; its ${r.style} edit was removed.`] : []);
+      const before = this.campaign(id)!;
+      this.db.exec("BEGIN");
+      try {
+        this.setRows(id, old.map(migrateRow) as unknown as Row[]);
+        this.logChange({
+          campaignId: id, agent: "FreePoster", before: { ...before, rows: old }, after: this.campaign(id)!,
+          reason: ["Agent rows now hold their Lemo style as their editing style.", ...notes].join(" "),
+        });
+        this.db.exec("COMMIT");
+      } catch (err) {
+        this.db.exec("ROLLBACK");
         throw err;
       }
     }

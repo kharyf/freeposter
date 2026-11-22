@@ -3,7 +3,7 @@
 // agent may stop every campaign, none may start them again (only the window's Resume does).
 import type { Store } from "../db.ts";
 import type { ToolDef } from "../produce/mcp-tools.ts";
-import { applyAgentChange, campaignVocabulary, REASON_MAX, type AgentChange } from "./autorun.ts";
+import { applyAgentChange, campaignVocabulary, modelIds, REASON_MAX, type AgentChange } from "./autorun.ts";
 import { CampaignStore, type Campaign, type LibraryKind } from "./store.ts";
 import { campaignBrief, iso } from "./view.ts";
 import type { CampaignWorker } from "./worker.ts";
@@ -42,9 +42,9 @@ export function campaignTools(opts: {
   const apply = async (cid: number, change: AgentChange, reason: string) => {
     const campaigns = cs();
     campaign(cid);
-    const r = await applyAgentChange(campaigns, cid, change, opts.agent(), reason, campaignVocabulary(store, campaigns));
+    const r = await applyAgentChange(campaigns, cid, change, opts.agent(), reason, campaignVocabulary(store, campaigns, modelIds(opts.worker()?.ai)));
     if (!r.ok) throw fail(`refused: ${r.problems.join("; ")}`);
-    return r.changeId;
+    return r;
   };
 
   return [
@@ -83,7 +83,7 @@ export function campaignTools(opts: {
     {
       name: "update_campaign",
       title: "Change an Autorun campaign",
-      description: "Changes a campaign the user switched Autorun on for: its whole table, as get_campaign shows its rows (send every row, changed or not; a row left out is removed). Each row: id (a whole number, unique in the table; keep a row's id when changing it, use a new one for a new row), quantity (1-10 videos), hook / angle / cta ({\"pick\": \"random\"}, {\"pick\": \"best\"} or {\"pick\": \"named\", \"id\": <library id>}), style (an editing style id), type (a video type id or null), time (24-hour \"HH:MM\", or null: a Create video made and kept, not posted), days (any of sun, mon, tue, wed, thu, fri, sat), sec (length, 5-300 seconds), origin (\"create\": a generated video; text is extra instructions for its script; or \"drive\": a recorded Drive file; text is the file name, the part of its Drive filename before the first underscore; its hook, angle, cta and sec only label it for analytics) and text. Checked strictly. Only videos not yet made pick up the change: today's tasks already made keep what they were given, and undoing a change doesn't touch tasks made in between. It may only use CTAs, and types that post without approval, the campaign already uses, and never another campaign's own hooks or angles. reason is required and the user sees it; they can undo the change. The change is logged under the name your MCP client introduced itself with (advisory: FreePoster can't verify it).",
+      description: "Changes a campaign the user switched Autorun on for: its whole table, as get_campaign shows its rows (send every row, changed or not; a row left out is removed). Each row: id (a whole number, unique in the table; keep a row's id when changing it, use a new one for a new row), quantity (1-10 videos), hook / angle / cta ({\"pick\": \"random\"}, {\"pick\": \"best\"} or {\"pick\": \"named\", \"id\": <library id>}), style (an editing style id, or a Lemo style like \"lemo:ukiyo-e\"), model (the AI model that writes it, as \"provider:model\", or null for the default), type (a video type id or null), time (24-hour \"HH:MM\", or null: a Create video made and kept, not posted), days (any of sun, mon, tue, wed, thu, fri, sat), sec (length, 5-300 seconds), origin (\"create\": a generated video; text is extra instructions for its script; or \"drive\": a recorded Drive file; text is the file name, the part of its Drive filename before the first underscore; its hook, angle, cta and sec only label it for analytics) and text. Checked strictly. Only videos not yet made pick up the change: today's tasks already made keep what they were given, and undoing a change doesn't touch tasks made in between. It may only use CTAs, and types that post without approval, the campaign already uses, and never another campaign's own hooks or angles. reason is required and the user sees it; they can undo the change. The change is logged under the name your MCP client introduced itself with (advisory: FreePoster can't verify it).",
       inputSchema: {
         type: "object",
         properties: {
@@ -99,9 +99,9 @@ export function campaignTools(opts: {
         const cid = id(args);
         const reason = reasonOf(args);
         if (args.rows === undefined) throw fail("give rows: the campaign's whole new table");
-        const changeId = await apply(cid, { rows: args.rows }, reason);
+        const { changeId, warnings } = await apply(cid, { rows: args.rows }, reason);
         const c = campaign(cid);
-        return { change_id: changeId, campaign: { ...brief(c), rows: c.rows, compiled: c.compiled } };
+        return { change_id: changeId, ...(warnings.length ? { warnings } : {}), campaign: { ...brief(c), rows: c.rows, compiled: c.compiled } };
       },
     },
     {
@@ -142,7 +142,7 @@ export function campaignTools(opts: {
         const cid = id(args);
         const reason = reasonOf(args);
         const entry = { kind: args.kind, name: args.name, text: args.text, ...(args.keywords !== undefined ? { keywords: args.keywords } : {}) } as NonNullable<AgentChange["addEntries"]>[number];
-        const changeId = await apply(cid, { addEntries: [entry] }, reason);
+        const { changeId } = await apply(cid, { addEntries: [entry] }, reason);
         const added = (cs().change(changeId)?.after as { addedEntryIds?: number[] } | undefined)?.addedEntryIds?.[0] ?? null;
         return { change_id: changeId, entry_id: added };
       },

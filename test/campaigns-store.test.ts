@@ -120,3 +120,42 @@ test("heldNames: the lowercased post-line names of enabled campaigns, an edited 
   // An edit pauses a campaign but doesn't release what it holds: it holds by the schedule it last confirmed.
   assert.deepEqual([...heldNames(store)].sort(), ["gatekeeping", "launch", "unconfirmed"]);
 });
+
+const oldAgentRow = (over: Record<string, unknown> = {}) => ({
+  id: 1, quantity: 1, hook: { pick: "random" }, angle: { pick: "random" }, cta: { pick: "random" }, style: null, type: null, time: "18:00",
+  days: ["tue"], sec: 30, origin: "agent", look: "lemo:ukiyo-e", text: "", ...over,
+});
+const writeRawRows = (cs: CampaignStore, id: number, rows: unknown[]) => cs.db.prepare("UPDATE campaigns SET rows = ? WHERE id = ?").run(JSON.stringify(rows), id);
+
+test("the store returns old-shape rows migrated", () => {
+  const cs = new CampaignStore(newStore());
+  const id = mk(cs);
+  writeRawRows(cs, id, [oldAgentRow(), { ...oldAgentRow({ id: 2, origin: "create", style: "basic", look: null }) }]);
+  const [agent, create] = cs.campaign(id)!.rows;
+  assert.equal(agent.style, "lemo:ukiyo-e");
+  assert.equal(agent.model, null);
+  assert.equal("look" in agent, false);
+  assert.equal(create.style, "basic");
+  assert.equal("look" in create, false);
+});
+
+test("opening the store migrates old Agent rows once and logs the removed edit", () => {
+  const store = newStore();
+  let cs = new CampaignStore(store);
+  const id = mk(cs);
+  const untouched = mk(cs);
+  writeRawRows(cs, id, [oldAgentRow({ style: "basic" })]);
+  writeRawRows(cs, untouched, [oldAgentRow({ origin: "create", style: "basic", look: null })]);
+  cs = new CampaignStore(store);
+  const raw = JSON.parse((cs.db.prepare("SELECT rows FROM campaigns WHERE id = ?").get(id) as { rows: string }).rows);
+  assert.equal(raw[0].style, "lemo:ukiyo-e");
+  assert.equal("look" in raw[0], false);
+  assert.equal((cs.campaign(id)!.compiled!.days.tue[0] as any).look, "lemo:ukiyo-e", "its schedule is made again");
+  const logged = cs.changes(id);
+  assert.equal(logged.length, 1);
+  assert.equal(logged[0].agent, "FreePoster");
+  assert.match(logged[0].reason, /Row 1: Lemo films are no longer edited by FreePoster; its basic edit was removed/);
+  assert.equal(cs.changes(untouched).length, 0, "a campaign with no look in its rows is left alone");
+  cs = new CampaignStore(store);
+  assert.equal(cs.changes(id).length, 1, "a second open logs nothing new");
+});

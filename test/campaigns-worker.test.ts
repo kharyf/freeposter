@@ -754,7 +754,7 @@ test("a campaign task (and a rule task) waits for tomorrow's AI budget instead o
 
 const tableRow = (s: ReturnType<typeof setup>, extra: Partial<Row> = {}): Row => ({
   id: 1, quantity: 1, hook: { pick: "random" }, angle: { pick: "random" }, cta: { pick: "named", id: s.cta }, style: "basic",
-  type: null, time: "09:00", days: ["tue"], sec: 9, origin: "create", look: null, text: "", ...extra, // the stand-in AI's scripts run 9 seconds
+  type: null, time: "09:00", days: ["tue"], sec: 9, origin: "create", model: null, text: "", ...extra, // the stand-in AI's scripts run 9 seconds
 });
 const tableCampaign = (s: ReturnType<typeof setup>, rows: Row[], name = "Table") => {
   const id = s.cs.create({ name, text: "", accountSetId: null, defaultPostTimes: [], dailyPostCap: 100 });
@@ -857,11 +857,19 @@ const claimed = (cs: CampaignStore, id: number, holder: string, now: number) => 
   return r.token;
 };
 
-/** An Agent row on Tuesday at 18:00, 5 seconds long (clips[2] is 5 s), in the ukiyo-e look. */
-function agentSetup(extra: Partial<Row> = {}) {
+/**
+ * An Agent row on Tuesday at 18:00, 5 seconds long (clips[2] is 5 s), in the ukiyo-e look. `edit` gives its schedule
+ * a FreePoster style too, as a schedule saved before Lemo films stopped being edited could have.
+ */
+function agentSetup(extra: Partial<Row> = {}, edit?: string) {
   const s = setup();
   syncLooks(s.store, "lemo-opuscar", [LOOK]);
-  const id = tableCampaign(s, [tableRow(s, { origin: "agent", style: null, look: LOOK.key, time: "18:00", sec: 5, ...extra })]);
+  const id = tableCampaign(s, [tableRow(s, { origin: "agent", style: LOOK.key, time: "18:00", sec: 5, ...extra })]);
+  if (edit) {
+    const compiled = s.cs.campaign(id)!.compiled!;
+    (compiled.days.tue[0] as MakeInstruction).style = edit;
+    s.cs.confirm(id, compiled);
+  }
   s.worker.materialize();
   const [t] = s.cs.tasksOn(id, "2026-11-17");
   /** The brief is posted (12:00), claimed and delivered with a clip. */
@@ -1037,7 +1045,7 @@ test("a delivered film with no style goes straight to review as a file", async (
 });
 
 test("a delivered film with a style is edited first", async () => {
-  const s = agentSetup({ style: "basic" });
+  const s = agentSetup({}, "basic");
   await s.deliver();
   await s.tick();
   const t = s.cs.task(s.task.id)!;
@@ -1176,8 +1184,8 @@ test("a row whose look left the catalogue makes no task and sends no failure", a
   syncLooks(s.store, "lemo-opuscar", [LOOK]);
   syncLooks(s.store, "lemo-opuscar", []); // hidden
   const id = tableCampaign(s, [
-    tableRow(s, { id: 1, origin: "agent", style: null, look: LOOK.key, time: "18:00", sec: 5 }),
-    tableRow(s, { id: 2, origin: "agent", style: null, look: "lemo:never-synced", time: "19:00", sec: 5 }),
+    tableRow(s, { id: 1, origin: "agent", style: LOOK.key, time: "18:00", sec: 5 }),
+    tableRow(s, { id: 2, origin: "agent", style: "lemo:never-synced", time: "19:00", sec: 5 }),
   ]);
   assert.equal(s.worker.materialize(), 0);
   assert.deepEqual(s.cs.tasksOn(id, "2026-11-17"), []);
@@ -1286,7 +1294,7 @@ test("an agent's film with no style is reviewed under its look's name", async ()
   const s = setup();
   syncLooks(s.store, "lemo-opuscar", [LOOK]);
   const plain = s.cs.addEntry({ kind: "cta", name: "follow", text: "Follow for more" });
-  const id = tableCampaign(s, [tableRow(s, { origin: "agent", style: null, look: LOOK.key, time: "18:00", sec: 5, cta: { pick: "named", id: plain } })]);
+  const id = tableCampaign(s, [tableRow(s, { origin: "agent", style: LOOK.key, time: "18:00", sec: 5, cta: { pick: "named", id: plain } })]);
   s.worker.materialize();
   const [t] = s.cs.tasksOn(id, "2026-11-17");
   s.clock.now = at(2026, 11, 17, 12);
