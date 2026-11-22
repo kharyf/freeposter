@@ -3167,11 +3167,15 @@ function renderCampaigns() {
   $("cpKilled").innerHTML = cp.killed ? `<div class="cp-killed" role="status"><span>Campaigns are stopped. Nothing is made or posted for any campaign until you resume.</span>
     <button type="button" id="cpResume">Resume</button></div>` : "";
   renderCpLibrary();
+  // Each table keeps its sideways scroll across a redraw (the wide tables are read scrolled to the right).
+  const scrolled = {};
+  for (const w of $("cpList").querySelectorAll("[data-cp-table]")) scrolled[w.dataset.cpTable] = w.scrollLeft;
   $("cpList").innerHTML = cp.campaigns.length ? cp.campaigns.map(cpCardHtml).join("")
     : `<section><h2>No campaigns yet</h2><p class="muted" style="margin:0">Press <strong>New campaign</strong>, then add its videos with <strong>+</strong>:
       how each is made (Create, Agent, or a recorded Drive file) and with which model, how many, the hook, angle and CTA, the editing style
       (a FreePoster edit or a Lemo-Opuscar film), type, time and days, and length.
       Add hooks, angles and CTAs to the library above first to pick them by name.</p></section>`;
+  for (const w of $("cpList").querySelectorAll("[data-cp-table]")) if (scrolled[w.dataset.cpTable]) w.scrollLeft = scrolled[w.dataset.cpTable];
 }
 
 // ---- the library ----
@@ -3407,7 +3411,7 @@ function cpTableHtml(c) {
   const rows = cpRowsOf(c);
   const idle = rows.map((r, i) => [i, cpRowIssues(r)]).filter(([, x]) => x.length);
   const withModel = FreePosterRows.showModelColumn(rows); // every row Drive: nothing is made, so no model to choose
-  return `<div class="cp-table-wrap"><table class="cp-table"><thead><tr>
+  return `<div class="cp-table-wrap" data-cp-table="${c.id}"><table class="cp-table"><thead><tr>
       <th>Origin</th>${withModel ? "<th>Model</th>" : ""}<th>Quantity</th><th>Hook</th><th>Angle</th><th>CTA</th><th>Editing Style</th><th>Type</th><th>Time</th><th>Days</th><th>Length (s)</th><th>File Name / Instructions</th><th></th>
     </tr></thead><tbody>${rows.length ? rows.map((r) => cpRowHtml(c, r, withModel)).join("") : `<tr><td colspan="${withModel ? 13 : 12}" class="muted">No videos yet: press + to add one.</td></tr>`}</tbody></table></div>
     <div class="cp-add-row"><button type="button" data-cp-addrow="${c.id}" id="cpAdd${c.id}" title="Add Video" aria-label="Add Video">+</button></div>
@@ -3748,9 +3752,10 @@ $("cpNewOk").addEventListener("click", async (e) => {
   $(`cpAdd${r.body.id}`)?.focus();
 });
 // Today's counts move as videos are made and posted; keep up while the tab shows, but not under someone typing
-// in a field (library forms and the table's text are kept anyway; a half-typed number would be lost).
+// in a field (library forms and the table's text are kept anyway; a half-typed number would be lost) or choosing
+// from a dropdown (a redraw replaces the select, which closes its open list).
 setInterval(() => {
-  const typing = $("campaigns").contains(document.activeElement) && document.activeElement.matches("input:not([type=checkbox]):not([type=color]), textarea");
+  const typing = $("campaigns").contains(document.activeElement) && document.activeElement.matches("input:not([type=checkbox]):not([type=color]), textarea, select");
   if (!$("campaigns").hidden && !$("autorun-warning").open && !typing) loadCampaigns();
 }, 15000);
 
