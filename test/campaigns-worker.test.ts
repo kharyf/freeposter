@@ -1438,6 +1438,45 @@ test("a post line posts a kept agent film as it was delivered, labelled with its
   assert.deepEqual(s.asked, []);
 });
 
+/**
+ * A kept agent film (its task's style `keptStyle`, as a schedule compiled before Lemo films stopped being edited
+ * could give it), delivered and kept, then taken by a post line with `lineStyle`: it reaches review as delivered.
+ */
+async function postKeptLemo(keptStyle: string | null, lineStyle: string | null) {
+  const s = setup();
+  syncLooks(s.store, "lemo-opuscar", [LOOK]);
+  const line = { ...s.postLine("weekdaygrowth-tue-1", "20:00"), style: lineStyle };
+  const id = s.campaign({ tue: [s.make(1, null, { style: keptStyle, look: LOOK.key, sec: 5 }), line] });
+  s.worker.materialize();
+  const [make, post] = s.cs.tasksOn(id, "2026-11-17");
+  assert.equal((make.choices as any).style, keptStyle);
+  await s.tick();
+  const token = claimed(s.cs, make.id, "agent-1", s.clock.now);
+  const out = await submitBrief(s.store, s.cs, make.id, token, { videoPath: clips[2], manifest: { look: LOOK.key, libraryVersion: "1.4.0" }, caption: AGENT_CAPTION }, s.clock.now);
+  assert.ok(out.ok, out.ok ? "" : out.error);
+  await s.tick();
+  await s.approve(make.id);
+  await s.tick();
+  assert.equal(s.cs.task(make.id)!.state, "kept", s.cs.task(make.id)!.error ?? "");
+  await s.tick();
+  const p = s.cs.task(post.id)!;
+  assert.equal(p.state, "reviewing", p.error ?? "");
+  assert.equal(p.editId, null);
+  assert.equal((s.store.db.prepare("SELECT COUNT(*) AS n FROM edits").get() as { n: number }).n, 0, "no edit was started");
+  await s.reviews.tick();
+  const r = s.reviews.reviews.get(p.reviewId!)!;
+  assert.equal(r.subjectKind, "file");
+  assert.equal(r.sourcePath, clips[2]);
+}
+
+test("a kept Lemo film from a schedule with a style from before is posted as delivered, not edited", async () => {
+  await postKeptLemo("basic", null);
+});
+
+test("a post line with its own style posts a kept Lemo film as delivered, not edited", async () => {
+  await postKeptLemo(null, "basic");
+});
+
 test("a retried brief is announced again and its expiries and failure are told", async () => {
   const s = setup();
   syncLooks(s.store, "lemo-opuscar", [LOOK]);

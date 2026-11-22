@@ -955,6 +955,14 @@ export class CampaignWorker {
       return; // looked for again next tick
     }
     const keptChoices = kept.choices as unknown as TaskChoices;
+    // A kept Lemo film is posted as it was delivered, whatever style the line or its task has (one compiled before
+    // Lemo films stopped being edited can have a FreePoster style): FreePoster never edits it.
+    if (keptChoices.delivery) {
+      this.setChoices(t.id, { sourceTaskId: kept.id, style: null });
+      this.campaigns.updateTask(t.id, { state: "reviewing", reviewId: null });
+      log(t, `posting ${keptChoices.libraryName} (the agent's film)`);
+      return;
+    }
     const style = ins.style ?? keptChoices.style;
     this.setChoices(t.id, { sourceTaskId: kept.id, style });
     const keptEdit = kept.editId === null ? undefined : this.store.edit(kept.editId);
@@ -963,14 +971,8 @@ export class CampaignWorker {
       log(t, `posting ${keptChoices.libraryName} (edit ${keptEdit.id})`);
       return;
     }
-    // A kept agent film with no style is posted as it was delivered.
-    if (style === null && keptChoices.delivery) {
-      this.campaigns.updateTask(t.id, { state: "reviewing", reviewId: null });
-      log(t, `posting ${keptChoices.libraryName} (the agent's film)`);
-      return;
-    }
     const made = kept.productionId === null ? null : this.productions.productions.get(kept.productionId)?.outputPath ?? null;
-    const video = made ?? keptChoices.delivery?.path ?? null;
+    const video = made;
     if (!video) return this.fail(t.id, `${keptChoices.libraryName}'s video is gone`);
     await this.startEdit(t.id, video, style);
   }
