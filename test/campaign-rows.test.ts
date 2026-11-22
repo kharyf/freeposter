@@ -65,6 +65,15 @@ test("a non-Claude Create row shows Lemo styles disabled under \"need a Claude m
   assert.equal(out[0].options.some((o: any) => o.disabled), false);
 });
 
+test("Lemo styles without a category go in an unsuffixed group after the categorised ones", () => {
+  const c = ctx({ lemo: [lemo("lemo:loose", "Loose", null as unknown as string), lemo("lemo:teardown", "Teardown", "Explainer")] });
+  const on = j(R.styleGroups(row({ model: OPUS }), c));
+  assert.deepEqual(on.map((x: any) => x.label), ["FreePoster edits", "Lemo-Opuscar films (Claude): Explainer", "Lemo-Opuscar films (Claude)"]);
+  assert.deepEqual(on[2].options, [{ value: "lemo:loose", label: "Loose", title: "about Loose" }]);
+  const off = j(R.styleGroups(row({ model: "openrouter:anthropic/claude-x" }), c));
+  assert.deepEqual(off.map((x: any) => x.label).slice(1), ["Lemo-Opuscar films: need a Claude model on Claude Code: Explainer", "Lemo-Opuscar films: need a Claude model on Claude Code"]);
+});
+
 test("an Agent row offers only Lemo styles and only Claude models", () => {
   const a = row({ origin: "agent", style: null, model: "openrouter:anthropic/claude-x" });
   const out = j(R.styleGroups(a, ctx()));

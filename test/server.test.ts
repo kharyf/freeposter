@@ -63,3 +63,13 @@ test("GET /layout.js serves the layout model as javascript", async () => {
   assert.match(res.body, /FreePosterLayout/);
   await app.close();
 });
+
+test("GET /campaign-rows.js serves the rules file", async () => {
+  const store = newStore();
+  const app = buildServer(store, new Runner(store, real, tmp()), real);
+  const res = await app.inject({ method: "GET", url: "/campaign-rows.js" });
+  assert.equal(res.statusCode, 200);
+  assert.match(String(res.headers["content-type"]), /text\/javascript/);
+  assert.match(res.body, /FreePosterRows/);
+  await app.close();
+});

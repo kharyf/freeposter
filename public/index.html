@@ -407,6 +407,10 @@
   .cp-days { display: flex; gap: 2px; }
   .cp-days button { width: 26px; height: 26px; padding: 0; font-size: 12px; font-weight: 600; }
   .cp-days button[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  /* the model a change just switched: lit briefly so the user sees it moved (a fade only when motion is welcome) */
+  .cp-table select.cp-flash { outline: 2px solid var(--accent); outline-offset: 1px; background: color-mix(in srgb, var(--accent) 18%, var(--panel)); }
+  @media (prefers-reduced-motion: no-preference) { .cp-table select.cp-flash { animation: cp-flash 1.2s ease-out; } }
+  @keyframes cp-flash { from { background: color-mix(in srgb, var(--accent) 40%, var(--panel)); } }
   .cp-table tr.idle td { background: color-mix(in srgb, var(--warn) 6%, transparent); }
   .cp-table .cp-del { padding: 2px 8px; }
   .cp-add-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
@@ -661,6 +665,7 @@
 </div>
 </div>
 <script src="/layout.js"></script>
+<script src="/campaign-rows.js"></script>
 <script>
 const COLORS = { tiktok: "var(--tiktok)", instagram: "var(--instagram)", facebook: "var(--facebook)", x: "var(--x)", youtube: "var(--youtube)" };
 const ICON_SVG = {
@@ -2646,7 +2651,7 @@ setInterval(() => { if (!$("calendar").hidden) loadCalendar(); }, 15000);
 // ---- Analytics tab: how each video did, and which hooks, angles, CTAs, styles and types are working ----
 
 const AN_PLATFORMS = ["tiktok", "instagram", "facebook", "x", "youtube"];
-const AN_DIMS = [["hook", "Hooks"], ["angle", "Angles"], ["cta", "CTAs"], ["style", "Styles"], ["type", "Types"], ["source", "Recorded vs generated"], ["look", "Looks"], ["producer", "Producers"]];
+const AN_DIMS = [["hook", "Hooks"], ["angle", "Angles"], ["cta", "CTAs"], ["style", "Styles"], ["type", "Types"], ["source", "Recorded vs generated"], ["look", "Lemo styles"], ["producer", "Producers"]];
 const AN_AGES = [["1h", 3600], ["6h", 21600], ["24h", 86400], ["72h", 259200], ["7d", 604800], ["30d", 2592000]];
 const AN_SVG = "http://www.w3.org/2000/svg";
 let an = null; // the last /api/analytics answer
@@ -3073,8 +3078,8 @@ const CP_LIB = [["hook", "Hooks"], ["angle", "Angles"], ["cta", "CTAs"], ["type"
 const CP_KIND_WORD = { hook: "hook", angle: "angle", cta: "CTA" };
 const CP_AUTOPOST_WARNING = "Videos with only these types will post without asking you.";
 let cp = null; // the last /api/campaigns answer
-/** The visible looks an Agent row can pick (key, name, needsImageGen), from the last load. */
-let cpLooks = [];
+/** The model select a change just switched ("<campaign>:<row>"), highlighted until `until` so the user sees it moved. */
+let cpFlash = null;
 let cpLib = { entries: [], types: [] };
 let cpAi = null; // today's AI use with its ceiling
 let cpBannerText = null; // the page banner's text when this tab put it there (cleared by the next good load, if still showing)
@@ -3147,7 +3152,6 @@ async function loadCampaigns() {
   if (lib.ok) cpLib.entries = lib.body.entries;
   if (types.ok) cpLib.types = types.body.types;
   cpAi = cp.ai ?? null;
-  cpLooks = cp.looks ?? [];
   keepFocus(renderCampaigns);
 }
 
@@ -3165,7 +3169,8 @@ function renderCampaigns() {
   renderCpLibrary();
   $("cpList").innerHTML = cp.campaigns.length ? cp.campaigns.map(cpCardHtml).join("")
     : `<section><h2>No campaigns yet</h2><p class="muted" style="margin:0">Press <strong>New campaign</strong>, then add its videos with <strong>+</strong>:
-      how many, the hook, angle and CTA, editing style, type, time and days, length, and whether each is made (Create) or a recorded Drive file.
+      how each is made (Create, Agent, or a recorded Drive file) and with which model, how many, the hook, angle and CTA, the editing style
+      (a FreePoster edit or a Lemo-Opuscar film), type, time and days, and length.
       Add hooks, angles and CTAs to the library above first to pick them by name.</p></section>`;
 }
 
@@ -3319,21 +3324,22 @@ const CP_QTY = [1, 10], CP_SEC = [5, 300];
 const cpRowsOf = (c) => cpRows[c.id] ?? c.rows ?? [];
 const cpDefaultStyle = () => (status.editingStyles ?? []).find((s) => s.isDefault)?.id ?? status.editingStyles?.[0]?.id ?? "";
 
+/** What the table's rules (public/campaign-rows.js) know about this window: the styles, Lemo styles and models it can offer. */
+const cpCtx = () => ({
+  styles: (status.editingStyles ?? []).map((s) => ({ id: s.id, name: s.name })),
+  lemo: cp?.looks ?? [],
+  lemoInstalled: cp?.lemoInstalled ?? false,
+  models: cp?.models ?? [],
+  defaultClaude: cp?.defaultClaude ?? "",
+});
+
 /** Why a row isn't in the schedule yet (the same reasons the server leaves it out for). */
-function cpRowIssues(r) {
-  const out = [];
-  if (!r.days.length) out.push("no days ticked");
-  if (r.origin === "drive") {
-    if (!r.text.trim()) out.push("no file name");
-    if (r.time === null) out.push("a Drive video needs a time");
-  } else {
-    if (r.origin === "agent") {
-      if (r.look === null) out.push("no look");
-      else if (!cpLooks.some((l) => l.key === r.look)) out.push("look no longer in the catalogue");
-    }
-    if (r.sec === null) out.push("no length");
-  }
-  return out;
+const cpRowIssues = (r) => FreePosterRows.rowIssues(r, cpCtx());
+
+/** `<option>`s, inside an `<optgroup>` for each labelled group, with `current` selected. */
+function cpGroupOptions(groups, current) {
+  const opt = (o) => `<option value="${esc(o.value)}" ${o.value === current ? "selected" : ""} ${o.disabled ? "disabled" : ""}${o.title ? ` title="${esc(o.title)}"` : ""}>${esc(o.label)}</option>`;
+  return groups.map((g) => (g.label ? `<optgroup label="${esc(g.label)}">${g.options.map(opt).join("")}</optgroup>` : g.options.map(opt).join(""))).join("");
 }
 
 /** "HH:MM" (24-hour) as its hour (1-12), minute and AM/PM, or nothing. */
@@ -3354,12 +3360,18 @@ function cpPickSelect(c, r, kind) {
     `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(label)}</option>`).join("")}</select>`;
 }
 
-function cpRowHtml(c, r) {
+function cpRowHtml(c, r, withModel) {
   const f = (field) => `id="cpR${c.id}_${r.id}_${field}" data-cp-row="${c.id}:${r.id}" data-cp-field="${field}"`;
-  const styles = status.editingStyles ?? [];
+  const ctx = cpCtx();
   const agent = r.origin === "agent";
-  const styleOpts = (agent ? [`<option value="" ${r.style === null ? "selected" : ""}>None</option>`] : []).concat(styles.map((s) => `<option value="${esc(s.id)}" ${s.id === r.style ? "selected" : ""}>${esc(s.name)}</option>`));
-  if (r.style !== null && !styles.some((s) => s.id === r.style)) styleOpts.push(`<option value="${esc(r.style)}" selected>${esc(r.style)} (gone)</option>`);
+  const drive = r.origin === "drive";
+  // An Agent row's style can still be unchosen: say so rather than show the first style as if it were picked.
+  const styleOpts = (agent && r.style === null ? `<option value="" selected>Choose a Lemo style</option>` : "") + cpGroupOptions(FreePosterRows.styleGroups(r, ctx), r.style);
+  const lemo = FreePosterRows.isLemo(r.style) ? ctx.lemo.find((l) => l.key === r.style) : null;
+  const styleCell = `<select ${f("style")} aria-label="Editing style">${styleOpts}</select>${lemo?.needsImageGen ? `<div class="muted" style="font-size:12px">needs your image generator</div>` : ""}`;
+  const flash = cpFlash?.key === `${c.id}:${r.id}` && Date.now() < cpFlash.until;
+  const modelCell = drive ? `<span class="muted" title="Drive videos are already made">–</span>`
+    : `<select ${f("model")}${flash ? ` class="cp-flash"` : ""} aria-label="Model">${cpGroupOptions(FreePosterRows.modelOptions(r, ctx), r.model ?? "")}</select>`;
   const typeOpts = [`<option value="" ${r.type === null ? "selected" : ""}>None</option>`]
     .concat(cpLib.types.map((t) => `<option value="${t.id}" ${t.id === r.type ? "selected" : ""}>${esc(t.name)}</option>`));
   const tp = cpTimeParts(r.time);
@@ -3369,30 +3381,22 @@ function cpRowHtml(c, r) {
   const keepTip = "No time: the video is made and kept in the library, not posted";
   const days = CP_DAYS.map(([d]) => `<button type="button" id="cpR${c.id}_${r.id}_d${d}" data-cp-row="${c.id}:${r.id}" data-cp-day="${d}" aria-pressed="${r.days.includes(d)}"
     title="${CP_DAY_NAME[d]}" aria-label="${CP_DAY_NAME[d]}">${CP_DAY_LETTER[d]}</button>`).join("");
-  const drive = r.origin === "drive";
-  const look = cpLooks.find((l) => l.key === r.look);
-  const lookOpts = [`<option value="" ${r.look === null ? "selected" : ""}>Choose a look</option>`]
-    .concat(cpLooks.map((l) => `<option value="${esc(l.key)}" ${l.key === r.look ? "selected" : ""}>${esc(l.name)}</option>`));
-  if (r.look !== null && !look) lookOpts.push(`<option value="${esc(r.look)}" selected>${esc(r.look)} (no longer in the catalogue)</option>`);
-  const lookCell = agent
-    ? `<select ${f("look")} aria-label="Look">${lookOpts.join("")}</select>${look?.needsImageGen ? `<div class="muted" style="font-size:12px">needs your image generator</div>` : ""}`
-    : `<span class="muted" title="Only an Agent row has a look">–</span>`;
   const issues = cpRowIssues(r);
   return `<tr class="${issues.length ? "idle" : ""}">
+    <td><select ${f("origin")} aria-label="Origin"><option value="create" ${r.origin === "create" ? "selected" : ""}>Create</option><option value="drive" ${drive ? "selected" : ""}>Drive</option><option value="agent" ${agent ? "selected" : ""}>Agent</option></select></td>
+    ${withModel ? `<td>${modelCell}</td>` : ""}
     <td><input type="number" ${f("quantity")} min="${CP_QTY[0]}" max="${CP_QTY[1]}" step="1" value="${esc(r.quantity)}" aria-label="Quantity"
       ${drive ? `title="A Drive file posts once; quantity is ignored for it"` : ""}></td>
     <td>${cpPickSelect(c, r, "hook")}</td>
     <td>${cpPickSelect(c, r, "angle")}</td>
     <td>${cpPickSelect(c, r, "cta")}</td>
-    <td><select ${f("style")} aria-label="Editing style">${styleOpts.join("")}</select></td>
-    <td>${lookCell}</td>
+    <td>${styleCell}</td>
     <td><select ${f("type")} aria-label="Type">${typeOpts.join("")}</select></td>
     <td><span class="cp-time" title="${tp ? "" : keepTip}"><select ${f("hour")} aria-label="Hour">${hours.join("")}</select>:<select ${f("minute")} aria-label="Minute" ${tp ? "" : "disabled"}>${minutes.join("")}</select>
       <select ${f("ampm")} aria-label="AM or PM" ${tp ? "" : "disabled"}><option value="am" ${tp?.pm ? "" : "selected"}>AM</option><option value="pm" ${tp?.pm ? "selected" : ""}>PM</option></select></span></td>
     <td><div class="cp-days" role="group" aria-label="Days">${days}</div></td>
     <td><input type="number" ${f("sec")} min="${CP_SEC[0]}" max="${CP_SEC[1]}" step="1" value="${r.sec === null ? "" : esc(r.sec)}" aria-label="Length in seconds"
       title="${drive ? "Seconds; for a Drive file, recorded for analytics only" : "Seconds"}"></td>
-    <td><select ${f("origin")} aria-label="Origin"><option value="create" ${r.origin === "create" ? "selected" : ""}>Create</option><option value="drive" ${drive ? "selected" : ""}>Drive</option><option value="agent" ${agent ? "selected" : ""}>Agent</option></select></td>
     <td><input type="text" class="cp-rtext" ${f("text")} maxlength="2000" value="${esc(r.text)}"
       aria-label="${drive ? "File name" : "Instructions"}" placeholder="${drive ? "File name, e.g. Gatekeeping" : agent ? "Instructions for the agent (optional)" : "Instructions for the script (optional)"}"></td>
     <td><button type="button" class="cp-del" data-cp-del="${c.id}:${r.id}" data-focus="cp-del-${c.id}-${r.id}" title="Remove video" aria-label="Remove video">×</button></td>
@@ -3402,9 +3406,10 @@ function cpRowHtml(c, r) {
 function cpTableHtml(c) {
   const rows = cpRowsOf(c);
   const idle = rows.map((r, i) => [i, cpRowIssues(r)]).filter(([, x]) => x.length);
+  const withModel = FreePosterRows.showModelColumn(rows); // every row Drive: nothing is made, so no model to choose
   return `<div class="cp-table-wrap"><table class="cp-table"><thead><tr>
-      <th>Quantity</th><th>Hook</th><th>Angle</th><th>CTA</th><th>Editing Style</th><th>Look</th><th>Type</th><th>Time</th><th>Days</th><th>Length (s)</th><th>Origin</th><th>File Name / Instructions</th><th></th>
-    </tr></thead><tbody>${rows.length ? rows.map((r) => cpRowHtml(c, r)).join("") : `<tr><td colspan="13" class="muted">No videos yet: press + to add one.</td></tr>`}</tbody></table></div>
+      <th>Origin</th>${withModel ? "<th>Model</th>" : ""}<th>Quantity</th><th>Hook</th><th>Angle</th><th>CTA</th><th>Editing Style</th><th>Type</th><th>Time</th><th>Days</th><th>Length (s)</th><th>File Name / Instructions</th><th></th>
+    </tr></thead><tbody>${rows.length ? rows.map((r) => cpRowHtml(c, r, withModel)).join("") : `<tr><td colspan="${withModel ? 13 : 12}" class="muted">No videos yet: press + to add one.</td></tr>`}</tbody></table></div>
     <div class="cp-add-row"><button type="button" data-cp-addrow="${c.id}" id="cpAdd${c.id}" title="Add Video" aria-label="Add Video">+</button></div>
     ${idle.length ? `<div class="cp-idle">Not running yet:<ul>${idle.map(([i, x]) => `<li>Row ${i + 1}: ${esc(x.join(", "))}</li>`).join("")}</ul></div>` : ""}`;
 }
@@ -3526,28 +3531,43 @@ function cpRowFor(el) {
 
 const cpClamp = (v, [lo, hi]) => Math.min(hi, Math.max(lo, Math.round(v)));
 
-/** One cell changed: the row takes the new value (whole numbers kept in range). */
-function cpSetField(row, field, el) {
+const CP_FLASH_MS = 1200;
+
+/** One cell changed: the row takes the new value (whole numbers kept in range), and the table's rules
+ * (FreePosterRows.applyChange) say what else that changes. `key` ("<campaign>:<row>") names the row for the model highlight. */
+function cpSetField(row, field, el, key) {
   const v = el.value;
-  if (field === "quantity") { const n = Number(v); row.quantity = v.trim() && Number.isFinite(n) ? cpClamp(n, CP_QTY) : row.quantity; }
-  else if (field === "sec") { const n = Number(v); row.sec = !v.trim() ? null : Number.isFinite(n) ? cpClamp(n, CP_SEC) : row.sec; }
-  else if (field === "hook" || field === "angle" || field === "cta") row[field] = v.startsWith("n:") ? { pick: "named", id: Number(v.slice(2)) } : { pick: v };
-  else if (field === "style") row.style = v === "" ? null : v;
-  else if (field === "look") row.look = v === "" ? null : v;
-  else if (field === "type") row.type = v === "" ? null : Number(v);
-  else if (field === "origin") {
-    row.origin = v;
-    if (v !== "agent") { row.look = null; if (row.style === null) row.style = cpDefaultStyle(); }
-  }
-  else if (field === "text") row.text = v;
+  let value;
+  if (field === "quantity") { const n = Number(v); value = v.trim() && Number.isFinite(n) ? cpClamp(n, CP_QTY) : row.quantity; }
+  else if (field === "sec") { const n = Number(v); value = !v.trim() ? null : Number.isFinite(n) ? cpClamp(n, CP_SEC) : row.sec; }
+  else if (field === "hook" || field === "angle" || field === "cta") value = v.startsWith("n:") ? { pick: "named", id: Number(v.slice(2)) } : { pick: v };
+  else if (field === "style") value = v === "" ? null : v;
+  else if (field === "type") value = v === "" ? null : Number(v);
+  else if (field === "origin" || field === "model" || field === "text") value = v;
   else if (field === "hour" || field === "minute" || field === "ampm") {
     const box = el.closest(".cp-time");
     const h = box.querySelector('[data-cp-field="hour"]').value;
-    if (h === "") { row.time = null; return; }
-    const m = Number(box.querySelector('[data-cp-field="minute"]').value);
-    const pm = box.querySelector('[data-cp-field="ampm"]').value === "pm";
-    const h24 = (Number(h) % 12) + (pm ? 12 : 0);
-    row.time = `${String(h24).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+    if (h === "") value = null;
+    else {
+      const m = Number(box.querySelector('[data-cp-field="minute"]').value);
+      const pm = box.querySelector('[data-cp-field="ampm"]').value === "pm";
+      const h24 = (Number(h) % 12) + (pm ? 12 : 0);
+      value = `${String(h24).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+    }
+    field = "time";
+  } else return;
+  const out = FreePosterRows.applyChange(row, field, value, cpCtx());
+  Object.assign(row, out.row);
+  // Only an Agent row may leave its style unchosen; anywhere else it starts on the default editing style.
+  if (field === "origin" && row.origin !== "agent" && row.style === null) row.style = cpDefaultStyle();
+  if (out.flash === "model") {
+    cpFlash = { key, until: Date.now() + CP_FLASH_MS };
+    setTimeout(() => {
+      if (cpFlash?.key !== key || Date.now() < cpFlash.until) return; // a later flash on the same row runs its own timer
+      cpFlash = null;
+      const [cid, rid] = key.split(":");
+      document.getElementById(`cpR${cid}_${rid}_model`)?.classList.remove("cp-flash");
+    }, CP_FLASH_MS + 20);
   }
 }
 
@@ -3596,7 +3616,7 @@ $("cpList").addEventListener("click", async (e) => {
     const last = rows[rows.length - 1];
     rows.push({
       id: Math.max(0, ...rows.map((r) => r.id)) + 1, quantity: 1, hook: { pick: "random" }, angle: { pick: "random" }, cta: { pick: "random" },
-      style: last?.style ?? cpDefaultStyle(), type: null, time: null, days: [], sec: 30, origin: "create", look: null, text: "",
+      style: last?.style ?? cpDefaultStyle(), type: null, time: null, days: [], sec: 30, origin: "create", model: last?.model ?? null, text: "",
     });
     return cpSaveRows(id);
   }
@@ -3670,7 +3690,8 @@ $("cpList").addEventListener("change", async (e) => {
   if (t.dataset.cpRow && t.dataset.cpField) {
     const { cid, row } = cpRowFor(t);
     if (!row) return;
-    cpSetField(row, t.dataset.cpField, t);
+    cpSetField(row, t.dataset.cpField, t, t.dataset.cpRow);
+    keepFocus(renderCampaigns); // the row's other cells may follow the change (a model switched, the Model column shown)
     return cpSaveRows(cid);
   }
   if (t.dataset.cpAutorun) {

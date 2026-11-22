@@ -11,18 +11,20 @@ import { publishers } from "../src/platforms/index.ts";
 import { Runner } from "../src/runner.ts";
 import { buildServer } from "../src/server.ts";
 import { config } from "../src/config.ts";
+import { AiService } from "../src/ai/router.ts";
+import { DEFAULT_CLAUDE_MODEL_ID } from "../src/claude.ts";
 import { newStore, tmp } from "./helpers.ts";
 
 const OWN = { host: `localhost:${config.port}` };
 
 const emptyDays = () => Object.fromEntries(DAYS.map((d) => [d, []])) as unknown as CompiledCampaign["days"];
 
-function setup() {
+function setup(opts: { ai?: (store: ReturnType<typeof newStore>) => AiService } = {}) {
   const store = newStore();
   const cs = new CampaignStore(store);
   const calls = { stop: 0, resume: 0, stopOne: [] as number[], startOne: [] as number[] };
   const worker = {
-    campaigns: cs, ai: null,
+    campaigns: cs, ai: opts.ai ? opts.ai(store) : null,
     stopAll() { calls.stop++; cs.setKilled(true); return 2; },
     resumeAll() { calls.resume++; cs.setKilled(false); return 3; },
     stopCampaign(id: number) { calls.stopOne.push(id); cs.setEnabled(id, false); return 4; },
@@ -324,6 +326,19 @@ test("campaign vocabulary route lists visible looks", async () => {
   assert.equal(res.statusCode, 200, res.body);
   assert.deepEqual(res.json().looks, [{ key: "lemo:ukiyo-e", name: "Ukiyo-e", producer: "lemo-opuscar", needsImageGen: true, category: null, description: "" }]);
   assert.equal(res.json().lemoInstalled, false); // the isolated test home has no library
+});
+
+test("GET /api/campaigns includes models, defaultClaude and lemoInstalled", async () => {
+  let res = await setup().send("GET", "/api/campaigns");
+  assert.equal(res.statusCode, 200, res.body);
+  assert.deepEqual(res.json().models, [], "no AI, no models");
+  assert.equal(res.json().defaultClaude, DEFAULT_CLAUDE_MODEL_ID);
+  assert.equal(res.json().lemoInstalled, false);
+  const withClaude = setup({ ai: (store) => new AiService(store, { find: (id) => (id === "claude" ? id : "") }) });
+  res = await withClaude.send("GET", "/api/campaigns");
+  const models = res.json().models as { provider: string; models: { id: string }[] }[];
+  assert.deepEqual(models.map((p) => p.provider), ["claude"]);
+  assert.ok(models[0]!.models.some((m) => m.id === DEFAULT_CLAUDE_MODEL_ID));
 });
 
 test("saving an agent row with a Lemo style round-trips", async () => {

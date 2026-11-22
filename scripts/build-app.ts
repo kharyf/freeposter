@@ -29,6 +29,7 @@ await build({
 });
 copyFileSync(join(root, "public", "index.html"), join(out, "public", "index.html"));
 copyFileSync(join(root, "public", "layout.js"), join(out, "public", "layout.js"));
+copyFileSync(join(root, "public", "campaign-rows.js"), join(out, "public", "campaign-rows.js"));
 // Blender templates productions render from (src/produce/adapters/blender.ts reads them beside the bundle).
 cpSync(join(root, "templates"), join(out, "templates"), { recursive: true, filter: (src) => !src.includes("__pycache__") });
 // Fonts for the Fancy editing style (src/edit/fancy/palette.ts), read as plain files by the renderer.

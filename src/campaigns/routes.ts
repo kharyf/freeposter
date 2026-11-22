@@ -3,6 +3,7 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { accountSets } from "../accounts.ts";
 import { budget, todayUse } from "../ai/budget.ts";
+import { DEFAULT_CLAUDE_MODEL_ID } from "../claude.ts";
 import type { Store } from "../db.ts";
 import { trustedRequest } from "../mcp.ts";
 import { campaignVocabulary, modelIds, undoChange } from "./autorun.ts";
@@ -88,6 +89,10 @@ function campaignRoutes(app: FastifyInstance, store: Store, worker?: CampaignWor
       ai: { ...todayUse(store), max: budget(store) },
       /** whether the Lemo-Opuscar library was found on this computer at the last look */
       lemoInstalled: lemoIsInstalled(),
+      /** the models a Create or Agent row can choose, by connected provider (none without AI) */
+      models: worker?.ai?.modelChoices() ?? [],
+      /** the model a row switches to when it needs Claude */
+      defaultClaude: DEFAULT_CLAUDE_MODEL_ID,
       /** the looks an Agent row can pick (hidden ones left out) */
       looks: allLooks(store).map((l) => ({ key: l.key, name: l.name, producer: l.producer, needsImageGen: l.needsImageGen, category: l.category, description: l.description })),
     };

@@ -126,6 +126,8 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   app.get("/", (_req, reply) => reply.type("text/html").send(html));
   const layoutJs = readFileSync(join(codeDir, "public", "layout.js"), "utf8");
   app.get("/layout.js", (_req, reply) => reply.type("text/javascript").send(layoutJs));
+  const campaignRowsJs = readFileSync(join(codeDir, "public", "campaign-rows.js"), "utf8");
+  app.get("/campaign-rows.js", (_req, reply) => reply.type("text/javascript").send(campaignRowsJs));
 
   /** The editing styles as the window lists them. */
   const styleViews = () => {

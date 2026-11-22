@@ -16,19 +16,26 @@
       return [{ label: "Lemo-Opuscar films", options: [{ value: "", label: ctx.lemoInstalled ? "No Lemo styles found" : "Lemo-Opuscar isn't installed on this computer", disabled: true }] }];
     }
     var cats = {};
-    ctx.lemo.forEach(function (l) { (cats[l.category] = cats[l.category] || []).push(l); });
+    var loose = []; // a style without a category: its own group, after the categorised ones
+    ctx.lemo.forEach(function (l) {
+      if (l.category === null || l.category === undefined || l.category === "") loose.push(l);
+      else (cats[l.category] = cats[l.category] || []).push(l);
+    });
     var prefix = enabled ? "Lemo-Opuscar films (Claude)" : "Lemo-Opuscar films: need a Claude model on Claude Code";
-    return Object.keys(cats).sort().map(function (cat) {
-      var items = cats[cat].slice().sort(function (a, b) { return a.name < b.name ? -1 : a.name > b.name ? 1 : 0; });
+    var group = function (label, list) {
+      var items = list.slice().sort(function (a, b) { return a.name < b.name ? -1 : a.name > b.name ? 1 : 0; });
       return {
-        label: prefix + ": " + cat,
+        label: label,
         options: items.map(function (l) {
           var o = { value: l.key, label: l.name, title: l.description };
           if (!enabled) o.disabled = true;
           return o;
         }),
       };
-    });
+    };
+    var groups = Object.keys(cats).sort().map(function (cat) { return group(prefix + ": " + cat, cats[cat]); });
+    if (loose.length) groups.push(group(prefix, loose));
+    return groups;
   }
 
   function styleGroups(row, ctx) {
