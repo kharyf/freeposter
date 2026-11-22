@@ -57,6 +57,19 @@ test("buildBrief takes its deadline from the post time, or a day for a kept vide
   assert.equal(buildBrief(store, { hook: undefined } as unknown as TaskChoices, look, null, T0).language, "fr");
 });
 
+test("buildBrief carries the script FreePoster wrote, and the row's model", () => {
+  const { store, brief } = setup();
+  assert.equal(brief.script, null, "an Agent row's brief has no script");
+  assert.equal(brief.model, null);
+  const c = {
+    instruction: { kind: "make", look: look.key, scripted: true, model: "claude:claude-sonnet-5-5" },
+    script: { lines: ["Stop scrolling.", "Get the guide"], shots: [{ prompt: "a wave", sec: 4 }, { prompt: "a shore", sec: 3 }], caption: "", title: "", musicPrompt: "" },
+  } as unknown as TaskChoices;
+  const b = buildBrief(store, c, look, null, T0);
+  assert.equal(b.script, ["Stop scrolling.", "Get the guide", "", "Shots:", "- a wave (4s)", "- a shore (3s)"].join("\n"));
+  assert.equal(b.model, "claude:claude-sonnet-5-5");
+});
+
 test("claim takes a lease; a second holder is refused until it expires", () => {
   const { cs, id } = setup();
   assert.deepEqual(openBriefs(cs, T0).map((t) => t.id), [id]);

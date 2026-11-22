@@ -9,7 +9,7 @@ import { checkBudget } from "../src/ai/budget.ts";
 import { AnalyticsStore } from "../src/analytics/store.ts";
 import { claimBrief, openBriefs, submitBrief } from "../src/campaigns/briefs.ts";
 import { syncLooks } from "../src/campaigns/looks.ts";
-import type { Script } from "../src/campaigns/script.ts";
+import type { Script, writeScript } from "../src/campaigns/script.ts";
 import { DAYS, type CompiledCampaign, type Day, type MakeInstruction, type PostInstruction } from "../src/campaigns/spec.ts";
 import type { Row } from "../src/campaigns/rows.ts";
 import { CampaignStore } from "../src/campaigns/store.ts";
@@ -36,7 +36,7 @@ const TUE = at(2026, 11, 17, 8);
 
 const emptyDays = () => Object.fromEntries(DAYS.map((d) => [d, []])) as unknown as CompiledCampaign["days"];
 
-function setup(opts: { cap?: number; defaults?: string[] } = {}) {
+function setup(opts: { cap?: number; defaults?: string[]; writeScript?: typeof writeScript } = {}) {
   const store = newStore();
   store.upsertAccount(account("x"));
   const cs = new CampaignStore(store);
@@ -54,11 +54,14 @@ function setup(opts: { cap?: number; defaults?: string[] } = {}) {
     borrowGpu: async <T>(fn: () => Promise<T>) => { gpu.push("borrowed"); return { value: await fn() }; },
   };
   const asked: Question[] = [];
+  /** the options each ask was given (the row's model) */
+  const askedOpts: unknown[] = [];
   const ai = {
-    ask: async (job: string, q: Question): Promise<Script> => {
+    ask: async (job: string, q: Question, o?: unknown): Promise<Script> => {
       assert.equal(job, "script");
       checkBudget(store, job); // as the router does first
       asked.push(q);
+      askedOpts.push(o);
       const hook = /Hook: (.*)/.exec(q.prompt)![1];
       const call = /CTA \(spoken call\): (.*)/.exec(q.prompt)![1];
       const url = /CTA link: (.*)/.exec(q.prompt)?.[1] ?? "";
@@ -76,6 +79,7 @@ function setup(opts: { cap?: number; defaults?: string[] } = {}) {
     store, productions, reviews, ai, now: () => clock.now, random,
     speech: async (text) => { audio.push(`speech:${text}`); return clips[0]; },
     music: async (prompt, sec) => { audio.push(`music:${prompt}:${sec}`); return clips[0]; },
+    ...(opts.writeScript ? { writeScript: opts.writeScript } : {}),
     dir: tmp(),
   });
   const make = (count: number, post: MakeInstruction["post"], extra: Partial<MakeInstruction> = {}): MakeInstruction => ({
@@ -123,7 +127,7 @@ function setup(opts: { cap?: number; defaults?: string[] } = {}) {
     await tick();
     assert.equal(cs.task(taskId)!.state, "reviewing", cs.task(taskId)!.error ?? "");
   };
-  return { store, cs, clock, reviews, ps, staged, gpu, asked, audio, worker, make, postLine, campaign, tick, finishProduction, finishEdit, approve, toReview, hooks, angles, cta };
+  return { store, cs, clock, reviews, ps, staged, gpu, asked, askedOpts, audio, worker, make, postLine, campaign, tick, finishProduction, finishEdit, approve, toReview, hooks, angles, cta };
 }
 
 const tasksOf = (cs: CampaignStore, id: number) => cs.db.prepare("SELECT id, date FROM campaign_tasks WHERE campaign_id = ? ORDER BY id").all(id) as { id: number; date: string }[];
@@ -1044,18 +1048,106 @@ test("a delivered film with no style goes straight to review as a file", async (
   assert.equal(r.draft.caption, "Woodblock week, plan it: example.com/plan");
 });
 
-test("a delivered film with a style is edited first", async () => {
+test("a delivered Lemo film is never edited, even with a style from before", async () => {
+  // A schedule saved before Lemo films stopped being edited can still give an Agent row a FreePoster style.
   const s = agentSetup({}, "basic");
+  assert.equal((s.cs.task(s.task.id)!.choices as any).style, "basic");
+  const edits = () => (s.store.db.prepare("SELECT COUNT(*) AS n FROM edits").get() as { n: number }).n;
   await s.deliver();
   await s.tick();
   const t = s.cs.task(s.task.id)!;
-  assert.equal(t.state, "editing", t.error ?? "");
-  assert.equal(s.store.edit(t.editId!)!.sourcePath, clips[2]);
-  s.finishEdit(t.id);
+  assert.equal(t.state, "reviewing", t.error ?? "");
+  assert.equal(t.editId, null);
+  assert.equal(edits(), 0, "no edit was started");
+  const r = s.reviews.reviews.get(t.reviewId!)!;
+  assert.equal(r.subjectKind, "file");
+  assert.equal(r.sourcePath, clips[2]);
+});
+
+/** The script a stand-in script writer returns for a Create row with a Lemo style. */
+const LEMO_SCRIPT: Script = {
+  lines: ["Stop scrolling, the waves plan your week.", "Try it free today"],
+  shots: [{ prompt: "a great wave over a calendar", sec: 5 }, { prompt: "a boat reaching the shore", sec: 4 }],
+  caption: "Woodblock week https://example.com/plan", title: "Woodblock week", musicPrompt: "koto",
+};
+
+/**
+ * A Create row on Tuesday at 18:00 in the ukiyo-e Lemo style, written by Claude Sonnet: FreePoster writes the script
+ * (with a stand-in writer that records the model it was given), then an agent films it.
+ */
+function scriptedSetup(write: (model: string | undefined) => Promise<Script> = async () => LEMO_SCRIPT) {
+  const models: (string | undefined)[] = [];
+  const s = setup({ writeScript: async (_deps, _choice, _sec, _instructions, model) => { models.push(model); return write(model); } });
+  syncLooks(s.store, "lemo-opuscar", [LOOK]);
+  const id = tableCampaign(s, [tableRow(s, { origin: "create", style: LOOK.key, model: "claude:claude-sonnet-5-5", time: "18:00", sec: 9 })]);
+  s.worker.materialize();
+  const [t] = s.cs.tasksOn(id, "2026-11-17");
+  assert.ok(t);
+  assert.equal((t.choices as any).instruction.scripted, true);
+  const events = (type: string) => s.store.feed(0, 100, [type]);
+  return { ...s, id, task: t, models, events };
+}
+
+test("a Create row with a Lemo style writes a script with its model, then offers a brief carrying it", async () => {
+  const s = scriptedSetup();
+  s.clock.now = at(2026, 11, 17, 12);
   await s.tick();
-  const r = s.reviews.reviews.get(s.cs.task(t.id)!.reviewId!)!;
-  assert.equal(r.subjectKind, "edit");
-  assert.equal(r.subjectId, t.editId);
+  const t = s.cs.task(s.task.id)!;
+  assert.equal(t.state, "awaiting_agent", t.error ?? "");
+  assert.deepEqual(s.models, ["claude:claude-sonnet-5-5"]);
+  const brief = (t.choices as any).brief;
+  assert.ok(brief.script.includes(LEMO_SCRIPT.lines[0]), brief.script);
+  assert.equal(brief.script, [...LEMO_SCRIPT.lines, "", "Shots:", "- a great wave over a calendar (5s)", "- a boat reaching the shore (4s)"].join("\n"));
+  assert.equal(brief.model, "claude:claude-sonnet-5-5");
+  assert.equal(brief.look, LOOK.key);
+  assert.deepEqual(s.audio, [], "no WanGP voiceover or music");
+  assert.deepEqual(s.staged, [], "no production was staged");
+  assert.equal(s.events("brief.requested").length, 1);
+});
+
+test("a scripted Lemo task waiting for its brief's lead time writes its script once", async () => {
+  const s = scriptedSetup();
+  await s.tick(); // 08:00: the script is written, but an 18:00 slot's brief waits until 12:00
+  let t = s.cs.task(s.task.id)!;
+  assert.equal(t.state, "scripting", t.error ?? "");
+  assert.ok((t.choices as any).script, "the script is kept");
+  s.clock.now = at(2026, 11, 17, 10);
+  await s.tick(); // as after a restart: the task is still scripting, and has its script
+  assert.equal(s.cs.task(s.task.id)!.state, "scripting");
+  assert.equal(s.events("brief.requested").length, 0);
+  s.clock.now = at(2026, 11, 17, 12);
+  await s.tick();
+  t = s.cs.task(s.task.id)!;
+  assert.equal(t.state, "awaiting_agent", t.error ?? "");
+  await s.tick();
+  assert.equal(s.models.length, 1, "the script was written once");
+  assert.equal(s.events("brief.requested").length, 1, "the brief was offered once");
+  assert.equal((t.choices as any).briefRound, 1);
+});
+
+test("a Create row's model reaches the script writer", async () => {
+  const s = setup();
+  const id = tableCampaign(s, [tableRow(s, { model: "chatgpt:gpt-5.5" })]);
+  s.worker.materialize();
+  const [t] = s.cs.tasksOn(id, "2026-11-17");
+  await s.tick();
+  assert.deepEqual(s.askedOpts, [{ model: "chatgpt:gpt-5.5" }]);
+  assert.equal(s.cs.task(t.id)!.state, "rendering", s.cs.task(t.id)!.error ?? "");
+});
+
+test("a chosen model that fails fails the task with its reason", async () => {
+  const models: (string | undefined)[] = [];
+  const s = setup({ writeScript: async (_deps, _choice, _sec, _instructions, model) => { models.push(model); throw new Error("ChatGPT isn't connected"); } });
+  const id = tableCampaign(s, [tableRow(s, { model: "chatgpt:gpt-5.5" })]);
+  s.worker.materialize();
+  const [task] = s.cs.tasksOn(id, "2026-11-17");
+  await s.tick();
+  const t = s.cs.task(task.id)!;
+  assert.deepEqual(models, ["chatgpt:gpt-5.5"]);
+  assert.equal(t.state, "failed");
+  assert.equal(t.error, "ChatGPT isn't connected");
+  assert.deepEqual(s.asked, [], "no other provider was asked");
+  assert.deepEqual(s.audio, []);
 });
 
 test("an approved agent film is labelled with producer, look and version", async () => {

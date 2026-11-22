@@ -151,7 +151,8 @@ export function checkScript(s: Script, choice: ScriptChoice, targetSec?: number)
   return problems;
 }
 
-export async function writeScript(deps: { ai: AiService }, choice: ScriptChoice, targetSec?: number, instructions?: string): Promise<Script> {
+/** Written by the row's model (`provider:model`) when it has one, which is then the only one asked; else by the AI settings' choice. */
+export async function writeScript(deps: { ai: AiService }, choice: ScriptChoice, targetSec?: number, instructions?: string, model?: string): Promise<Script> {
   const { hook, angle, cta } = choice;
   const SYSTEM = system(scriptLimits(targetSec));
   const brief = [
@@ -165,7 +166,7 @@ export async function writeScript(deps: { ai: AiService }, choice: ScriptChoice,
   let prompt = `${brief}\n\nWrite the script.`;
   let problems: string[] = [];
   for (let attempt = 0; attempt < 2; attempt++) {
-    const s = await deps.ai.ask<Script>("script", { system: SYSTEM, prompt, schema: SCHEMA, effort: "medium" });
+    const s = await deps.ai.ask<Script>("script", { system: SYSTEM, prompt, schema: SCHEMA, effort: "medium" }, { model });
     problems = checkScript(s, choice, targetSec);
     if (!problems.length) return s;
     prompt = `${brief}\n\nYour last script had these problems:\n- ${problems.join("\n- ")}\n\nWrite the whole script again and fix every one.`;

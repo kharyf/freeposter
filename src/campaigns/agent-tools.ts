@@ -47,6 +47,7 @@ export function agentTools(opts: {
   const view = (b: Brief) => ({
     look: b.look, producer: b.producer, hook: b.hook, angle: b.angle, cta: b.cta, sec: b.sec, instructions: b.instructions,
     language: b.language, needs_image_gen: b.needsImageGen, deadline: iso(b.deadline), post_at: iso(b.postAt),
+    script: b.script ?? null, model: b.model ?? null,
   });
   const leased = (r: ReturnType<typeof claimBrief>) => {
     if (!r.ok) throw fail(r.error);
@@ -123,7 +124,7 @@ export function agentTools(opts: {
     {
       name: "claim_brief",
       title: "Claim a brief",
-      description: "Takes on one campaign film: you hold it for a while (lease_until; renew_brief extends it) and get the brief: look, hook, angle, cta, sec (length in seconds, or null), instructions, language, needs_image_gen, deadline and post_at, and a claim_token. Pass the claim_token to renew_brief, submit_brief and give_up_brief; claiming again with your claim_token returns the same brief and lease. A brief someone else holds is refused.",
+      description: "Takes on one campaign film: you hold it for a while (lease_until; renew_brief extends it) and get the brief: look, hook, angle, cta, sec (length in seconds, or null), instructions, language, needs_image_gen, deadline and post_at, script (the script FreePoster wrote, to film as written, or null: then you write the treatment), model (the Claude model chosen for it, or null), and a claim_token. Pass the claim_token to renew_brief, submit_brief and give_up_brief; claiming again with your claim_token returns the same brief and lease. A brief someone else holds is refused.",
       inputSchema: { type: "object", properties: { task_id: { type: "integer" }, claim_token: TOKEN }, required: ["task_id"], additionalProperties: false },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       async run(args) {
@@ -131,7 +132,7 @@ export function agentTools(opts: {
         const r = leased(claimBrief(cs(), taskId(args), opts.agent(), Date.now(), token(args) || undefined));
         return {
           brief: view(r.brief), lease_until: iso(r.leaseUntil), claim_token: r.token,
-          next: `Make this film with the lemo-opuscar skill, using the brief's look (${r.brief.look}), language and instructions as the answers to its questions: don't ask the user anything. Write the treatment, then render. Call renew_brief with your claim_token at least every 30 minutes (the lease ends at lease_until), and when the file is ready call submit_brief with your claim_token, its absolute video_path and the library_version you used. Write the post's caption and title yourself and pass them to submit_brief: ${r.brief.cta.url ? `the caption must include the CTA link ${r.brief.cta.url}, and no other link` : "the brief's CTA has no link, so put no link in them"}. If you can't make it, call give_up_brief with your claim_token and the reason. If needs_image_gen is true and you have no image generator, call give_up_brief at once.`,
+          next: `Make this film with the lemo-opuscar skill, using the brief's look (${r.brief.look}), language and instructions as the answers to its questions: don't ask the user anything. ${r.brief.script ? "Film this script as written, in the brief's style: don't write a new one." : "Write the treatment, then render."} Call renew_brief with your claim_token at least every 30 minutes (the lease ends at lease_until), and when the file is ready call submit_brief with your claim_token, its absolute video_path and the library_version you used. Write the post's caption and title yourself and pass them to submit_brief: ${r.brief.cta.url ? `the caption must include the CTA link ${r.brief.cta.url}, and no other link` : "the brief's CTA has no link, so put no link in them"}. If you can't make it, call give_up_brief with your claim_token and the reason. If needs_image_gen is true and you have no image generator, call give_up_brief at once.`,
         };
       },
     },

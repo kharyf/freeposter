@@ -476,6 +476,25 @@ test("claim_brief through MCP uses the client name as holder and returns a claim
   assert.equal((await call("list_briefs")).structuredContent.briefs.length, 0, "a leased brief isn't open");
 });
 
+test("claim_brief returns the script and model, and tells the agent to film the script", async () => {
+  const { call, worker } = mcpFixture({ campaigns: true });
+  const plain = briefTask(worker!.campaigns);
+  const before = (await call("claim_brief", { task_id: plain.taskId })).structuredContent;
+  assert.equal(before.brief.script, null, "a brief from before scripts had none");
+  assert.equal(before.brief.model, null);
+  assert.match(before.next, /Write the treatment, then render\./);
+
+  const { taskId } = briefTask(worker!.campaigns);
+  const t = worker!.campaigns.task(taskId)!;
+  const brief = { ...(t.choices as any).brief, script: "Stop scrolling.\nGet the guide\n\nShots:\n- a wave (4s)", model: "claude:claude-sonnet-5-5" };
+  worker!.campaigns.updateTask(taskId, { choices: { ...t.choices, brief } });
+  const got = (await call("claim_brief", { task_id: taskId })).structuredContent;
+  assert.equal(got.brief.script, brief.script);
+  assert.equal(got.brief.model, "claude:claude-sonnet-5-5");
+  assert.match(got.next, /Film this script as written, in the brief's style: don't write a new one\./);
+  assert.doesNotMatch(got.next, /Write the treatment, then render/);
+});
+
 test("submit_brief refuses an unknown task_id with a helpful error", async () => {
   const { call } = mcpFixture({ campaigns: true });
   const r = await call("submit_brief", { task_id: 999, claim_token: "", video_path: "C:/nope.mp4", library_version: "1" });

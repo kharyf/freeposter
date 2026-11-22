@@ -7,7 +7,7 @@ import type { Store } from "../db.ts";
 import { probe } from "../media.ts";
 import { hashFile } from "../review/media.ts";
 import type { Look } from "./looks.ts";
-import { foreignLinks, hasLink } from "./script.ts";
+import { foreignLinks, hasLink, type Script } from "./script.ts";
 import type { CampaignStore, CampaignTask } from "./store.ts";
 import type { TaskChoices } from "./worker.ts";
 
@@ -35,6 +35,13 @@ export interface Brief {
   needsImageGen: boolean;
   deadline: number;
   postAt: number | null;
+  /**
+   * The script FreePoster wrote for a Create row with a Lemo style: the agent films it as written. Null for an
+   * Agent row (the agent writes its own treatment). A brief stored before briefs had one has none (read as null).
+   */
+  script: string | null;
+  /** The Claude model (`claude:<model>`) the row chose to make it; null for the default (and on an older brief). */
+  model: string | null;
 }
 
 export interface Delivery {
@@ -65,9 +72,12 @@ const fail = (error: string) => ({ ok: false as const, error });
 const choicesOf = (t: CampaignTask) => t.choices as unknown as TaskChoices;
 const iso = (ms: number) => new Date(ms).toISOString();
 
-/** The brief for a task: the chosen words, the look, and when the film is needed by. */
+/** A script as the agent reads it: its spoken lines, then its shots with their lengths. */
+export const scriptText = (s: Script) => [...s.lines, "", "Shots:", ...s.shots.map((sh) => `- ${sh.prompt} (${sh.sec}s)`)].join("\n");
+
+/** The brief for a task: the chosen words, the look, the script and model, and when the film is needed by. */
 export function buildBrief(store: Store, c: TaskChoices, look: Look, postAt: number | null, now: number): Brief {
-  const instruction = c.instruction as { sec?: number | null; instructions?: string };
+  const instruction = c.instruction as { sec?: number | null; instructions?: string; model?: string } | undefined;
   return {
     look: look.key,
     producer: look.producer,
@@ -80,6 +90,8 @@ export function buildBrief(store: Store, c: TaskChoices, look: Look, postAt: num
     needsImageGen: look.needsImageGen,
     deadline: postAt === null ? now + DAY : postAt - REVIEW_BUFFER_MINUTES * MIN,
     postAt,
+    script: c.script ? scriptText(c.script) : null,
+    model: instruction?.model ?? null,
   };
 }
 

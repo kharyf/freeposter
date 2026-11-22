@@ -104,7 +104,7 @@ export interface TaskChoices {
   delivery?: Delivery;
 }
 
-/** Whether a task's video is an agent film (an Agent row: a make line with a look). */
+/** Whether a task's video is an agent film (a make line with a look: an Agent row, or a Create row with a Lemo style). */
 const isAgentFilm = (c: TaskChoices) => c.instruction?.kind === "make" && Boolean(c.instruction.look);
 
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -446,8 +446,9 @@ export class CampaignWorker {
     switch (t.state) {
       case "queued":
         if (t.kind === "post") return this.findVideo(t);
-        // An agent film is never scripted or rendered here: its brief goes out to an agent.
-        if (c.instruction.kind === "make" && c.instruction.look) return this.offerBrief(t, c);
+        // An Agent row's film is never scripted or rendered here: its brief goes out to an agent. A Create row with a
+        // Lemo style (scripted) has its script written here first, then its brief goes out.
+        if (c.instruction.kind === "make" && c.instruction.look && !c.instruction.scripted) return this.offerBrief(t, c);
         if (c.waitUntil !== undefined && this.now() < c.waitUntil) return; // waiting for tomorrow's AI budget
         if (this.stopped(t)) return; // stopped: nothing new starts
         if (c.waitUntil !== undefined) this.setChoices(t.id, { waiting: undefined, waitUntil: undefined });
@@ -456,7 +457,8 @@ export class CampaignWorker {
       case "awaiting_agent":
         return this.followBrief(t);
       case "scripting":
-        // A script left half-written by a restart is written again.
+        // A script left half-written by a restart is written again; a scripted Lemo film whose script is written
+        // and whose brief isn't out yet (its lead time, or a stopped campaign) goes straight on to its brief.
         return this.spawn(t, () => this.makeScript(t.id));
       case "rendering":
         if (t.productionId === null) return this.spawn(t, () => this.makeAudio(t.id));
@@ -496,14 +498,20 @@ export class CampaignWorker {
       let script: Script;
       const targetSec = c.instruction.kind === "make" ? c.instruction.sec ?? undefined : undefined;
       const instructions = c.instruction.kind === "make" ? c.instruction.instructions : undefined;
+      // The row's model, when it chose one, is the only one asked: its failure fails the task with its reason.
+      const model = c.instruction.kind === "make" ? c.instruction.model : undefined;
       try {
-        script = await this.write({ ai: this.ai }, { hook: c.hook!, angle: c.angle!, cta: c.cta! }, targetSec, instructions);
+        script = await this.write({ ai: this.ai }, { hook: c.hook!, angle: c.angle!, cta: c.cta! }, targetSec, instructions, model);
       } catch (err) {
         if (err instanceof OverBudget || (err as Error)?.name === "OverBudget") return this.waitForBudget(id);
         throw err;
       }
       this.setChoices(id, { script });
     }
+    // A Create row with a Lemo style: an agent films the script (no WanGP voiceover or music). Until its brief is
+    // out the task stays scripting, and the next tick comes back here with the script already written.
+    const written = this.choices(id);
+    if (written.instruction.kind === "make" && written.instruction.look && written.instruction.scripted) return this.offerBrief(this.campaigns.task(id)!, written);
     this.campaigns.updateTask(id, { state: "rendering" });
     await this.makeAudio(id);
   }
@@ -656,10 +664,12 @@ export class CampaignWorker {
     this.setChoices(t.id, { lease: undefined });
   }
 
-  /** The agent's checked film: edited in the task's style, or with no style sent for review as it is. */
+  /**
+   * The agent's checked film, sent for review as it was delivered: a Lemo film is never edited by FreePoster, even
+   * one whose task kept a FreePoster style from a schedule saved before that.
+   */
   private async takeDelivery(t: CampaignTask, c: TaskChoices, d: Delivery) {
     if (!existsSync(d.path)) return this.fail(t.id, `its delivered film ${d.path} is gone`);
-    if (c.style) return this.startEdit(t.id, d.path, c.style);
     this.campaigns.updateTask(t.id, { state: "reviewing", reviewId: null });
     await this.requestReview(this.campaigns.task(t.id)!, c);
   }

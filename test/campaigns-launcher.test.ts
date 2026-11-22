@@ -201,7 +201,7 @@ test("launches once for an open brief and not again while running", async () => 
   assert.equal(cmd, "C:\\bin\\claude.exe");
   assert.equal(args[0], "-p");
   const mcpPath = join(s.dir, "agent-mcp.json");
-  assert.deepEqual(args.slice(2), ["--mcp-config", mcpPath, "--permission-mode", "acceptEdits", "--allowedTools", "Bash,Read,Write,Edit,Skill,mcp__freeposter__list_briefs,mcp__freeposter__claim_brief,mcp__freeposter__renew_brief,mcp__freeposter__submit_brief,mcp__freeposter__give_up_brief"]);
+  assert.deepEqual(args.slice(2), ["--mcp-config", mcpPath, "--permission-mode", "acceptEdits", "--allowedTools", "Bash,Read,Write,Edit,Skill,mcp__freeposter__list_briefs,mcp__freeposter__claim_brief,mcp__freeposter__renew_brief,mcp__freeposter__submit_brief,mcp__freeposter__give_up_brief", "--model", "claude-opus-5-5"]);
   assert.ok(!args.join(" ").includes("mcp__freeposter__*"), "only the brief tools, never all of FreePoster's");
   assert.equal(opts?.cwd, join(s.dir, "films"));
   assert.ok(existsSync(join(s.dir, "films")));
@@ -295,4 +295,31 @@ test("the MCP config carries the app password when one is set", async () => {
   } finally {
     config.appPassword = before;
   }
+});
+
+test("starts Claude Code with the brief's model", async () => {
+  const s = setup();
+  const id = s.add(1);
+  const t = s.cs.task(id)!;
+  const c = t.choices as unknown as TaskChoices;
+  s.cs.updateTask(id, { choices: { ...t.choices, brief: { ...c.brief!, model: "claude:claude-haiku-5-5" } } });
+  const running = s.launcher.tick();
+  await new Promise((r) => setImmediate(r));
+  const args = s.calls[0].args;
+  assert.equal(args[args.indexOf("--model") + 1], "claude-haiku-5-5");
+  s.finish({ code: 0, stdout: "", stderr: "" });
+  await running;
+
+  // With no model on the brief (or a brief made before briefs had one), the default.
+  const d = setup();
+  const old = d.add(1);
+  const o = d.cs.task(old)!;
+  const { model: _gone, ...brief } = (o.choices as unknown as TaskChoices).brief!;
+  d.cs.updateTask(old, { choices: { ...o.choices, brief } });
+  const again = d.launcher.tick();
+  await new Promise((r) => setImmediate(r));
+  const plain = d.calls[0].args;
+  assert.equal(plain[plain.indexOf("--model") + 1], "claude-opus-5-5");
+  d.finish({ code: 0, stdout: "", stderr: "" });
+  await again;
 });
