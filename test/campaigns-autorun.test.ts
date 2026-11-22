@@ -258,3 +258,24 @@ test("the vocabulary carries the models it's given, and none without", () => {
   assert.equal("models" in campaignVocabulary(s.store, s.cs), false);
   assert.deepEqual(campaignVocabulary(s.store, s.cs, ["claude:claude-opus-5-5"]).models, ["claude:claude-opus-5-5"]);
 });
+
+test("a change logged before rows had a model can still be undone, and undo writes rows in today's shape", async () => {
+  const s = setup();
+  const r = await s.change({ rows: [s.row({ quantity: 3 })] });
+  assert.ok(r.ok);
+  if (!r.ok) return;
+  // As saved before the upgrade: every row with look: null and no model, in the campaign and in the log.
+  const oldShape = (rows: Record<string, unknown>[]) => rows.map(({ model: _m, text, ...rest }) => ({ ...rest, look: null, text }));
+  const db = s.cs.db;
+  const raw = (sql: string, ...args: (string | number)[]) => db.prepare(sql).get(...args) as Record<string, string>;
+  db.prepare("UPDATE campaigns SET rows = ? WHERE id = ?").run(JSON.stringify(oldShape(JSON.parse(raw("SELECT rows FROM campaigns WHERE id = ?", s.id).rows))), s.id);
+  const logged = raw("SELECT before, after FROM campaign_changes WHERE id = ?", r.changeId);
+  const before = JSON.parse(logged.before), after = JSON.parse(logged.after);
+  db.prepare("UPDATE campaign_changes SET before = ?, after = ? WHERE id = ?")
+    .run(JSON.stringify({ ...before, rows: oldShape(before.rows) }), JSON.stringify({ ...after, rows: oldShape(after.rows) }), r.changeId);
+  assert.deepEqual(undoChange(s.cs, r.changeId), { ok: true });
+  const saved = JSON.parse(raw("SELECT rows FROM campaigns WHERE id = ?", s.id).rows);
+  assert.equal(saved[0].quantity, 2);
+  assert.equal("look" in saved[0], false, "no look written back");
+  assert.equal(saved[0].model, null);
+});

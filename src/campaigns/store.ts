@@ -179,8 +179,14 @@ const toTask = (r: any): CampaignTask => ({
   kind: r.kind, choices: JSON.parse(r.choices), state: r.state, productionId: r.production_id, editId: r.edit_id,
   reviewId: r.review_id, postId: r.post_id, error: r.error, createdAt: r.created_at, updatedAt: r.updated_at,
 });
+/** A logged campaign with its rows in today's shape (a change logged before an upgrade holds them as they were). */
+const loggedCampaign = (v: unknown): unknown => {
+  if (typeof v !== "object" || v === null || !Array.isArray((v as { rows?: unknown }).rows)) return v;
+  const rows = (v as { rows: unknown[] }).rows.map((r) => (typeof r === "object" && r !== null && !Array.isArray(r) ? migrateRow(r as Record<string, unknown>) : r));
+  return { ...v, rows };
+};
 const toChange = (r: any): CampaignChange => ({
-  id: r.id, campaignId: r.campaign_id, agent: r.agent, at: r.at, before: JSON.parse(r.before), after: JSON.parse(r.after),
+  id: r.id, campaignId: r.campaign_id, agent: r.agent, at: r.at, before: loggedCampaign(JSON.parse(r.before)), after: loggedCampaign(JSON.parse(r.after)),
   reason: r.reason, undoneAt: r.undone_at,
 });
 
