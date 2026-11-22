@@ -258,3 +258,15 @@ test("parity: the server's and the browser's rowIssues agree", () => {
     "Drive videos can't use a Lemo style", "claude:gone isn't available; pick another model", "no editing style",
     "lemo:nope is no longer in Lemo-Opuscar", "Lemo-Opuscar isn't installed on this computer"]) assert.ok(seen.has(text), `a case gives "${text}"`);
 });
+
+test("sameRows: the window's table matches the saved one by content, whatever its key order", () => {
+  const a = [row({ id: 1 }), row({ id: 2, time: "18:00" })];
+  const reordered = a.map((r: any) => Object.fromEntries(Object.entries(r).reverse()));
+  assert.equal(R.sameRows(a, reordered), true);
+  assert.equal(R.sameRows(a, structuredClone(a)), true);
+  assert.equal(R.sameRows(a, [a[0], row({ id: 2, time: "18:01" })]), false, "a changed time");
+  assert.equal(R.sameRows(a, [a[1], a[0]]), false, "rows moved");
+  assert.equal(R.sameRows(a, [a[0]]), false, "a row removed");
+  assert.equal(R.sameRows([row({ days: ["mon", "tue"] })], [row({ days: ["tue", "mon"] })]), false, "days are kept in week order, so order counts");
+  assert.equal(R.sameRows([row({ hook: { pick: "named", id: 3 } })], [row({ hook: { id: 3, pick: "named" } })]), true);
+});

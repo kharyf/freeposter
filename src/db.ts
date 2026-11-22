@@ -547,6 +547,36 @@ export class Store {
   }
 
   /**
+   * Moves a post to a new time, but only while none of its jobs has started (no attempt, no upload checkpoint): a
+   * held job stays held and goes at the new time once released. Returns whether it moved.
+   */
+  movePost(postId: number, at: number): boolean {
+    const jobs = this.db.prepare("SELECT id, state, attempts, progress FROM jobs WHERE post_id = ?").all(postId) as { id: number; state: string; attempts: number; progress: string }[];
+    const unstarted = (j: (typeof jobs)[number]) => {
+      if (j.state !== "queued" || j.attempts !== 0) return false;
+      return Object.keys(JSON.parse(j.progress) as object).every((k) => k === "heldFrom");
+    };
+    if (!jobs.length || !jobs.every(unstarted)) return false;
+    // A savepoint, so it nests inside a caller's transaction (a campaign's table saved with its change log).
+    this.db.exec("SAVEPOINT move_post");
+    try {
+      for (const j of jobs) {
+        const progress = JSON.parse(j.progress) as Record<string, unknown>;
+        if (typeof progress.heldFrom === "number") {
+          progress.heldFrom = at;
+          this.db.prepare("UPDATE jobs SET progress = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(progress), Date.now(), j.id);
+        } else this.db.prepare("UPDATE jobs SET next_run_at = ?, updated_at = ? WHERE id = ?").run(at, Date.now(), j.id);
+      }
+      this.db.prepare("UPDATE posts SET scheduled_at = ? WHERE id = ?").run(at, postId);
+      this.db.exec("RELEASE move_post");
+    } catch (err) {
+      this.db.exec("ROLLBACK TO move_post; RELEASE move_post");
+      throw err;
+    }
+    return true;
+  }
+
+  /**
    * Holds a post's jobs that haven't gone out (the campaign kill switch, or a campaign post waiting for its time):
    * they won't run until releasePost. The time they had is kept in progress.heldFrom. Returns how many were held.
    */

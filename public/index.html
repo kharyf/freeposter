@@ -108,6 +108,7 @@
   #scheduleNote { margin-top: 6px; }
   .when-at { font-weight: 600; }
   .upcoming-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }
+  .post.planned .when-at { color: var(--muted); }
   .state.scheduled { color: var(--accent); }
   .job { display: grid; grid-template-columns: 130px 110px 1fr auto; gap: 8px; align-items: start; font-size: 13px; padding: 4px 0; }
   @container (max-width: 600px) { .job { grid-template-columns: 1fr 1fr; } }
@@ -275,6 +276,7 @@
   .cal .entry.partial { border-left-color: var(--warn); background: color-mix(in srgb, var(--warn) 8%, transparent); }
   .cal .entry.waiting { border-left-color: var(--warn); background: color-mix(in srgb, var(--warn) 8%, transparent); }
   .cal .entry.stopped { border-left-color: var(--bad); background: color-mix(in srgb, var(--bad) 6%, transparent); }
+  .cal .entry.planned { border-left-style: dashed; border-left-color: var(--muted); background: color-mix(in srgb, var(--muted) 8%, transparent); }
   .cal .entry.stopped .t, .cal .entry.stopped .n { text-decoration: line-through; }
   .cal .entry .t { font-weight: 600; font-variant-numeric: tabular-nums; }
   .cal .entry .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -386,13 +388,22 @@
   .cp-autopost-on { color: var(--warn); font-size: 12px; font-weight: 600; }
   .cp-card h2.cp-name { font-size: 17px; text-transform: none; letter-spacing: -0.01em; color: var(--ink); overflow-wrap: anywhere; }
   .cp-card .section-head { flex-wrap: wrap; gap: 8px; }
-  .cp-chip { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
-  .cp-chip.running { color: var(--ok); } .cp-chip.unconfirmed { color: var(--warn); } .cp-chip.off { color: var(--muted); } .cp-chip.stopped { color: var(--bad); }
+  /* The campaign's state: a pulsing green dot while it runs, a solid red one while it's stopped. */
+  .cp-dot { width: 12px; height: 12px; border-radius: 50%; flex: none; }
+  .cp-dot.running { background: var(--ok); }
+  .cp-dot.stopped { background: var(--bad); }
+  @media (prefers-reduced-motion: no-preference) { .cp-dot.running { animation: cp-pulse 1.6s ease-in-out infinite; } }
+  @keyframes cp-pulse {
+    0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 60%, transparent); opacity: 1; }
+    50% { opacity: 0.65; }
+    100% { box-shadow: 0 0 0 8px color-mix(in srgb, var(--ok) 0%, transparent); opacity: 1; }
+  }
   .cp-controls { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; margin-bottom: 12px; }
   .cp-autorun { border: 2px solid var(--accent); border-radius: 8px; padding: 4px 10px; background: color-mix(in srgb, var(--accent) 8%, transparent); font-weight: 600; }
   .cp-autorun.on { background: color-mix(in srgb, var(--accent) 18%, transparent); }
   .cp-settings { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0 12px; margin-bottom: 4px; }
-  .cp-card .section-head .cp-run { margin-left: auto; }
+  .cp-card .section-head .cp-commit { margin-left: auto; font-weight: 600; padding: 8px 14px; }
+  .cp-card .section-head .cp-commit:not(:disabled) { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.cp-start { background: var(--ok); border-color: var(--ok); color: #fff; font-weight: 600; padding: 8px 14px; }
   .cp-table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; margin-top: 8px; }
   table.cp-table { border-collapse: collapse; width: 100%; font-size: 13px; }
@@ -2092,13 +2103,27 @@ const captionText = (p) => p.captionPending
   ? "<span class='muted'>Your AI provider is writing the caption; it posts once that's done.</span>"
   : esc(p.caption) || "<span class='muted'>(no caption)</span>";
 
-function renderUpcoming(posts) {
+const UPCOMING_PLAN_DAYS = 7;
+const upcomingWhen = (ms) => new Date(ms).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+
+/** A campaign video that isn't a post yet: changed on the Campaigns tab, so no buttons here. */
+const plannedItem = (e) => `
+    <div class="post planned">
+      <div><span class="when-at">${upcomingWhen(e.at)}</span> <span class="muted">· ${esc(e.name)}</span>
+        <span class="badge">${esc(e.status === "planned" ? "Planned" : e.status)}</span></div>
+      <div class="muted" style="margin-top:4px">Campaign <a href="#" class="link" data-open-tab="campaigns">${esc(e.campaign.name)}</a>${e.style ? ` · ${esc(e.style)}` : ""}${e.set ? ` · ${esc(e.set)}` : ""}${e.status === "planned" ? " · made on its day, then waits for your review" : ""}</div>
+    </div>`;
+
+function renderUpcoming(posts, planned = []) {
   // Don't redraw under someone who is picking a new time.
   if ($("upcoming").contains(document.activeElement)) return;
-  const upcoming = posts.filter(isUpcoming).sort((a, b) => a.scheduledAt - b.scheduledAt);
-  $("upcoming").innerHTML = !upcoming.length ? `<div class="muted">Nothing scheduled.</div>` : upcoming.map((p) => `
+  const upcoming = [
+    ...posts.filter(isUpcoming).map((p) => ({ at: p.scheduledAt, post: p })),
+    ...planned.map((e) => ({ at: e.at, plan: e })),
+  ].sort((a, b) => a.at - b.at);
+  $("upcoming").innerHTML = !upcoming.length ? `<div class="muted">Nothing scheduled.</div>` : upcoming.map(({ post: p, plan }) => plan ? plannedItem(plan) : `
     <div class="post">
-      <div><span class="when-at">${new Date(p.scheduledAt).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>${p.title ? ` <span class="muted">· ${esc(p.title)}</span>` : ""}
+      <div><span class="when-at">${upcomingWhen(p.scheduledAt)}</span>${p.title ? ` <span class="muted">· ${esc(p.title)}</span>` : ""}
         ${p.editId ? ` <a class="badge" href="/api/edits/${p.editId}/video" target="_blank" rel="noopener">${p.requireEdit ? "From Drive · edited" : "Edited"} ▶</a>` : ""}</div>
       <div class="cap">${captionText(p)}</div>
       <div data-text-editor="${p.id}" hidden>
@@ -2127,9 +2152,20 @@ async function changePost(id, method, body) {
 
 const STATE_LABEL = { queued: "Queued", running: "Posting…", retry: "Retrying", waiting_quota: "Waiting (daily cap)", published: "Published", failed: "Failed" };
 
+/** The campaigns' videos in the next week that aren't a post yet (none if that can't be read). */
+async function loadPlanned() {
+  try {
+    const now = Date.now();
+    const res = await fetch(`/api/calendar?only=campaign&from=${now}&to=${now + UPCOMING_PLAN_DAYS * 86_400_000}`);
+    return res.ok ? (await res.json()).entries : [];
+  } catch {
+    return [];
+  }
+}
+
 async function loadPosts() {
-  const posts = await (await fetch("/api/posts")).json();
-  renderUpcoming(posts);
+  const [posts, planned] = await Promise.all([fetch("/api/posts").then((r) => r.json()), loadPlanned()]);
+  renderUpcoming(posts, planned);
   const history = posts.filter((p) => !isUpcoming(p));
   if (!history.length) {
     $("posts").classList.add("muted");
@@ -2574,6 +2610,8 @@ const calTime = (ms) => new Date(ms).toLocaleTimeString([], { hour: "numeric", m
 
 function entryKind(e) {
   if (e.stopped) return "stopped";
+  if (e.status === "planned") return "planned";
+  if (e.source === "campaign") return "waiting";
   if (e.status === "posted") return "posted";
   if (e.status === "partially posted") return "partial";
   if (e.key.startsWith("drive:")) return "waiting";
@@ -2582,6 +2620,7 @@ function entryKind(e) {
 
 /** "Basic · PersonalBrand", "RAW · PersonalBrand", or where a post from this window went. */
 function entrySettings(e) {
+  if (e.source === "campaign") return [`Campaign ${e.campaign.name}`, e.style].filter(Boolean).join(" · ");
   if (e.source !== "drive") return e.source === "review" ? "asked by an agent" : "posted from this window";
   return [e.raw ? "RAW" : e.style, e.set].filter(Boolean).join(" · ");
 }
@@ -2627,8 +2666,8 @@ function renderCalDetail() {
     <div class="section-head"><h2>${esc(new Date(e.at).toLocaleString([], { weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" }))}</h2>
       <button type="button" data-cal-close>Close</button></div>
     <div><strong>${esc(e.name)}</strong> <span class="badge ${{ "posted": "ok", "partially posted": "warn", "not posted": "bad" }[e.status] ?? ""}">${esc(e.status)}</span></div>
-    <div class="muted" style="margin-top:4px">${e.source === "drive"
-      ? `Editing style: <strong>${esc(e.raw ? "none (RAW: posts as uploaded)" : (e.style ?? "—"))}</strong> · Account set: <strong>${esc(e.set ?? "—")}</strong>`
+    <div class="muted" style="margin-top:4px">${e.source === "drive" || e.source === "campaign"
+      ? `${e.source === "campaign" ? `Campaign: <a href="#" class="link" data-open-tab="campaigns">${esc(e.campaign.name)}</a> · ` : ""}Editing style: <strong>${esc(e.raw ? "none (RAW: posts as uploaded)" : (e.style ?? "—"))}</strong> · Account set: <strong>${esc(e.set ?? "Default")}</strong>`
       : esc(entrySettings(e))}</div>
     ${e.accounts.length ? `<div style="margin-top:8px">${e.accounts.map((a) => `<div class="acc">${icon(a.platform)} ${esc(label(a.platform))} — ${esc(a.name)}
       <span class="state ${esc(a.state)}">${esc(a.state.replace("_", " "))}</span>${a.url ? ` <a class="link" href="${esc(a.url)}" target="_blank" rel="noopener">view</a>` : ""}</div>`).join("")}</div>` : ""}
@@ -3093,7 +3132,8 @@ const cpLibForget = (...ids) => { for (const id of ids) delete cpLibDrafts[id]; 
 const cpFormIds = (p) => ["name", "text", "kw", "url"].map((f) => `${p}${f}`);
 let cpSeq = 0; // answers to older loads are dropped
 let cpArFor = null; // the campaign the Autorun dialog is asking about
-const cpRows = {}; // campaign id -> its table as edited here, until the server has saved exactly that
+const cpRows = {}; // campaign id -> its table as edited here, until Save Changes has the server save exactly that
+const cpBase = {}; // campaign id -> the saved table those edits started from (to tell when Autorun changed it since)
 const cpSaving = {}; // campaign id -> the chain of its table saves (one at a time, in order)
 const cpNotes = {}; // campaign id -> { kind, text, problems? } under the card's buttons
 const cpToday = {}; // campaign id -> { tasks } | { error }
@@ -3102,11 +3142,22 @@ const cpChanges = {}; // campaign id -> { changes? , error? }
 const cpChangeNotes = {}; // change id -> why its Undo didn't work
 const cpOpen = new Set(); // "<id>:history" / "<id>:changes" drawers that are open
 
+/** Redraws Upcoming, and the Calendar if it's showing, after a campaign change (each at most once per burst of saves). */
+let schedulesTimer = null;
+function refreshSchedules() {
+  clearTimeout(schedulesTimer);
+  schedulesTimer = setTimeout(() => {
+    void loadPosts().catch(() => {});
+    if (!$("calendar").hidden) void loadCalendar().catch(() => {});
+  }, 150);
+}
+
 /** One call to the app: never throws; a network failure comes back as an error a person can read. */
 async function cpCall(method, url, body) {
   try {
     const res = await fetch(url, method === "GET" ? undefined : { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}) });
     const out = await res.json().catch(() => ({}));
+    if (res.ok && method !== "GET") refreshSchedules();
     return res.ok ? { ok: true, status: res.status, body: out } : { ok: false, status: res.status, error: out.error ?? `FreePoster answered ${res.status}`, problems: out.problems };
   } catch {
     return { ok: false, status: 0, error: "Couldn't reach FreePoster. Is it still running?" };
@@ -3314,10 +3365,12 @@ async function cpAutoPost(box) {
 
 // ---- campaign cards ----
 
+/** The campaign's state as a dot: pulsing green while it runs, solid red while it's stopped. Its words are its label and tooltip. */
 function cpChip(c) {
-  if (cp.killed) return `<span class="cp-chip stopped" title="Every campaign is stopped (an agent used the kill switch); press Resume above">Stopped (all)</span>`;
-  if (!c.enabled) return `<span class="cp-chip stopped">Stopped</span>`;
-  return `<span class="cp-chip running">Running</span>`;
+  const dot = (kind, text) => `<span class="cp-dot ${kind}" role="img" aria-label="${esc(text)}" title="${esc(text)}"></span>`;
+  if (cp.killed) return dot("stopped", "Stopped (all): every campaign is stopped (an agent used the kill switch); press Resume above");
+  if (!c.enabled) return dot("stopped", "Stopped");
+  return dot("running", "Running");
 }
 
 const CP_DAY_LETTER = { sun: "S", mon: "M", tue: "T", wed: "W", thu: "T", fri: "F", sat: "S" };
@@ -3326,6 +3379,10 @@ const CP_QTY = [1, 10], CP_SEC = [5, 300];
 
 /** The table as this window has it: an edit not yet saved, else the campaign's own. */
 const cpRowsOf = (c) => cpRows[c.id] ?? c.rows ?? [];
+/** Whether the window's table differs from the saved one (Save Changes has something to save). */
+const cpUnsaved = (c) => cpRows[c.id] !== undefined && !FreePosterRows.sameRows(cpRows[c.id], c.rows ?? []);
+/** Whether the saved table changed (an Autorun change) after this window's edits started from it. */
+const cpChangedUnder = (c) => cpUnsaved(c) && cpBase[c.id] !== undefined && !FreePosterRows.sameRows(cpBase[c.id], c.rows ?? []);
 const cpDefaultStyle = () => (status.editingStyles ?? []).find((s) => s.isDefault)?.id ?? status.editingStyles?.[0]?.id ?? "";
 
 /** What the table's rules (public/campaign-rows.js) know about this window: the styles, Lemo styles and models it can offer. */
@@ -3483,8 +3540,13 @@ function cpCardHtml(c) {
     ? `<button type="button" class="cp-run cp-stop" id="cpRun${c.id}" data-cp-run="${c.id}" data-on="false" title="Holds this campaign's posts and makes nothing new until you start it again">Stop Campaign</button>`
     : `<button type="button" class="cp-run cp-start" id="cpRun${c.id}" data-cp-run="${c.id}" data-on="true" title="Runs this campaign again and lets its held posts go out">Start Campaign</button>`;
   const open = (k) => (cpOpen.has(`${c.id}:${k}`) ? "open" : "");
+  const save = `<button type="button" class="cp-commit" id="cpCommit${c.id}" data-cp-commit="${c.id}" ${cpUnsaved(c) ? "" : "disabled"}
+    title="Saves your changes to the table. Until then the campaign keeps running on the table as it was last saved.">Save Changes</button>`;
+  const under = cpChangedUnder(c)
+    ? `<div class="cp-note err" role="status">Autorun changed this table while you were editing it. Save Changes replaces its change with your table.</div>` : "";
   return `<section class="cp-card" data-cp-card="${c.id}">
-    <div class="section-head"><h2 class="cp-name">${esc(c.name)}</h2>${cpChip(c)}${run}</div>
+    <div class="section-head"><h2 class="cp-name">${esc(c.name)}</h2>${cpChip(c)}${save}${run}</div>
+    ${under}
     <div class="cp-controls">
       <label class="cp-switch cp-autorun ${c.autorun ? "on" : ""}" title="Lets the connected AI agent change this campaign"><input type="checkbox" id="cpAr${c.id}" data-cp-autorun="${c.id}" ${c.autorun ? "checked" : ""}> ⚠ Autorun</label>
     </div>
@@ -3507,25 +3569,61 @@ function cpApply(id, r, okText) {
   keepFocus(renderCampaigns);
 }
 
-/** Saves a campaign's table whole, one save at a time; the window's copy is let go once the server has exactly it. */
+/**
+ * Save Changes: saves a campaign's table whole, one save at a time; the window's copy is let go once the server has
+ * exactly it. Edits made while it's on its way stay unsaved, on top of what it saved.
+ */
 function cpSaveRows(id) {
   const sent = structuredClone(cpRows[id] ?? cpCampaign(id)?.rows ?? []);
   cpSaving[id] = (cpSaving[id] ?? Promise.resolve()).then(async () => {
     const r = await cpCall("PUT", `/api/campaigns/${id}/rows`, { rows: sent });
     if (r.ok) {
       cp.campaigns = cp.campaigns.map((c) => (c.id === id ? r.body : c));
-      if (JSON.stringify(cpRows[id]) === JSON.stringify(sent)) delete cpRows[id];
-      cpNotes[id] = undefined;
+      if (FreePosterRows.sameRows(cpRows[id], sent)) { delete cpRows[id]; delete cpBase[id]; }
+      else cpBase[id] = structuredClone(r.body.rows ?? sent);
+      cpNotes[id] = { kind: "ok", text: "Changes saved." };
     } else cpNotes[id] = { kind: "err", text: `Not saved: ${r.error}`, problems: r.problems };
     keepFocus(renderCampaigns);
   });
   return cpSaving[id];
 }
 
-/** The window's working copy of a campaign's table (made on the first edit). */
+/** The window's working copy of a campaign's table (made on the first edit, from the table as last saved). */
 function cpEditRows(id) {
-  cpRows[id] ??= structuredClone(cpCampaign(id)?.rows ?? []);
+  if (cpRows[id] === undefined) {
+    cpBase[id] = structuredClone(cpCampaign(id)?.rows ?? []);
+    cpRows[id] = structuredClone(cpBase[id]);
+  }
   return cpRows[id];
+}
+
+/** The Save Changes button follows the table without a redraw (as typing goes on). */
+function cpSyncCommit(id) {
+  const c = cpCampaign(id), b = $(`cpCommit${id}`);
+  if (c && b) b.disabled = !cpUnsaved(c);
+}
+
+/**
+ * An edit kept in the window, not yet saved: its card says so (Save Changes, a stale "saved" note gone) and its table
+ * is redrawn, for the "Not running yet" list. Not while a button is held down: a text or number field's change fires
+ * on blur, at the mousedown of the next click, and redrawing then would replace the element under the pointer and
+ * swallow the click (Save Changes's, too). The redraw waits until that click is done.
+ */
+let cpPointerDown = false, cpRedrawWaiting = false;
+document.addEventListener("pointerdown", () => { cpPointerDown = true; }, true);
+const cpPointerDone = () => {
+  cpPointerDown = false;
+  if (!cpRedrawWaiting) return;
+  cpRedrawWaiting = false;
+  setTimeout(() => keepFocus(renderCampaigns), 0); // after the click this pointerup ends
+};
+document.addEventListener("pointerup", cpPointerDone, true);
+document.addEventListener("pointercancel", cpPointerDone, true);
+function cpEdited(id, el) {
+  if (cpNotes[id]?.kind === "ok") cpNotes[id] = undefined;
+  cpSyncCommit(id);
+  if (cpPointerDown && el?.matches?.("input")) cpRedrawWaiting = true;
+  else keepFocus(renderCampaigns);
 }
 
 function cpRowFor(el) {
@@ -3613,8 +3711,8 @@ $("cpLibrary").addEventListener("keydown", (e) => {
 $("cpList").addEventListener("input", (e) => {
   const t = e.target;
   if (!t.dataset.cpRow || t.dataset.cpField !== "text") return;
-  const { row } = cpRowFor(t);
-  if (row) row.text = t.value;
+  const { cid, row } = cpRowFor(t);
+  if (row) { row.text = t.value; cpSyncCommit(cid); }
 });
 $("cpList").addEventListener("click", async (e) => {
   const add = e.target.closest("[data-cp-addrow]");
@@ -3628,13 +3726,18 @@ $("cpList").addEventListener("click", async (e) => {
     };
     // Made a Create row by the same rule as switching one to Create: a Lemo style copied with no model gets the default Claude.
     rows.push(FreePosterRows.applyChange(fresh, "origin", "create", cpCtx()).row);
-    return cpSaveRows(id);
+    return cpEdited(id);
   }
   const del = e.target.closest("[data-cp-del]");
   if (del) {
     const [id, rid] = del.dataset.cpDel.split(":").map(Number);
     cpRows[id] = cpEditRows(id).filter((r) => r.id !== rid);
-    return cpSaveRows(id);
+    return cpEdited(id);
+  }
+  const commit = e.target.closest("[data-cp-commit]");
+  if (commit) {
+    const id = Number(commit.dataset.cpCommit);
+    return cpBusy(commit, () => cpSaveRows(id));
   }
   const day = e.target.closest("[data-cp-day]");
   if (day) {
@@ -3642,7 +3745,7 @@ $("cpList").addEventListener("click", async (e) => {
     if (!row) return;
     const d = day.dataset.cpDay;
     row.days = row.days.includes(d) ? row.days.filter((x) => x !== d) : CP_DAYS.map(([x]) => x).filter((x) => x === d || row.days.includes(x));
-    return cpSaveRows(cid);
+    return cpEdited(cid);
   }
   const runBtn = e.target.closest("[data-cp-run]");
   if (runBtn) {
@@ -3671,10 +3774,12 @@ $("cpList").addEventListener("click", async (e) => {
   const undo = e.target.closest("[data-cp-undo]");
   if (undo) {
     const changeId = Number(undo.dataset.cpUndo), id = Number(undo.dataset.cpCamp);
+    const camp = cpCampaign(id);
+    if (camp && cpUnsaved(camp) && !confirm("Undo this Autorun change?\n\nThe table goes back to how it was before that change, and your unsaved changes to it are lost.")) return;
     const r = await cpBusy(undo, () => cpCall("POST", `/api/campaigns/changes/${changeId}/undo`));
     if (r.ok) delete cpChangeNotes[changeId];
     else cpChangeNotes[changeId] = r.status === 409 ? `Couldn't undo: ${r.error}` : r.error;
-    if (r.ok) delete cpRows[id]; // the campaign's table is back to before
+    if (r.ok) { delete cpRows[id]; delete cpBase[id]; } // the campaign's table is back to before
     await cpLoadDrawer(id, "changes");
     await loadCampaigns();
   }
@@ -3700,11 +3805,10 @@ $("cpList").addEventListener("change", async (e) => {
   if (t.dataset.cpRow && t.dataset.cpField) {
     const { cid, row } = cpRowFor(t);
     if (!row) return;
-    // Redraw now only when other cells follow the change (a model switched, the Model column shown). A text or number
-    // field's change fires on blur, at the mousedown of the next click: redrawing then would replace the element under
-    // the pointer and swallow that click, so those wait for the save's redraw.
+    // Kept in the window until Save Changes. When other cells follow the change (a model switched, the Model column
+    // shown) the table is redrawn at once; otherwise cpEdited waits out a click in progress (see there).
     if (cpSetField(row, t.dataset.cpField, t, t.dataset.cpRow)) keepFocus(renderCampaigns);
-    return cpSaveRows(cid);
+    return cpEdited(cid, t);
   }
   if (t.dataset.cpAutorun) {
     const id = Number(t.dataset.cpAutorun);

@@ -5,7 +5,7 @@ import { execFile } from "node:child_process";
 import { createReadStream, existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { accountSets, createAccountSet, defaultSetId, deleteAccountSet, noteSignInSet, placeInSet, takeSignInSet, defaultTikTokPrefs, renameAccountSet, setDefaultSet, setDefaultTikTokPrefs, setSharing, setToken, sharedFrom, sharingPairs, type Sharing } from "./accounts.ts";
-import { calendar, postOutcome } from "./calendar.ts";
+import { calendar, campaignPlan, postOutcome } from "./calendar.ts";
 import { allStyles, createStyle, defaultStyleId, deleteStyle, fancyToolNote, hasSample, type ToolHealth, MAX_THUMBNAIL_BYTES, sampleVideoPath, saveThumbnail, setDefaultStyle, STYLE_STEPS, styleById, styleToken, thumbnail, thumbnailProblem, thumbnailSvg, uploadedThumbnail } from "./edit/styles.ts";
 import * as openrouter from "./ai/openrouter.ts";
 import { AI_JOBS, PROVIDER_IDS, type AiJob, type ProviderId } from "./ai/providers.ts";
@@ -18,6 +18,7 @@ import { mcpTools, registerMcp, trustedRequest } from "./mcp.ts";
 import { registerAgentApi } from "./api/routes.ts";
 import { registerAnalyticsRoutes } from "./analytics/routes.ts";
 import { registerCampaignRoutes } from "./campaigns/routes.ts";
+import { CampaignStore } from "./campaigns/store.ts";
 import type { CampaignWorker } from "./campaigns/worker.ts";
 import { postSigned } from "./notify.ts";
 import { blenderTemplates } from "./produce/adapters/blender.ts";
@@ -708,13 +709,16 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
 
   app.get("/api/posts", async () => store.recentPosts().map((p) => postView(store, p)));
 
-  // The Calendar tab: what goes out between two times (ms), at most about six weeks at once.
-  app.get<{ Querystring: { from?: string; to?: string } }>("/api/calendar", async (req, reply) => {
+  // The Calendar tab: what goes out between two times (ms), at most about six weeks at once, campaigns' plans included.
+  // With only=campaign, just the campaigns' videos that aren't a post yet (Upcoming lists them under its posts).
+  const campaignStore = campaigns?.campaigns ?? new CampaignStore(store);
+  app.get<{ Querystring: { from?: string; to?: string; only?: string } }>("/api/calendar", async (req, reply) => {
     const [from, to] = [Number(req.query.from), Number(req.query.to)];
     if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from || to - from > 45 * 86_400_000) {
       return reply.code(400).send({ error: "from and to are times in ms, at most 45 days apart" });
     }
-    return { entries: calendar(store, from, to) };
+    if (req.query.only === "campaign") return { entries: campaignPlan(store, campaignStore, from, to).sort((a, b) => a.at - b.at || a.key.localeCompare(b.key)) };
+    return { entries: calendar(store, from, to, campaignStore) };
   });
 
   // ---- edits: made in the background, previewed and approved here before they can be posted ----

@@ -3,6 +3,7 @@
 import { createHash } from "node:crypto";
 import type { Store } from "../db.ts";
 import type { DriveFileRecord } from "../types.ts";
+import { retimeRows } from "./retime.ts";
 import { compileRows, isLemo, migrateRow, type Row } from "./rows.ts";
 import type { CompiledCampaign } from "./spec.ts";
 
@@ -436,12 +437,17 @@ export class CampaignStore {
       .run(JSON.stringify(compiled), now, now, id);
   }
 
-  /** The table saved: its schedule is what runs, confirmed at once (the table is the user's own authority). */
+  /**
+   * The table saved: its schedule is what runs, confirmed at once (the table is the user's own authority). A row's new
+   * time also moves the videos it already started that haven't gone out (retimeRows).
+   */
   setRows(id: number, rows: Row[]) {
     const now = Date.now();
+    const before = this.campaign(id)?.rows ?? [];
     this.db
       .prepare("UPDATE campaigns SET rows = ?, compiled = ?, compiled_sha = text_sha, confirmed_at = ?, updated_at = ? WHERE id = ?")
       .run(JSON.stringify(rows), JSON.stringify(compileRows(rows)), now, now, id);
+    retimeRows(this.store, id, before, rows, now);
   }
 
   setEnabled(id: number, on: boolean) {
@@ -466,10 +472,12 @@ export class CampaignStore {
 
   /** Undoing an Autorun change: the table, text, compiled schedule (and what it was confirmed for) and cap as they were. */
   restore(id: number, c: Pick<Campaign, "text" | "textSha" | "compiled" | "compiledSha" | "confirmedAt" | "dailyPostCap"> & { rows?: Row[] }) {
+    const before = this.campaign(id)?.rows ?? [];
     this.db
       .prepare(`UPDATE campaigns SET rows = ?, text = ?, text_sha = ?, compiled = ?, compiled_sha = ?, confirmed_at = ?, daily_post_cap = ?, updated_at = ?
                 WHERE id = ?`)
       .run(JSON.stringify(c.rows ?? []), c.text, c.textSha, c.compiled ? JSON.stringify(c.compiled) : null, c.compiledSha, c.confirmedAt, c.dailyPostCap, Date.now(), id);
+    retimeRows(this.store, id, before, c.rows ?? []);
   }
 
   isRunnable(c: Campaign): boolean {
@@ -488,6 +496,17 @@ export class CampaignStore {
       .run(t.campaignId, t.date, t.dayIndex, t.instructionIndex, t.copy ?? 1, t.kind, JSON.stringify(t.choices ?? {}), t.state ?? "queued",
         t.productionId ?? null, t.editId ?? null, t.reviewId ?? null, t.postId ?? null, t.error ?? null, now, now);
     return changes > 0 ? Number(lastInsertRowid) : null;
+  }
+
+  /**
+   * Gives back the slot of a task missed without a video (no post), so its row can be made again that day. The task
+   * stays, missed, as that day's history, moved to a copy number no slot uses (minus its id); anything else is kept
+   * as it is. It isn't deleted, so its id (which events are keyed by) is never handed to the new task. Returns
+   * whether the slot was given back.
+   */
+  retireMissed(id: number): boolean {
+    return this.db.prepare("UPDATE campaign_tasks SET copy = -id, updated_at = ? WHERE id = ? AND state = 'missed' AND post_id IS NULL AND copy >= 0")
+      .run(Date.now(), id).changes > 0;
   }
 
   task(id: number): CampaignTask | undefined {

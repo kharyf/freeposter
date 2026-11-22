@@ -11,10 +11,10 @@ import { foreignLinks, hasLink, type Script } from "./script.ts";
 import type { CampaignStore, CampaignTask } from "./store.ts";
 import type { TaskChoices } from "./worker.ts";
 
-/** A film is asked for this long before the video is due. */
+/** An Agent row's film is asked for this long before the video is due (a Create row's Lemo film is asked for at once). */
 export const BRIEF_LEAD_HOURS = 6;
 export const LEASE_MINUTES = 120;
-/** The time kept between a delivery and its post time for the review. */
+/** The time kept between an Agent row's delivery and its post time for the review. */
 export const REVIEW_BUFFER_MINUTES = 30;
 export const MAX_BRIEF_OFFERS = 2;
 /** The pref that turns on the local launcher (FreePoster starts Claude itself for each open brief). */
@@ -75,9 +75,16 @@ const iso = (ms: number) => new Date(ms).toISOString();
 /** A script as the agent reads it: its spoken lines, then its shots with their lengths. */
 export const scriptText = (s: Script) => [...s.lines, "", "Shots:", ...s.shots.map((sh) => `- ${sh.prompt} (${sh.sec}s)`)].join("\n");
 
-/** The brief for a task: the chosen words, the look, the script and model, and when the film is needed by. */
+/**
+ * The brief for a task: the chosen words, the look, the script and model, and when the film is needed by. An Agent
+ * row's film is due REVIEW_BUFFER_MINUTES before its slot. A Create row's Lemo film (scripted) runs like a WanGP
+ * video: it's wanted within a day whatever its slot, and a film that arrives after the slot posts once approved; a
+ * slot already gone isn't given as its post time.
+ */
 export function buildBrief(store: Store, c: TaskChoices, look: Look, postAt: number | null, now: number): Brief {
-  const instruction = c.instruction as { sec?: number | null; instructions?: string; model?: string } | undefined;
+  const instruction = c.instruction as { sec?: number | null; instructions?: string; model?: string; scripted?: boolean } | undefined;
+  const scripted = instruction?.scripted === true;
+  if (scripted && postAt !== null && postAt <= now) postAt = null;
   return {
     look: look.key,
     producer: look.producer,
@@ -88,7 +95,7 @@ export function buildBrief(store: Store, c: TaskChoices, look: Look, postAt: num
     instructions: instruction?.instructions ?? null,
     language: store.pref<string>("agent.language") ?? "en",
     needsImageGen: look.needsImageGen,
-    deadline: postAt === null ? now + DAY : postAt - REVIEW_BUFFER_MINUTES * MIN,
+    deadline: postAt === null || scripted ? now + DAY : postAt - REVIEW_BUFFER_MINUTES * MIN,
     postAt,
     script: c.script ? scriptText(c.script) : null,
     model: instruction?.model ?? null,

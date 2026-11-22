@@ -108,13 +108,23 @@ function campaignRoutes(app: FastifyInstance, store: Store, worker?: CampaignWor
     return { id, campaign: view(cs.campaign(id)!) };
   });
 
-  /** The table, saved whole (the tab saves on every change). Its schedule runs at once; tasks already made keep theirs. */
+  /**
+   * The table, saved whole (the tab's Save Changes). Its schedule runs at once; tasks already made keep their
+   * choices, but a row's new time moves its videos that haven't gone out yet. Today's tasks are made from it before
+   * the answer (a new row, or a missed slot moved to a time still ahead), so the Calendar and Upcoming the window
+   * reloads next already show them, not a tick later.
+   */
   app.put("/api/campaigns/:id/rows", async (req, reply) => {
     const c = campaignOf(req.params, reply);
     if (!c) return;
     const r = parseRows(bodyOf(req).rows, campaignVocabulary(store, cs, modelIds(worker?.ai)));
     if (!r.ok) return bad(reply, "the table couldn't be saved", r.problems);
     cs.setRows(c.id, r.value);
+    try {
+      worker?.materialize();
+    } catch (err) {
+      console.error(`campaign ${c.id}: couldn't make today's tasks after the save: ${(err as Error).message}`); // the next tick tries again
+    }
     return view(cs.campaign(c.id)!);
   });
 

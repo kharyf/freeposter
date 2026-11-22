@@ -128,8 +128,20 @@
     return out;
   }
 
+  /** A value as JSON with every object's keys sorted, so two equal values read the same whatever their key order. */
+  function canonical(v) {
+    if (Array.isArray(v)) return "[" + v.map(canonical).join(",") + "]";
+    if (v !== null && typeof v === "object") {
+      return "{" + Object.keys(v).sort().map(function (k) { return JSON.stringify(k) + ":" + canonical(v[k]); }).join(",") + "}";
+    }
+    return JSON.stringify(v === undefined ? null : v);
+  }
+
+  /** Whether two tables hold the same rows in the same order (the window's unsaved changes are none when they do). */
+  function sameRows(a, b) { return canonical(a) === canonical(b); }
+
   root.FreePosterRows = {
     isLemo: isLemo, isClaudeModel: isClaudeModel, showModelColumn: showModelColumn,
-    styleGroups: styleGroups, modelOptions: modelOptions, applyChange: applyChange, rowIssues: rowIssues,
+    styleGroups: styleGroups, modelOptions: modelOptions, applyChange: applyChange, rowIssues: rowIssues, sameRows: sameRows,
   };
 })(typeof globalThis !== "undefined" ? globalThis : this);

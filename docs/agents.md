@@ -169,7 +169,7 @@ When a brief is due, FreePoster logs `brief.requested` (a film is wanted) or `br
 3. **Renews** with `renew_brief` at least every 30 minutes while it works; a lease that runs out frees the brief.
 4. **Delivers** with `submit_brief` (`task_id`, `claim_token`, `video_path`, `library_version`, optionally `treatment_path`, `caption`, `title`). The film is in the brief's Lemo style; the agent doesn't choose it. The agent writes the caption and title: the only link allowed in them is the brief's CTA link, and when there is one the caption must include it. Delivering the same file again is harmless.
 
-The file must be portrait 9:16, pass FreePoster's usual video checks, and last within 20% (at least 2 seconds) of the brief's `sec` when it has one. A video that fails comes back as an error saying why, and the agent can fix and deliver again before the deadline. The deadline is 30 minutes before the post time, so you have time to review; a brief with no post time is due within a day. If nothing arrives by then, the slot is skipped.
+The file must be portrait 9:16, pass FreePoster's usual video checks, and last within 20% (at least 2 seconds) of the brief's `sec` when it has one. A video that fails comes back as an error saying why, and the agent can fix and deliver again before the deadline. For an Agent row the deadline is 30 minutes before the post time, so you have time to review. A brief with a `script` (a Create row) or with no post time is due within a day; a scripted film that arrives after `post_at` still posts once approved. If nothing arrives by then, the slot is skipped.
 
 If it can't make the film, the agent calls `give_up_brief` with a reason: the task fails and you get a Telegram message saying the agent gave up and why.
 

@@ -1,7 +1,9 @@
 // Runs confirmed campaigns, with plain code only (the one AI call is the script writer's). Every tick:
 //  - materialize: today's instructions of every runnable campaign become tasks, one per copy (local calendar day;
-//    a day the app was closed is never back-filled). Each task keeps a snapshot of the instruction it came from and
-//    the hook / angle / CTA it was given, so editing the campaign never changes a task already made.
+//    a day the app was closed is never back-filled). Only a time still ahead is made today: one already come (this
+//    minute or earlier, as when a line is added late) is next week's. Each task keeps a snapshot of the instruction it came from and
+//    the hook / angle / CTA it was given, so editing the campaign never changes a task already made, except that a
+//    row's new post time moves its videos not yet out (retime.ts).
 //  - make: script (AI) → WanGP voiceover and music → production → the editing style's edit → review. Nothing a
 //    campaign makes posts without the user's approval here.
 //  - post: a "post" line waits for a kept campaign video with that name, else a Drive file intake held for it (its
@@ -28,6 +30,7 @@ import type { Store } from "../db.ts";
 import { styleById } from "../edit/styles.ts";
 import { queueEvent } from "../notify.ts";
 import type { ProductionSpec } from "../produce/spec.ts";
+import { dayKey, lineTime, localAt, parseDay } from "./time.ts";
 import type { Production, ProductionStore } from "../produce/store.ts";
 import { generateMusic, generateSpeech } from "../produce/wan-audio.ts";
 import { hashFile } from "../review/media.ts";
@@ -123,19 +126,7 @@ const BEST_AGE = "72h";
 export const RULE_INSTRUCTION_BASE = 1000;
 
 const HOUR = 3_600_000;
-const pad = (n: number) => String(n).padStart(2, "0");
-/** The local calendar day of a time, YYYY-MM-DD. */
-export const dayKey = (ms: number) => {
-  const d = new Date(ms);
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-};
-const parseDay = (key: string) => key.split("-").map(Number) as [number, number, number];
-/** That local day at "HH:MM" (a time a DST change skips moves forward, as Date does). */
-export const localAt = (key: string, hhmm: string) => {
-  const [y, m, d] = parseDay(key);
-  const [h, min] = hhmm.split(":").map(Number);
-  return new Date(y, m - 1, d, h, min).getTime();
-};
+export { dayKey, localAt };
 const addDays = (key: string, n: number) => {
   const [y, m, d] = parseDay(key);
   return dayKey(new Date(y, m - 1, d + n, 12).getTime());
@@ -267,7 +258,7 @@ export class CampaignWorker {
     for (const c of this.campaigns.campaigns()) {
       if (!this.campaigns.isRunnable(c) || !c.compiled) continue;
       try {
-        made += this.materializeCampaign(c, key, dayIndex, best);
+        made += this.materializeCampaign(c, key, dayIndex, best, date.getTime());
       } catch (err) {
         console.error(`campaign ${c.id}: couldn't make today's tasks: ${(err as Error).message}`);
       }
@@ -275,10 +266,26 @@ export class CampaignWorker {
     return made;
   }
 
-  private materializeCampaign(c: Campaign, key: string, dayIndex: number, best: Map<LibraryKind, number[]>): number {
+  private materializeCampaign(c: Campaign, key: string, dayIndex: number, best: Map<LibraryKind, number[]>, now: number): number {
     const instructions = c.compiled!.days[DAYS[dayIndex]] ?? [];
     if (!instructions.length) return 0;
-    const existing = this.campaigns.tasksOn(c.id, key);
+    let existing = this.campaigns.tasksOn(c.id, key);
+    // A slot missed today (no video made) whose row has since moved to a time still ahead is made again, fresh from
+    // the row as it is now: saving the new time means it should run at that time.
+    const missedSlots = new Map(existing.filter((t) => t.state === "missed" && t.postId === null).map((t) => [`${t.instructionIndex}:${t.copy}`, t]));
+    if (missedSlots.size) {
+      const retired = new Set<number>();
+      instructions.forEach((ins) => {
+        if (ins.row === undefined) return; // only a table row's time can be moved
+        for (let copy = 0; copy < (ins.kind === "make" ? ins.count : 1); copy++) {
+          const t = missedSlots.get(`${ROW_INSTRUCTION_BASE + ins.row}:${copy}`);
+          const hhmm = lineTime(ins, copy, c.defaultPostTimes);
+          if (!t || hhmm === null || hhmm === (t.choices as unknown as TaskChoices).postTime || localAt(key, hhmm) <= now) continue;
+          if (this.campaigns.retireMissed(t.id)) retired.add(t.id);
+        }
+      });
+      if (retired.size) existing = this.campaigns.tasksOn(c.id, key);
+    }
     const have = new Set(existing.map((t) => `${t.instructionIndex}:${t.copy}`));
     const ctx = this.pickContext(c, existing, best);
     // Kept videos are numbered across the whole day (instruction, then copy order), so every name is the day's own.
@@ -299,6 +306,10 @@ export class CampaignWorker {
       const copies = ins.kind === "make" ? ins.count : 1;
       for (let copy = 0; copy < copies; copy++) {
         if (have.has(`${instructionIndex}:${copy}`)) continue;
+        // A time already come today (this very minute, or earlier) is next week's: only a time still ahead is made
+        // today. A video to keep has no time, so it's always made.
+        const hhmm = lineTime(ins, copy, c.defaultPostTimes);
+        if (hhmm !== null && localAt(key, hhmm) <= now) continue;
         const { choices, error } = this.resolve(c, ins, copy, DAY_LABELS[dayIndex], ctx, keepNo.get(`${index}:${copy}`) ?? copy + 1);
         const id = this.campaigns.addTask({
           campaignId: c.id, date: key, dayIndex, instructionIndex, copy, kind: ins.kind, choices: choices as unknown as Record<string, unknown>,
@@ -580,15 +591,18 @@ export class CampaignWorker {
   // ---- agent films ----
 
   /**
-   * An agent film's brief goes out BRIEF_LEAD_HOURS before its slot (a film to keep, at once), never while its
-   * campaign is stopped. Its look must still be in the catalogue then; once the brief is out, it keeps that look.
+   * An Agent row's brief goes out BRIEF_LEAD_HOURS before its slot (a film to keep, at once); a Create row's Lemo
+   * film's (scripted) goes out as soon as its script is written, however close its slot, as a WanGP video starts at
+   * once. Never while its campaign is stopped. Its look must still be in the catalogue then; once the brief is out,
+   * it keeps that look.
    */
   private offerBrief(t: CampaignTask, c: TaskChoices) {
     const now = this.now();
     const postAt = c.postTime === null ? null : localAt(t.date, c.postTime);
-    if (postAt !== null && now < postAt - BRIEF_LEAD_HOURS * HOUR) return;
-    // Its deadline has already passed (the app was off, or the campaign stopped, through it): no brief is offered.
-    const deadline = postAt === null ? null : postAt - REVIEW_BUFFER_MINUTES * 60_000;
+    const scripted = (c.instruction as MakeInstruction).scripted === true;
+    if (!scripted && postAt !== null && now < postAt - BRIEF_LEAD_HOURS * HOUR) return;
+    // An Agent row's deadline has already passed (the app was off, or the campaign stopped, through it): no brief is offered.
+    const deadline = postAt === null || scripted ? null : postAt - REVIEW_BUFFER_MINUTES * 60_000;
     if (deadline !== null && now >= deadline) return this.missBrief(t, deadline);
     if (this.stopped(t)) return; // stopped: no new brief is offered
     const key = (c.instruction as MakeInstruction).look!;
@@ -682,7 +696,8 @@ export class CampaignWorker {
 
   /**
    * The user asked for a redo of an agent film: a new round of its brief, for the same slot, with the note added
-   * to its instructions, unclaimed and with its offers back. Past the brief's deadline the slot is missed instead.
+   * to its instructions, unclaimed and with its offers back. Past an Agent row's brief's deadline the slot is missed
+   * instead; a Create row's Lemo film (scripted) is asked for again however close its slot.
    */
   private redoFilm(t: CampaignTask, c: TaskChoices, note: string | null, reason: string | null) {
     const now = this.now();
@@ -691,7 +706,8 @@ export class CampaignWorker {
     const briefRound = (c.briefRound ?? 1) + 1;
     this.setChoices(t.id, { briefRound });
     const postAt = old.postAt;
-    if (postAt !== null && now >= postAt - REVIEW_BUFFER_MINUTES * 60_000) return this.missBrief(t, postAt - REVIEW_BUFFER_MINUTES * 60_000);
+    const scripted = (c.instruction as MakeInstruction).scripted === true;
+    if (!scripted && postAt !== null && now >= postAt - REVIEW_BUFFER_MINUTES * 60_000) return this.missBrief(t, postAt - REVIEW_BUFFER_MINUTES * 60_000);
     const look = this.briefLook(old);
     const ask = note?.trim() || (reason && reason !== "none" ? reason : "make a new film");
     const fresh = buildBrief(this.store, c, look, postAt, now);
@@ -722,7 +738,9 @@ export class CampaignWorker {
     let postAt = c.postTime === null ? null : localAt(t.date, c.postTime);
     // Its slot is too close to make now: it's wanted within a day, and placed like any later approval (the user
     // asked for this retry, as a retried WanGP video that misses its slot posts at the next free time).
-    if (postAt !== null && postAt - REVIEW_BUFFER_MINUTES * 60_000 <= now) postAt = null;
+    // A Create row's Lemo film keeps a slot still ahead (buildBrief drops one gone).
+    const scripted = (c.instruction as MakeInstruction).scripted === true;
+    if (!scripted && postAt !== null && postAt - REVIEW_BUFFER_MINUTES * 60_000 <= now) postAt = null;
     const brief = buildBrief(this.store, c, look, postAt, now);
     this.announceBrief(t, brief, look.name, round);
     return { brief, offers: 0, lease: undefined, delivery: undefined };

@@ -160,7 +160,7 @@ test("DST spring-forward day still gets exactly one set of tasks", () => {
   const s = setup();
   const id = s.campaign({ sat: [s.make(1, { at: "default" })], sun: [s.make(2, { at: "02:30" })] });
   // 14 March 2027: clocks jump from 02:00 to 03:00 in New York.
-  s.clock.now = at(2027, 3, 13, 23, 59);
+  s.clock.now = at(2027, 3, 13, 8, 0); // before Saturday's 09:00 (a time already passed would be next week's)
   assert.equal(s.worker.materialize(), 1);
   s.clock.now = at(2027, 3, 14, 0, 30);
   assert.equal(s.worker.materialize(), 2);
@@ -1075,9 +1075,10 @@ const LEMO_SCRIPT: Script = {
  * A Create row on Tuesday at 18:00 in the ukiyo-e Lemo style, written by Claude Sonnet: FreePoster writes the script
  * (with a stand-in writer that records the model it was given), then an agent films it.
  */
-function scriptedSetup(write: (model: string | undefined) => Promise<Script> = async () => LEMO_SCRIPT) {
+function scriptedSetup(write: (model: string | undefined) => Promise<Script> = async () => LEMO_SCRIPT, now = TUE) {
   const models: (string | undefined)[] = [];
   const s = setup({ writeScript: async (_deps, _choice, _sec, _instructions, model) => { models.push(model); return write(model); } });
+  s.clock.now = now;
   syncLooks(s.store, "lemo-opuscar", [LOOK]);
   const id = tableCampaign(s, [tableRow(s, { origin: "create", style: LOOK.key, model: "claude:claude-sonnet-5-5", time: "18:00", sec: 9 })]);
   s.worker.materialize();
@@ -1105,24 +1106,68 @@ test("a Create row with a Lemo style writes a script with its model, then offers
   assert.equal(s.events("brief.requested").length, 1);
 });
 
-test("a scripted Lemo task waiting for its brief's lead time writes its script once", async () => {
+test("a Create row with a Lemo style is scripted and briefed at once, as a WanGP video starts at once", async () => {
   const s = scriptedSetup();
-  await s.tick(); // 08:00: the script is written, but an 18:00 slot's brief waits until 12:00
-  let t = s.cs.task(s.task.id)!;
-  assert.equal(t.state, "scripting", t.error ?? "");
-  assert.ok((t.choices as any).script, "the script is kept");
-  s.clock.now = at(2026, 11, 17, 10);
-  await s.tick(); // as after a restart: the task is still scripting, and has its script
-  assert.equal(s.cs.task(s.task.id)!.state, "scripting");
-  assert.equal(s.events("brief.requested").length, 0);
-  s.clock.now = at(2026, 11, 17, 12);
-  await s.tick();
-  t = s.cs.task(s.task.id)!;
+  await s.tick(); // 08:00, for an 18:00 slot: no lead time to wait for
+  const t = s.cs.task(s.task.id)!;
   assert.equal(t.state, "awaiting_agent", t.error ?? "");
+  const brief = (t.choices as any).brief;
+  assert.equal(brief.postAt, at(2026, 11, 17, 18));
+  assert.equal(brief.deadline, at(2026, 11, 18, 8), "wanted within a day, not by a review cutoff");
   await s.tick();
   assert.equal(s.models.length, 1, "the script was written once");
   assert.equal(s.events("brief.requested").length, 1, "the brief was offered once");
   assert.equal((t.choices as any).briefRound, 1);
+});
+
+test("a Create row with a Lemo style added minutes before its slot is made anyway, and posts once approved", async () => {
+  const s = scriptedSetup(undefined, at(2026, 11, 17, 17, 50));
+  await s.tick();
+  let t = s.cs.task(s.task.id)!;
+  assert.equal(t.state, "awaiting_agent", t.error ?? "");
+  assert.equal(s.events("campaign.missed").length, 0);
+  // The film arrives after the slot has passed: it still goes to review, and posts when approved.
+  s.clock.now = at(2026, 11, 17, 18, 40);
+  const token = claimed(s.cs, t.id, "agent-1", s.clock.now);
+  const out = await submitBrief(s.store, s.cs, t.id, token, { videoPath: clips[4], manifest: { look: LOOK.key, libraryVersion: "1.4.0" }, caption: AGENT_CAPTION }, s.clock.now);
+  assert.ok(out.ok, out.ok ? "" : out.error);
+  await s.tick();
+  await s.approve(t.id);
+  await s.tick();
+  t = s.cs.task(t.id)!;
+  assert.equal(t.state, "scheduled", t.error ?? "");
+  const post = s.store.post(t.postId!)!;
+  assert.ok(post.scheduledAt! >= at(2026, 11, 17, 18, 40) && post.scheduledAt! < at(2026, 11, 17, 19), `posts now, at ${new Date(post.scheduledAt!).toString()}`);
+});
+
+test("a Redo on a Create row's Lemo film close to its slot asks for a new film, not a missed slot", async () => {
+  const s = scriptedSetup();
+  await s.tick();
+  const token = claimed(s.cs, s.task.id, "agent-1", s.clock.now);
+  const out = await submitBrief(s.store, s.cs, s.task.id, token, { videoPath: clips[4], manifest: { look: LOOK.key, libraryVersion: "1.4.0" }, caption: AGENT_CAPTION }, s.clock.now);
+  assert.ok(out.ok, out.ok ? "" : out.error);
+  await s.tick();
+  await redoReview(s as unknown as ReturnType<typeof agentSetup>, "again");
+  s.clock.now = at(2026, 11, 17, 17, 50);
+  await s.tick();
+  const t = s.cs.task(s.task.id)!;
+  assert.equal(t.state, "awaiting_agent", t.error ?? "");
+  assert.equal((t.choices as any).briefRound, 2);
+  assert.equal(s.events("brief.requested").length, 2);
+});
+
+test("a line whose time has come or passed today isn't made today: it waits for next week", () => {
+  for (const [time, made] of [["07:00", 0], ["08:00", 0], ["08:01", 1]] as const) {
+    const s = setup();
+    const id = tableCampaign(s, [tableRow(s, { time })]);
+    assert.equal(s.worker.materialize(), made, `a ${time} slot at 08:00`);
+    assert.equal(s.cs.tasksOn(id, "2026-11-17").length, made);
+  }
+  // A second before the slot's minute still counts as ahead.
+  const s = setup();
+  s.clock.now = at(2026, 11, 17, 8, 0) - 1_000;
+  tableCampaign(s, [tableRow(s, { time: "08:00" })]);
+  assert.equal(s.worker.materialize(), 1);
 });
 
 test("a Create row's model reaches the script writer", async () => {
@@ -1542,4 +1587,45 @@ test("at the deadline the slot is missed, not the lease expired", async () => {
   const t = s.cs.task(s.task.id)!;
   assert.equal(t.state, "missed", t.error ?? "");
   assert.equal(s.events("brief.expired").length, 0);
+});
+
+test("a slot missed today is made again, fresh, when its row moves to a time still ahead", async () => {
+  const s = setup();
+  const id = tableCampaign(s, [tableRow(s, { time: "09:00" })]);
+  s.worker.materialize();
+  const [missed] = s.cs.tasksOn(id, "2026-11-17");
+  s.cs.updateTask(missed.id, { state: "missed", error: "the agent didn't deliver before 8:30" });
+  s.clock.now = at(2026, 11, 17, 10);
+  // Moved to a time already passed: it waits for next week, and the missed slot stays as it was.
+  s.cs.setRows(id, [tableRow(s, { time: "09:30" })]);
+  assert.equal(s.worker.materialize(), 0);
+  assert.equal(s.cs.task(missed.id)!.state, "missed");
+  // Moved to a time still ahead: a new task for the row as it is now.
+  s.cs.setRows(id, [tableRow(s, { time: "11:00", text: "new direction" })]);
+  assert.equal(s.worker.materialize(), 1);
+  const tasks = s.cs.tasksOn(id, "2026-11-17");
+  const fresh = tasks.find((t) => t.id !== missed.id)!;
+  assert.ok(fresh.id > missed.id, "a new id: events keyed by the old task's id never stand for the new one");
+  assert.equal(fresh.state, "queued");
+  assert.equal(fresh.copy, missed.copy, "it takes the row's slot");
+  assert.equal((fresh.choices as any).postTime, "11:00");
+  assert.equal((fresh.choices as any).instruction.instructions, "new direction");
+  const old = s.cs.task(missed.id)!;
+  assert.equal(old.state, "missed", "the missed slot stays in the day's history");
+  assert.ok(old.copy < 0, "out of the row's slot");
+  assert.equal(tasks.length, 2);
+  assert.equal(s.worker.materialize(), 0, "made once");
+});
+
+test("a slot missed at its own time, or one that made a video, isn't made again", () => {
+  const s = setup();
+  const id = tableCampaign(s, [tableRow(s, { id: 1, time: "11:00" }), tableRow(s, { id: 2, time: "12:00" })]);
+  s.worker.materialize();
+  const [a, b] = s.cs.tasksOn(id, "2026-11-17");
+  s.cs.updateTask(a.id, { state: "missed" }); // missed with the row's time unchanged (an Agent row's deadline)
+  s.cs.updateTask(b.id, { state: "posted", postId: 1 });
+  s.clock.now = at(2026, 11, 17, 10);
+  s.cs.setRows(id, [tableRow(s, { id: 1, time: "11:00" }), tableRow(s, { id: 2, time: "13:00" })]);
+  assert.equal(s.worker.materialize(), 0);
+  assert.deepEqual(s.cs.tasksOn(id, "2026-11-17").map((t) => t.id), [a.id, b.id]);
 });

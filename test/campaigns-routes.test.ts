@@ -22,9 +22,11 @@ const emptyDays = () => Object.fromEntries(DAYS.map((d) => [d, []])) as unknown 
 function setup(opts: { ai?: (store: ReturnType<typeof newStore>) => AiService } = {}) {
   const store = newStore();
   const cs = new CampaignStore(store);
-  const calls = { stop: 0, resume: 0, stopOne: [] as number[], startOne: [] as number[] };
+  const calls = { stop: 0, resume: 0, stopOne: [] as number[], startOne: [] as number[], materialize: [] as string[] };
   const worker = {
     campaigns: cs, ai: opts.ai ? opts.ai(store) : null,
+    /** Records the rows the campaign had when today's tasks were made. */
+    materialize() { calls.materialize.push(JSON.stringify(cs.campaigns().map((c) => c.rows?.map((r) => r.time)))); return 0; },
     stopAll() { calls.stop++; cs.setKilled(true); return 2; },
     resumeAll() { calls.resume++; cs.setKilled(false); return 3; },
     stopCampaign(id: number) { calls.stopOne.push(id); cs.setEnabled(id, false); return 4; },
@@ -361,4 +363,14 @@ test("an agent row with no style saves, and is left out of the schedule", async 
   assert.equal(res.statusCode, 200, res.body);
   assert.equal(res.json().rows[0].style, null);
   assert.deepEqual(res.json().compiled.days.tue, []);
+});
+
+test("saving the table makes today's tasks at once, from the rows just saved", async () => {
+  const { send, calls, campaignId, row } = setup();
+  const res = await send("PUT", `/api/campaigns/${campaignId}/rows`, { rows: [row({ time: "21:45" })] });
+  assert.equal(res.statusCode, 200, res.body);
+  assert.deepEqual(calls.materialize, [JSON.stringify([["21:45"]])], "after the save, before the answer");
+  // A table that couldn't be saved makes nothing.
+  await send("PUT", `/api/campaigns/${campaignId}/rows`, { rows: "x" });
+  assert.equal(calls.materialize.length, 1);
 });

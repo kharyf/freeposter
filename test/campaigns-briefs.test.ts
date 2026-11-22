@@ -57,6 +57,20 @@ test("buildBrief takes its deadline from the post time, or a day for a kept vide
   assert.equal(buildBrief(store, { hook: undefined } as unknown as TaskChoices, look, null, T0).language, "fr");
 });
 
+test("a scripted brief (a Create row's Lemo film) is wanted within a day, whatever its slot, which it keeps while ahead", () => {
+  const { store } = setup();
+  const c = { instruction: { kind: "make", look: look.key, scripted: true } } as unknown as TaskChoices;
+  const slot = T0 + 10 * MIN; // too close for the 30-minute review buffer
+  const b = buildBrief(store, c, look, slot, T0);
+  assert.equal(b.deadline, T0 + 24 * 3_600_000);
+  assert.equal(b.postAt, slot);
+  const far = buildBrief(store, c, look, T0 + 10 * 3_600_000, T0);
+  assert.equal(far.deadline, T0 + 24 * 3_600_000);
+  // A slot already gone: it posts at the next free time once approved.
+  assert.equal(buildBrief(store, c, look, T0 - MIN, T0).postAt, null);
+  assert.equal(buildBrief(store, c, look, T0, T0).postAt, null);
+});
+
 test("buildBrief carries the script FreePoster wrote, and the row's model", () => {
   const { store, brief } = setup();
   assert.equal(brief.script, null, "an Agent row's brief has no script");
