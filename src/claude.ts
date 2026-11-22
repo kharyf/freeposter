@@ -8,6 +8,15 @@ import { delimiter, dirname, join } from "node:path";
 import { setting } from "./config.ts";
 
 export const CLAUDE_MODEL = "claude-opus-5-5";
+/** The Claude models a campaign row can pick; the first is the default. */
+export const CLAUDE_MODELS: readonly { id: string; name: string }[] = [
+  { id: CLAUDE_MODEL, name: "Opus 5.5" },
+  { id: "claude-sonnet-5-5", name: "Sonnet 5.5" },
+  { id: "claude-haiku-5-5", name: "Haiku 5.5" },
+  { id: "claude-fable-5-2", name: "Fable 5.2" },
+];
+/** The default as a row's model id (`provider:model`). */
+export const DEFAULT_CLAUDE_MODEL_ID = "claude:" + CLAUDE_MODEL;
 const TIMEOUT_MS = 3 * 60_000;
 
 export type ClaudeRun = (cmd: string, args: string[], stdin: string) => Promise<{ code: number | null; stdout: string; stderr: string }>;
@@ -74,7 +83,7 @@ function resultMessage(stdout: string): any {
 /** One question to Claude with no tools, answered as JSON matching `schema`. `images` are JPEGs shown with the prompt. */
 export async function askClaude<T>(
   q: { system: string; prompt: string; schema: object; effort?: "low" | "medium" | "high"; images?: Buffer[] },
-  opts: { run?: ClaudeRun; claudePath?: string } = {},
+  opts: { run?: ClaudeRun; claudePath?: string; model?: string } = {},
 ): Promise<T> {
   const cmd = opts.claudePath ?? findClaude();
   if (!cmd) throw new Error(NOT_INSTALLED);
@@ -97,7 +106,7 @@ export async function askClaude<T>(
     : q.prompt;
   const args = [
     "-p", ...io, "--no-session-persistence",
-    "--model", CLAUDE_MODEL, "--effort", q.effort ?? "low",
+    "--model", opts.model ?? CLAUDE_MODEL, "--effort", q.effort ?? "low",
     // No tools, MCP servers, slash commands or user settings: a plain question, and few tokens off the plan's limit.
     "--tools", "", "--strict-mcp-config", "--disable-slash-commands", "--setting-sources", "",
     "--system-prompt", q.system,

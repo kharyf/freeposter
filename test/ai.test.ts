@@ -252,6 +252,55 @@ test("when every provider fails, the error says what each one said", async () =>
   await assert.rejects(ai.ask("caption", q), /no AI provider is connected/);
 });
 
+// ---- choosing a model for one call ----
+
+test("modelChoices lists Claude's models and a default for other CLI providers", async () => {
+  const { ai } = service({ claude: {}, chatgpt: {} });
+  await ai.connect("chatgpt");
+  assert.deepEqual(ai.modelChoices(), [
+    { provider: "claude", label: "Claude", models: [
+      { id: "claude:claude-opus-5-5", name: "Opus 5.5" },
+      { id: "claude:claude-sonnet-5-5", name: "Sonnet 5.5" },
+      { id: "claude:claude-haiku-5-5", name: "Haiku 5.5" },
+      { id: "claude:claude-fable-5-2", name: "Fable 5.2" },
+    ] },
+    { provider: "chatgpt", label: "ChatGPT", models: [{ id: "chatgpt:default", name: "ChatGPT default" }] },
+  ]);
+});
+
+test("ask with a model uses only that provider and passes the model", async () => {
+  const calls: { cmd: string; args: string[] }[] = [];
+  const run: ProgramRun = async (cmd, args) => {
+    calls.push({ cmd, args });
+    const a = args.join(" ").includes("--model") || cmd === "claude" ? { title: "x" } : { answer: "ok" };
+    if (cmd === "chatgpt") writeFileSync(args[args.indexOf("--output-last-message") + 1], JSON.stringify(a));
+    return { code: 0, stdout: cmd === "claude" ? JSON.stringify({ is_error: false, result: "", structured_output: a }) : JSON.stringify(a), stderr: "" };
+  };
+  const ai = new AiService(newStore(), { run, find: (id) => id === "claude" || id === "chatgpt" ? id : "" });
+  await ai.connect("chatgpt");
+  ai.setRanking("script", ["chatgpt", "claude"]);
+  calls.length = 0;
+  assert.deepEqual(await ai.ask("script", q, { model: "claude:claude-sonnet-5-5" }), { title: "x" });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].cmd, "claude");
+  assert.equal(calls[0].args[calls[0].args.indexOf("--model") + 1], "claude-sonnet-5-5");
+});
+
+test("ask with a model of a disconnected provider fails without falling back", async () => {
+  const { ai, asked } = service({ claude: {}, chatgpt: {} });
+  asked.length = 0;
+  await assert.rejects(ai.ask("script", q, { model: "chatgpt:default" }), /ChatGPT isn't connected/);
+  assert.deepEqual(asked, []);
+});
+
+test("ask with a model whose provider fails does not fall back", async () => {
+  const { ai, asked } = service({ claude: new Error("signed out"), chatgpt: { title: "from chatgpt" } });
+  await ai.connect("chatgpt");
+  asked.length = 0;
+  await assert.rejects(ai.ask("script", q, { model: "claude:claude-opus-5-5" }), /Claude: Claude Code failed \(exit 1\): signed out/);
+  assert.deepEqual(asked, ["claude"]);
+});
+
 // ---- OpenRouter ----
 
 const MODELS = { data: [

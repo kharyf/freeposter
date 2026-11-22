@@ -36,3 +36,14 @@ test("non-JSON output is reported with what it said", async () => {
 test("not installed", async () => {
   await assert.rejects(askClaude(q, { claudePath: "" }), /isn't installed/);
 });
+
+test("asks with the default model, or the one it is given", async () => {
+  const models: string[] = [];
+  const run: ClaudeRun = async (_cmd, args) => {
+    models.push(args[args.indexOf("--model") + 1]);
+    return { code: 0, stderr: "", stdout: JSON.stringify({ is_error: false, result: "", structured_output: { a: "yes" } }) };
+  };
+  await askClaude(q, { run, claudePath: "c" });
+  await askClaude(q, { run, claudePath: "c", model: "claude-haiku-5-5" });
+  assert.deepEqual(models, ["claude-opus-5-5", "claude-haiku-5-5"]);
+});

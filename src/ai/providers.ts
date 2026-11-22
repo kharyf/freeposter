@@ -60,7 +60,8 @@ export interface ProviderDef {
   setup: string;
   /** the program's full path ("" when not found); `override` is a path the user entered */
   find?(override?: string): string;
-  ask?<T>(q: Question, ctx: { path: string; run?: ProgramRun }): Promise<Answer<T>>;
+  /** `model` is only used by providers that offer a choice (Claude); the others ignore it. */
+  ask?<T>(q: Question, ctx: { path: string; run?: ProgramRun; model?: string }): Promise<Answer<T>>;
 }
 
 /** Writes the frames (and any other files) to a fresh temporary folder for a program to read, and cleans up. */
@@ -135,8 +136,8 @@ export const PROVIDERS: Record<Exclude<ProviderId, "openrouter">, ProviderDef> &
     setupUrl: "https://claude.com/claude-code",
     setup: "Install Claude Code, then run claude once in a terminal and sign in with your Claude plan.",
     find: (override) => override || findClaude(),
-    async ask<T>(q: Question, ctx: { path: string; run?: ProgramRun }) {
-      return { answer: await askClaude<T>(q, { claudePath: ctx.path, run: ctx.run }) };
+    async ask<T>(q: Question, ctx: { path: string; run?: ProgramRun; model?: string }) {
+      return { answer: await askClaude<T>(q, { claudePath: ctx.path, run: ctx.run, model: ctx.model }) };
     },
   },
   chatgpt: {

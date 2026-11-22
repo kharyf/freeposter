@@ -1,6 +1,6 @@
 // The AI providers the user connected, their order for each job, and asking down that order until one answers.
 import { checkBudget } from "./budget.ts";
-import { askClaude } from "../claude.ts";
+import { askClaude, CLAUDE_MODELS } from "../claude.ts";
 import type { Store } from "../db.ts";
 import type { ProgramRun } from "./cli.ts";
 import * as openrouter from "./openrouter.ts";
@@ -92,22 +92,37 @@ export class AiService {
     this.store.setPref(RANKING_PREF, all);
   }
 
-  /** Asks one provider, without falling back. */
-  async askOne<T>(id: ProviderId, q: Question): Promise<Answer<T>> {
+  /** The models each connected provider offers, with full `provider:model` ids. */
+  modelChoices(): { provider: ProviderId; label: string; models: { id: string; name: string }[] }[] {
+    return this.connected().map((provider) => {
+      const label = PROVIDERS[provider].label;
+      const models = provider === "claude" ? CLAUDE_MODELS.map((m) => ({ id: `claude:${m.id}`, name: m.name }))
+        : provider === "openrouter" ? (modelList ?? []).map((m) => ({ id: `openrouter:${m.id}`, name: m.name }))
+        : [{ id: `${provider}:default`, name: `${label} default` }];
+      return { provider, label, models };
+    });
+  }
+
+  /** Asks one provider, without falling back. `model` is the provider's own model id; undefined means its default. */
+  async askOne<T>(id: ProviderId, q: Question, model?: string): Promise<Answer<T>> {
     if (id === "openrouter") {
       const key = this.key();
       if (!key) throw new Error("OpenRouter isn't connected");
-      return openrouter.ask<T>(q, key, this.model(), this.opts.fetch);
+      return openrouter.ask<T>(q, key, model || this.model(), this.opts.fetch);
     }
     const def = PROVIDERS[id];
     const path = this.find(id, this.saved()[id]?.path);
     if (!path) throw new Error(`${def.program} isn't installed`);
-    return def.ask!<T>(q, { path, run: this.opts.run });
+    return def.ask!<T>(q, { path, run: this.opts.run, model });
   }
 
-  /** Asks the job's providers in order until one answers; says what each one said when none does. */
-  async ask<T>(job: AiJob, q: Question): Promise<T> {
+  /**
+   * Asks the job's providers in order until one answers; says what each one said when none does. With a
+   * `provider:model` id it asks only that provider, with no fallback.
+   */
+  async ask<T>(job: AiJob, q: Question, opts: { model?: string | null } = {}): Promise<T> {
     checkBudget(this.store, job);
+    if (opts.model) return this.askModel<T>(job, q, opts.model);
     const order = this.ranking(job);
     if (!order.length) throw new Error("no AI provider is connected (connect one under AI Providers)");
     const able = order.filter((id) => this.canDo(id, job));
@@ -125,6 +140,23 @@ export class AiService {
       }
     }
     throw new Error(failed.join("; "));
+  }
+
+  private async askModel<T>(job: AiJob, q: Question, id: string): Promise<T> {
+    const cut = id.indexOf(":");
+    const provider = id.slice(0, cut) as ProviderId;
+    const model = id.slice(cut + 1);
+    if (cut < 0 || !(PROVIDER_IDS as readonly string[]).includes(provider)) throw new Error(`unknown model ${id}`);
+    if (!this.connected().includes(provider)) throw new Error(`${PROVIDERS[provider].label} isn't connected`);
+    try {
+      const out = await this.askOne<T>(provider, q, model === "default" ? undefined : model);
+      this.store.recordAiUse({ provider, job, ok: true, cost: out.cost, promptTokens: out.promptTokens, completionTokens: out.completionTokens, model: out.model });
+      return out.answer;
+    } catch (err) {
+      const msg = (err as Error).message;
+      this.store.recordAiUse({ provider, job, ok: false, error: msg.slice(0, 500) });
+      throw new Error(`${PROVIDERS[provider].label}: ${msg}`);
+    }
   }
 
   /** Connects a plan provider: its program must be installed and answer a tiny question. */
