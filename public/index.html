@@ -140,6 +140,17 @@
   .area-body { flex: 1; min-height: 0; position: relative; }
   .panel { position: absolute; inset: 0; overflow: auto; padding: 16px; }
   .panel[hidden] { display: none; }
+  /* Console tab: only #consoleLog scrolls. */
+  #panel-console:not([hidden]) { display: flex; flex-direction: column; overflow: hidden; padding: 0; }
+  .console-bar { flex: none; display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+  .console-bar input { flex: 1; min-width: 0; }
+  #consoleCount { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  #consoleLog { flex: 1; min-height: 0; overflow: auto; padding: 8px 12px; font: 12px/1.5 ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
+  #consoleLog .cl[data-level="error"] { color: var(--bad); }
+  #consoleLog .cl-time { color: var(--muted); margin-right: 8px; user-select: none; }
+  #consoleLog .cl-dropped { color: var(--muted); font-style: italic; }
+  #consoleLog mark { background: color-mix(in srgb, var(--accent) 35%, transparent); color: inherit; border-radius: 2px; }
+  #consoleJump { position: absolute; right: 20px; bottom: 16px; padding: 6px 12px; border-radius: 14px; border: 1px solid var(--line); background: var(--accent); color: #fff; cursor: pointer; }
   #workspace, .mid { position: relative; }
   .tabstrip { position: relative; display: flex; flex: none; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
   .tabstrip::-webkit-scrollbar { display: none; }
@@ -581,7 +592,14 @@
       <div id="aiBody" class="muted">Loading…</div>
   </div>
 </div>
-<div class="panel" id="panel-console" data-tab="console" role="tabpanel" aria-label="Console" hidden></div>
+<div class="panel" id="panel-console" data-tab="console" role="tabpanel" aria-label="Console" hidden>
+  <div class="console-bar">
+    <input type="search" id="consoleSearch" placeholder="Search console" aria-label="Search console">
+    <span id="consoleCount"></span>
+  </div>
+  <div id="consoleLog" role="log" aria-label="Console output" tabindex="0"></div>
+  <button type="button" id="consoleJump" hidden>Jump to latest</button>
+</div>
 <div id="styles" class="panel page" data-tab="styles" role="tabpanel" aria-label="Editing styles" hidden>
   <div class="styles-head">
     <p class="muted">A Drive video is edited in the style its name gives, as in <code>Gatekeeping_11.1.26_5.30.pm_<strong>Basic</strong>.mp4</code>, or in the default style when its name gives none.</p>
@@ -680,6 +698,7 @@
 </div>
 <script src="/layout.js"></script>
 <script src="/campaign-rows.js"></script>
+<script src="/console-view.js"></script>
 <script>
 const COLORS = { tiktok: "var(--tiktok)", instagram: "var(--instagram)", facebook: "var(--facebook)", x: "var(--x)", youtube: "var(--youtube)" };
 const ICON_SVG = {
@@ -1103,7 +1122,85 @@ function onTabShown(id) {
   else if (id === "calendar") loadCalendar();
   else if (id === "analytics") showAnalytics();
   else if (id === "campaigns") loadCampaigns();
+  else if (id === "console") startConsolePoll();
 }
+
+// ---- Console tab: live, read-only, searchable view of this session's output (GET /api/console) ----
+const FPC = FreePosterConsole;
+let consoleState = { lines: [], seq: 0, dropped: 0 };
+let consoleTimer = null, consoleBusy = false;
+const consoleQuery = () => $("consoleSearch").value;
+/** One line's node, or null when a search is active and the line doesn't match. Text only, never innerHTML. */
+function consoleNode(l, q) {
+  const segs = q ? FPC.matchSegments(l.text, q) : [{ text: l.text, hit: false }];
+  if (!segs) return null;
+  const d = document.createElement("div");
+  d.className = "cl";
+  d.dataset.level = l.level;
+  d.dataset.seq = l.seq;
+  const t = document.createElement("span");
+  t.className = "cl-time";
+  t.textContent = FPC.clock(l.at);
+  d.append(t);
+  for (const g of segs) {
+    if (g.hit) { const m = document.createElement("mark"); m.textContent = g.text; d.append(m); }
+    else d.append(document.createTextNode(g.text));
+  }
+  return d;
+}
+function consoleCount(q) { $("consoleCount").textContent = q ? `${$("consoleLog").querySelectorAll(".cl").length} matching` : ""; }
+function droppedRow() {
+  const d = document.createElement("div");
+  d.className = "cl-dropped";
+  d.textContent = "… earlier lines were dropped";
+  return d;
+}
+function renderConsole() {
+  const log = $("consoleLog"), q = consoleQuery();
+  log.replaceChildren();
+  if (consoleState.dropped) log.append(droppedRow());
+  for (const l of consoleState.lines) { const n = consoleNode(l, q); if (n) log.append(n); }
+  consoleCount(q);
+  log.scrollTop = log.scrollHeight;
+  $("consoleJump").hidden = true;
+}
+function appendConsole(added) {
+  const log = $("consoleLog"), q = consoleQuery();
+  const pinned = log.scrollHeight - log.scrollTop - log.clientHeight < 24;
+  let any = false;
+  for (const l of added) { const n = consoleNode(l, q); if (n) { log.append(n); any = true; } }
+  // Trim to match state.lines (not added.length: one response can exceed CAP), and show the dropped row once.
+  const first = consoleState.lines.length ? consoleState.lines[0].seq : 0;
+  for (let n = log.querySelector(".cl"); n && +n.dataset.seq < first; n = log.querySelector(".cl")) n.remove();
+  if (consoleState.dropped && !log.querySelector(".cl-dropped")) log.prepend(droppedRow());
+  consoleCount(q);
+  if (!any) return;
+  if (pinned) log.scrollTop = log.scrollHeight;
+  else $("consoleJump").hidden = false;
+}
+async function pollConsole() {
+  if (!visibleTabs(layout).includes("console")) { clearInterval(consoleTimer); consoleTimer = null; return; }
+  if (consoleBusy || document.hidden) return;
+  consoleBusy = true;
+  try {
+    const r = await fetch("/api/console?after=" + consoleState.seq);
+    if (!r.ok) return;
+    const m = FPC.mergeLines(consoleState, await r.json());
+    consoleState = m.state;
+    if (m.reset) renderConsole(); else if (m.added.length) appendConsole(m.added);
+  } catch {} finally { consoleBusy = false; }
+}
+function startConsolePoll() {
+  if (consoleTimer) return;
+  consoleTimer = setInterval(pollConsole, 1000);
+  void pollConsole();
+}
+$("consoleSearch").addEventListener("input", renderConsole);
+$("consoleJump").addEventListener("click", () => { const log = $("consoleLog"); log.scrollTop = log.scrollHeight; $("consoleJump").hidden = true; });
+$("consoleLog").addEventListener("scroll", () => {
+  const log = $("consoleLog");
+  if (log.scrollHeight - log.scrollTop - log.clientHeight < 24) $("consoleJump").hidden = true;
+});
 
 // Per-tab count badges, kept here because applyLayout rebuilds the strip buttons.
 const badges = {};
