@@ -23,7 +23,7 @@ import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { defaultSetId, defaultTikTok, setAccounts } from "../accounts.ts";
 import { OverBudget } from "../ai/budget.ts";
-import type { AiService } from "../ai/router.ts";
+import { claudeConnected, type AiService } from "../ai/router.ts";
 import { compareLabels, scoreVideos } from "../analytics/score.ts";
 import { AnalyticsStore } from "../analytics/store.ts";
 import { dataDir } from "../config.ts";
@@ -38,7 +38,7 @@ import { hashFile } from "../review/media.ts";
 import type { ReviewRequest, ReviewService, Subject } from "../review/service.ts";
 import { planRetirements, type Retirement } from "./remake.ts";
 import { ROW_INSTRUCTION_BASE, rowIdHex, type Row } from "./rows.ts";
-import { BRIEF_LEAD_HOURS, CLAUDE_LEAD_HOURS, LAUNCH_PREF, MAX_BRIEF_OFFERS, REVIEW_BUFFER_MINUTES, buildBrief, giveUpBrief, type Brief, type Delivery, type Lease } from "./briefs.ts";
+import { BRIEF_LEAD_HOURS, CLAUDE_LEAD_HOURS, MAX_BRIEF_OFFERS, REVIEW_BUFFER_MINUTES, buildBrief, giveUpBrief, type Brief, type Delivery, type Lease, type Progress } from "./briefs.ts";
 import { lookByKey, type Look } from "./looks.ts";
 import { buildGeneratedProduction, writeScript, type Script } from "./script.ts";
 import { DAYS, type MakeInstruction, type Pick as ValuePick, type PostInstruction } from "./spec.ts";
@@ -109,6 +109,8 @@ export interface TaskChoices {
   briefRound?: number;
   /** the agent's checked film, waiting for the worker to take it on */
   delivery?: Delivery;
+  /** how far the agent said its film is (renew_brief's percent and step), for the round under way */
+  progress?: Progress;
 }
 
 /** Whether a task's video is an agent film (a make line with a look: an Agent row, or a Create row with a Lemo style). */
@@ -218,6 +220,8 @@ export class CampaignWorker {
   onStop: (campaignId: number | null) => void = () => {};
   /** Called for each task retired because its row changed, before anything of it is undone: the app ends its agent launch through it. */
   onRetire: (taskId: number) => void = () => {};
+  /** The task FreePoster's own Claude launch is making now, if any (the app answers it from the launcher). */
+  making: () => { taskId: number; campaignId: number } | undefined = () => undefined;
 
   constructor(deps: CampaignWorkerDeps) {
     this.store = deps.store;
@@ -648,14 +652,14 @@ export class CampaignWorker {
     const round = c.briefRound ?? 1;
     // Told first: a crash before the task is written tells it again next tick under the same key, never not at all.
     this.announceBrief(t, brief, look.name, round);
-    this.setChoices(t.id, { brief, offers: 0, briefRound: round });
+    this.setChoices(t.id, { brief, offers: 0, briefRound: round, progress: undefined });
     this.campaigns.updateTask(t.id, { state: "awaiting_agent", error: null });
     log(t, `brief for a ${key} film, due by ${new Date(brief.deadline).toLocaleString()}`);
   }
 
-  /** Whether FreePoster starts Claude itself for open briefs (the launcher is on), so no other agent should claim them. */
+  /** Whether FreePoster starts Claude itself for open briefs (Claude is connected), so no other agent should claim them. */
   private launching(): boolean {
-    return this.store.pref<boolean>(LAUNCH_PREF) === true;
+    return claudeConnected(this.store);
   }
 
   /** brief.requested, once per round of the task's brief. */
@@ -751,7 +755,7 @@ export class CampaignWorker {
     const current = this.campaigns.task(t.id)!;
     // Told first, as a first brief is: a crash before the task is written tells it again under the same key.
     this.announceBrief(current, brief, look.name, briefRound);
-    this.setChoices(t.id, { brief, offers: 0, lease: undefined, delivery: undefined, briefRound });
+    this.setChoices(t.id, { brief, offers: 0, lease: undefined, delivery: undefined, briefRound, progress: undefined });
     this.campaigns.updateTask(t.id, { state: "awaiting_agent", editId: null, reviewId: null, error: null });
     log(t, `redo asked: a new brief (round ${briefRound}), due by ${new Date(brief.deadline).toLocaleString()}`);
   }
@@ -779,7 +783,7 @@ export class CampaignWorker {
     if (!scripted && postAt !== null && postAt - REVIEW_BUFFER_MINUTES * 60_000 <= now) postAt = null;
     const brief = buildBrief(this.store, c, look, postAt, now);
     this.announceBrief(t, brief, look.name, round);
-    return { brief, offers: 0, lease: undefined, delivery: undefined };
+    return { brief, offers: 0, lease: undefined, delivery: undefined, progress: undefined };
   }
 
   /** The agent's film a task's video is (a post line's is its kept video's). */

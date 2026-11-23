@@ -1,19 +1,22 @@
-// The local launcher: while a film brief is open and the user has turned it on, FreePoster starts Claude Code
+// The local launcher: while a film brief is open and Claude is connected under AI Providers, FreePoster starts Claude Code
 // headless on this computer to claim the brief through FreePoster's own MCP tools, make the film with the
 // lemo-opuscar skill and submit it. One launch at a time, on the GPU lane. A run that fails isn't retried here:
 // the brief's lease runs out and offers it again, and only then may the same task be launched again.
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { lastWords, planEnv, type ProgramRun } from "../ai/cli.ts";
+import { claudeConnected } from "../ai/router.ts";
 import { findClaude } from "../claude.ts";
 import { codeDir, config, dataDir } from "../config.ts";
 import type { Store } from "../db.ts";
-import { LAUNCH_PREF, LEASE_MINUTES, openBriefs } from "./briefs.ts";
+import { LEASE_MINUTES, openBriefs } from "./briefs.ts";
+import { ROW_INSTRUCTION_BASE, rowIdHex } from "./rows.ts";
 import type { CampaignStore } from "./store.ts";
 import type { Productions, TaskChoices } from "./worker.ts";
 
-export const ENABLED_PREF = LAUNCH_PREF;
 export const STATUS_PREF = "agent.launch.status";
+/** The status while Claude isn't connected: no campaign film can be made. */
+export const NOT_CONNECTED = "Claude isn't connected under AI Providers";
 const MIN = 60_000;
 /** The least time a launch is given, however close its brief's deadline. */
 const MIN_RUN_MINUTES = 5;
@@ -126,10 +129,10 @@ export class AgentLauncher {
     if (this.store.pref<string>(STATUS_PREF) !== text) this.store.setPref(STATUS_PREF, text);
   }
 
-  /** Starts Claude for the oldest open brief when it's turned on, installed, and nothing is running. Resolves when that run ends. */
+  /** Starts Claude for the oldest open brief when Claude is connected, installed, and nothing is running. Resolves when that run ends. */
   async tick(): Promise<void> {
     if (this.running) return;
-    if (this.store.pref<boolean>(ENABLED_PREF) !== true) return this.status("off");
+    if (!claudeConnected(this.store)) return this.status(NOT_CONNECTED);
     const claude = this.find();
     if (!claude) return this.status("Claude Code not found");
     const now = this.now();
@@ -159,6 +162,7 @@ export class AgentLauncher {
         startedAt = this.now();
         this.launched.set(task.id, startedAt);
         this.status(`working on task ${task.id}`);
+        console.log(`[campaign task ${task.id}] Claude started making ${describe(task.choices as unknown as TaskChoices, task.instructionIndex, task.date)}`);
         // Without an API key in its environment, Claude Code runs on the user's plan. It may run until the brief's
         // deadline (a few minutes at least), since past that its film can't be used.
         return this.run(claude, args, "", {
@@ -182,6 +186,7 @@ export class AgentLauncher {
       // It may hold the app password, so it's only on disk while Claude runs.
       rmSync(mcpConfig, { force: true });
       const released = startedAt !== undefined && this.release(task.id, startedAt);
+      if (startedAt !== undefined) console.log(`[campaign task ${task.id}] ${this.ending(task.id, startedAt, outcome)}`);
       if (this.stoppedFor) this.status(`stopped: ${this.stoppedFor}`);
       else if (outcome) this.status(outcome);
       else if (startedAt !== undefined) this.status(released ? `finished without a film (task ${task.id})` : "idle");
@@ -192,6 +197,20 @@ export class AgentLauncher {
     }
   }
 
+  /** The Console's last word on a launch: finished (the film was delivered), gave up, stopped, failed, or no film. */
+  private ending(taskId: number, startedAt: number, outcome: string | undefined): string {
+    const took = `after ${Math.max(1, Math.round((this.now() - startedAt) / MIN))} min`;
+    const t = this.campaigns.task(taskId);
+    const c = t?.choices as unknown as TaskChoices | undefined;
+    if (c?.delivery || (t && ["editing", "reviewing", "scheduled", "posted", "kept"].includes(t.state))) {
+      return `Claude finished the film (100% complete) ${took}; it goes to review`;
+    }
+    if (t?.state === "failed") return `Claude stopped ${took} without a film: ${t.error ?? "it gave up"}`;
+    if (this.stoppedFor) return `Claude was stopped ${took}: ${this.stoppedFor}`;
+    if (outcome) return `Claude's run ended ${took} without a film: ${outcome.replace(/^last run failed: /, "")}`;
+    return `Claude's run ended ${took} without a film; the brief is offered again`;
+  }
+
   /** FreePoster's MCP server as Claude Code reads it, with the app password when one is set. */
   private writeMcpConfig(path: string) {
     // The address the server listens on, so nothing goes through a public tunnel set as BASE_URL.
@@ -200,6 +219,14 @@ export class AgentLauncher {
     if (config.appPassword) server.headers = { Authorization: `Basic ${Buffer.from(`freeposter:${config.appPassword}`).toString("base64")}` };
     writeFileSync(path, JSON.stringify({ mcpServers: { freeposter: server } }, null, 2), { mode: 0o600 });
   }
+}
+
+/** A launch's film as the Console names it: its look, campaign, table row and slot. */
+function describe(c: TaskChoices, instructionIndex: number, date: string): string {
+  const look = c.brief?.look ?? "film";
+  const row = instructionIndex >= ROW_INSTRUCTION_BASE ? `, row ${rowIdHex(instructionIndex - ROW_INSTRUCTION_BASE)}` : "";
+  const slot = c.postTime ? ` for ${date} ${c.postTime}` : "";
+  return `the ${look} film (campaign "${c.campaignName}"${row}${slot}): 0% complete`;
 }
 
 /**

@@ -118,11 +118,13 @@ export async function startApp(options: ServerOptions = {}): Promise<RunningApp>
   });
   // Campaigns: today's instructions become tasks, made by plain code and sent for review like everything else.
   const campaigns = new CampaignWorker({ store, productions: producer, reviews, ai });
-  // Agent films: when the user turns it on, FreePoster starts Claude Code here for each open brief, on the GPU lane.
+  // Agent films: while Claude is connected, FreePoster starts Claude Code here for each open brief, on the GPU lane.
   const launcher = new AgentLauncher({ store, campaigns: campaigns.campaigns, run: runProgram, borrowGpu: (fn) => producer.borrowGpu(fn) });
   // Stop Campaign (for the launch's own campaign) and the kill switch end a running launch.
   campaigns.onStop = abortOnStop(launcher);
   campaigns.onRetire = abortOnRetire(launcher);
+  // The Campaigns tab rings the row whose film the launched Claude is making.
+  campaigns.making = () => launcher.runningFor();
   // After each analytics refresh, campaign rules are checked against the new scores (plain code, no AI).
   poller.onRefresh = () => {
     try {

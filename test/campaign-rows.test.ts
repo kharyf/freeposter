@@ -21,6 +21,7 @@ const ctx = (over: any = {}) => ({
     { provider: "openrouter", label: "OpenRouter", models: [{ id: "openrouter:anthropic/claude-x", name: "Claude X" }] },
   ],
   defaultClaude: "claude:claude-opus-5-5",
+  defaultStyle: "bold",
   ...over,
 });
 const row = (over: any = {}) => ({
@@ -60,11 +61,30 @@ test("a Create row with Claude lists Lemo styles by category, sorted by name", (
   ]);
 });
 
-test("a non-Claude Create row shows Lemo styles disabled under \"need a Claude model\"", () => {
-  const out = j(R.styleGroups(row({ model: "openrouter:anthropic/claude-x" }), ctx()));
-  assert.equal(out[1].label, "Lemo-Opuscar films: need a Claude model on Claude Code: Explainer");
-  for (const grp of out.slice(1)) for (const o of grp.options) assert.equal(o.disabled, true);
-  assert.equal(out[0].options.some((o: any) => o.disabled), false);
+test("a Create row without a Claude model offers no Lemo styles at all (hidden, not greyed out)", () => {
+  for (const model of ["openrouter:anthropic/claude-x", null]) {
+    const out = j(R.styleGroups(row({ model }), ctx()));
+    assert.deepEqual(out.map((x: any) => x.label), ["FreePoster edits"], String(model));
+    assert.equal(out[0].options.some((o: any) => o.disabled), false);
+  }
+  const claude = j(R.styleGroups(row({ model: OPUS }), ctx()));
+  assert.deepEqual(claude.map((x: any) => x.label), ["FreePoster edits", "Lemo-Opuscar films (Claude): Explainer", "Lemo-Opuscar films (Claude): Painting"]);
+  assert.equal(claude.some((x: any) => x.options.some((o: any) => o.disabled)), false);
+});
+
+test("a saved Lemo style the row can no longer offer stays shown as its value, not greyed out", () => {
+  const out = j(R.styleGroups(row({ origin: "drive", style: "lemo:ukiyo-e" }), ctx()));
+  assert.deepEqual(out.at(-1).options.at(-1), { value: "lemo:ukiyo-e", label: "Ukiyo-e", selected: true });
+});
+
+test("the Agent origin is offered only while Claude is connected, or when the row already is one", () => {
+  const values = (r: any, c: any) => j(R.originOptions(r, c)).map((o: any) => o.value);
+  const noClaude = ctx({ models: ctx().models.filter((p: any) => p.provider !== "claude") });
+  assert.deepEqual(values(row(), ctx()), ["create", "drive", "agent"]);
+  assert.deepEqual(values(row(), noClaude), ["create", "drive"]);
+  assert.deepEqual(values(row({ origin: "agent" }), noClaude), ["create", "drive", "agent"]);
+  assert.equal(R.claudeConnected(ctx()), true);
+  assert.equal(R.claudeConnected(noClaude), false);
 });
 
 test("Lemo styles without a category go in an unsuffixed group after the categorised ones", () => {
@@ -72,8 +92,6 @@ test("Lemo styles without a category go in an unsuffixed group after the categor
   const on = j(R.styleGroups(row({ model: OPUS }), c));
   assert.deepEqual(on.map((x: any) => x.label), ["FreePoster edits", "Lemo-Opuscar films (Claude): Explainer", "Lemo-Opuscar films (Claude)"]);
   assert.deepEqual(on[2].options, [{ value: "lemo:loose", label: "Loose", title: "about Loose" }]);
-  const off = j(R.styleGroups(row({ model: "openrouter:anthropic/claude-x" }), c));
-  assert.deepEqual(off.map((x: any) => x.label).slice(1), ["Lemo-Opuscar films: need a Claude model on Claude Code: Explainer", "Lemo-Opuscar films: need a Claude model on Claude Code"]);
 });
 
 test("an Agent row offers only Lemo styles and only Claude models", () => {
@@ -109,11 +127,9 @@ test("a style that is gone stays in the list, flagged", () => {
   assert.equal(l.label, "lemo:nope (no longer in Lemo-Opuscar)");
 });
 
-test("an empty catalogue gives one disabled option", () => {
-  const a = j(R.styleGroups(row({ origin: "agent", style: null }), ctx({ lemo: [], lemoInstalled: false })));
-  assert.deepEqual(a, [{ label: "Lemo-Opuscar films", options: [{ value: "", label: "Lemo-Opuscar isn't installed on this computer", disabled: true }] }]);
-  const b = j(R.styleGroups(row({ origin: "agent", style: null }), ctx({ lemo: [] })));
-  assert.equal(b[0].options[0].label, "No Lemo styles found");
+test("an empty catalogue offers no Lemo options (the row's issues say why)", () => {
+  assert.deepEqual(j(R.styleGroups(row({ origin: "agent", style: null }), ctx({ lemo: [], lemoInstalled: false }))), []);
+  assert.deepEqual(j(R.styleGroups(row({ model: OPUS }), ctx({ lemo: [] }))).map((x: any) => x.label), ["FreePoster edits"]);
 });
 
 test("picking a Lemo style with Use AI settings switches to the default Claude model and flashes it", () => {
@@ -152,10 +168,20 @@ test("Create → Drive → Create keeps the model and the Lemo style", () => {
   assert.equal(back.model, "claude:claude-sonnet-5-5");
 });
 
-test("switching the model away from Claude keeps a Lemo style; an empty value means null", () => {
+test("switching the model away from Claude swaps a Lemo style for the default edit and flashes it; an empty value means null", () => {
   const r = change(row({ style: "lemo:ukiyo-e", model: OPUS }), "model", "openrouter:anthropic/claude-x");
-  assert.equal(r.row.style, "lemo:ukiyo-e");
+  assert.equal(r.row.style, "bold");
   assert.equal(r.row.model, "openrouter:anthropic/claude-x");
+  assert.equal(r.flash, "style");
+  const ai = change(row({ style: "lemo:ukiyo-e", model: OPUS }), "model", "");
+  assert.equal(ai.row.style, "bold");
+  assert.equal(ai.row.model, null);
+  const kept = change(row({ style: "lemo:ukiyo-e", model: OPUS }), "model", "claude:claude-sonnet-5-5");
+  assert.equal(kept.row.style, "lemo:ukiyo-e");
+  assert.equal(kept.flash, undefined);
+  const plain = change(row({ style: "calm", model: OPUS }), "model", "openrouter:anthropic/claude-x");
+  assert.equal(plain.row.style, "calm");
+  assert.equal(plain.flash, undefined);
   assert.equal(change(row({ model: "claude:x" }), "model", "").row.model, null);
 });
 

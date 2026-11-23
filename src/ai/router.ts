@@ -14,6 +14,12 @@ const RANKING_PREF = "ai.ranking";
 const KEY_PREF = "ai.openrouter.key";
 const MODEL_PREF = "ai.openrouter.model";
 
+/**
+ * Whether Claude is connected under AI Providers. That alone turns on FreePoster starting Claude Code for campaign films:
+ * a row can only pick a Lemo style with a Claude model, and only a connected Claude's models are offered.
+ */
+export const claudeConnected = (store: Store): boolean => Boolean(store.pref<SavedProviders>(PROVIDERS_PREF)?.claude);
+
 /** The question Connect and Test ask: tiny, so it costs next to nothing on any plan. */
 const PROBE: Question = {
   system: "You are checking that a connection works.",

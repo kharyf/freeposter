@@ -27,9 +27,8 @@ await build({
   // config.ts falls back to __dirname when import.meta is empty, as it is in this bundle.
   logOverride: { "empty-import-meta": "silent" },
 });
-copyFileSync(join(root, "public", "index.html"), join(out, "public", "index.html"));
-copyFileSync(join(root, "public", "layout.js"), join(out, "public", "layout.js"));
-copyFileSync(join(root, "public", "campaign-rows.js"), join(out, "public", "campaign-rows.js"));
+// The page and every script it loads (src/server.ts serves them from here), copied whole so a new file can't be missed.
+cpSync(join(root, "public"), join(out, "public"), { recursive: true });
 // Blender templates productions render from (src/produce/adapters/blender.ts reads them beside the bundle).
 cpSync(join(root, "templates"), join(out, "templates"), { recursive: true, filter: (src) => !src.includes("__pycache__") });
 // Fonts for the Fancy editing style (src/edit/fancy/palette.ts), read as plain files by the renderer.

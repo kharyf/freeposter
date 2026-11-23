@@ -102,26 +102,25 @@ test("a test event is sent to the webhook, signed", async () => {
   }
 });
 
-test("the agent launcher's toggle and language save as prefs through the settings route", async () => {
+test("the film language saves as a pref through the settings route; the launcher has no toggle", async () => {
   const store = newStore();
   const app = buildServer(store, new Runner(store, publishers, tmp()), publishers, {});
   const put = (payload: object) => app.inject({ method: "PUT", url: "/api/settings", headers: HOST, payload });
   try {
     const view = (await app.inject({ method: "GET", url: "/api/settings", headers: HOST })).json();
-    assert.deepEqual(view.prefs, { "agent.launch.enabled": false, "agent.language": "en", "agent.launch.status": null });
+    assert.deepEqual(view.prefs, { "agent.language": "en", "agent.launch.status": null });
     const bad = await put({ values: {}, prefs: { "agent.launch.enabled": "yes", "agent.language": "not a language", "agent.launch.status": "idle", other: 1 } });
     assert.equal(bad.statusCode, 400);
-    assert.match(bad.json().error, /agent\.launch\.enabled must be true or false/);
+    assert.match(bad.json().error, /agent\.launch\.enabled is not a setting/);
     assert.match(bad.json().error, /agent\.language must be a language code/);
     assert.match(bad.json().error, /agent\.launch\.status is not a setting/);
     assert.match(bad.json().error, /other is not a setting/);
     assert.equal(store.pref("agent.launch.enabled"), undefined);
     store.setPref("agent.launch.status", "idle");
-    const good = await put({ values: {}, prefs: { "agent.launch.enabled": true, "agent.language": "pt-BR" } });
+    const good = await put({ values: {}, prefs: { "agent.language": "pt-BR" } });
     assert.equal(good.statusCode, 200, good.body);
-    assert.equal(store.pref("agent.launch.enabled"), true);
     assert.equal(store.pref("agent.language"), "pt-BR");
-    assert.deepEqual(good.json().prefs, { "agent.launch.enabled": true, "agent.language": "pt-BR", "agent.launch.status": "idle" });
+    assert.deepEqual(good.json().prefs, { "agent.language": "pt-BR", "agent.launch.status": "idle" });
     await put({ prefs: { "agent.language": "" } });
     assert.equal(store.pref("agent.language"), undefined);
   } finally {
@@ -133,11 +132,11 @@ test("settings can only be saved from FreePoster's own host", async () => {
   const store = newStore();
   const app = buildServer(store, new Runner(store, publishers, tmp()), publishers, {});
   try {
-    const foreign = await app.inject({ method: "PUT", url: "/api/settings", headers: { host: "evil.example" }, payload: { prefs: { "agent.launch.enabled": true } } });
+    const foreign = await app.inject({ method: "PUT", url: "/api/settings", headers: { host: "evil.example" }, payload: { prefs: { "agent.language": "pt-BR" } } });
     assert.equal(foreign.statusCode, 403);
-    const crossSite = await app.inject({ method: "PUT", url: "/api/settings", headers: { ...HOST, origin: "https://evil.example" }, payload: { prefs: { "agent.launch.enabled": true } } });
+    const crossSite = await app.inject({ method: "PUT", url: "/api/settings", headers: { ...HOST, origin: "https://evil.example" }, payload: { prefs: { "agent.language": "pt-BR" } } });
     assert.equal(crossSite.statusCode, 403);
-    assert.equal(store.pref("agent.launch.enabled"), undefined);
+    assert.equal(store.pref("agent.language"), undefined);
   } finally {
     await app.close();
   }

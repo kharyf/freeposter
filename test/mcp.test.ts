@@ -622,3 +622,33 @@ test("fp calls: a bad args string is that item's own 400, and op with calls is r
   assert.equal(both.isError, true);
   assert.match(both.content[0].text, /either op or calls/);
 });
+
+test("renew_brief with percent and step records the film's progress and tells the Console once", async () => {
+  const { call, worker } = mcpFixture({ campaigns: true });
+  const { taskId } = briefTask(worker!.campaigns);
+  const got = (await call("claim_brief", { task_id: taskId })).structuredContent;
+  const lines: string[] = [];
+  const log = console.log;
+  console.log = (...a: unknown[]) => { lines.push(a.join(" ")); };
+  try {
+    assert.equal((await call("renew_brief", { task_id: taskId, claim_token: got.claim_token, percent: 40, step: "voice ready" })).isError, undefined);
+    assert.equal((await call("renew_brief", { task_id: taskId, claim_token: got.claim_token, percent: 40, step: "voice ready" })).isError, undefined);
+    assert.equal((await call("renew_brief", { task_id: taskId, claim_token: got.claim_token })).isError, undefined, "a plain renewal still works");
+  } finally {
+    console.log = log;
+  }
+  assert.deepEqual(lines, [`[campaign task ${taskId}] film 40% complete: voice ready`], "a repeat isn't logged again");
+  const progress = (worker!.campaigns.task(taskId)!.choices as any).progress;
+  assert.equal(progress.percent, 40);
+  assert.equal(progress.step, "voice ready");
+
+  const bad = await call("renew_brief", { task_id: taskId, claim_token: got.claim_token, percent: 140 });
+  assert.equal(bad.isError, true);
+  assert.match(bad.content[0].text, /percent must be a whole number from 0 to 100/);
+  const lone = await call("renew_brief", { task_id: taskId, claim_token: got.claim_token, step: "rendering" });
+  assert.equal(lone.isError, true);
+  assert.match(lone.content[0].text, /step goes with percent/);
+  const other = await call("renew_brief", { task_id: taskId, claim_token: "nope", percent: 90 });
+  assert.equal(other.isError, true, "only the claim's holder reports progress");
+  assert.equal((worker!.campaigns.task(taskId)!.choices as any).progress.percent, 40);
+});

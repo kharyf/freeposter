@@ -33,7 +33,7 @@
   section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 20px; }
   h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 12px; }
   label { display: block; font-weight: 600; font-size: 13px; margin: 12px 0 4px; }
-  input[type=text], input[type=password], input[type=number], textarea, select { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); font: inherit; }
+  input[type=text], input[type=password], input[type=number], input[type=search], textarea, select { color-scheme: light dark; width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); font: inherit; }
   textarea { min-height: 110px; resize: vertical; }
   button { font: inherit; border: 1px solid var(--line); background: var(--bg); color: var(--ink); padding: 6px 12px; border-radius: 6px; cursor: pointer; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; padding: 10px 16px; width: 100%; margin-top: 16px; }
@@ -154,7 +154,7 @@
   #consoleLog mark { background: color-mix(in srgb, var(--accent) 35%, transparent); color: inherit; border-radius: 2px; }
   #consoleJump { position: absolute; right: 20px; bottom: 16px; padding: 6px 12px; border-radius: 14px; border: 1px solid var(--line); background: var(--accent); color: #fff; cursor: pointer; }
   #workspace, .mid { position: relative; }
-  .tabstrip { position: relative; display: flex; flex: none; gap: 4px; padding: 6px 6px 0; align-items: flex-end; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
+  .tabstrip { position: relative; display: flex; flex: none; gap: 4px; padding: 6px 6px 0; min-height: 39px; box-sizing: border-box; align-items: flex-end; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
   .tabstrip::-webkit-scrollbar { display: none; }
   .tabstrip button { flex: none; white-space: nowrap; background: var(--tab); border: 2px solid transparent; border-bottom: 0; border-radius: 10px 10px 0 0; color: var(--muted); padding: 6px 12px; font-size: 13px; font-weight: 600; }
   .tabstrip button[aria-selected="true"] { background: var(--tab-on); border-color: var(--accent); color: var(--ink); }
@@ -164,7 +164,10 @@
   .ctx-menu button[aria-disabled="true"] { opacity: .45; }
   .ctx-menu button[aria-disabled="true"]:hover { background: none; }
   .tabstrip .tab-badge { display: inline-block; margin-left: 6px; min-width: 16px; padding: 0 5px; border-radius: 8px; background: var(--accent); color: var(--bg); font-size: 11px; line-height: 16px; text-align: center; }
-  .tabstrip button.pulse { animation: tab-pulse 1.2s ease-in-out 2; }
+  .tabstrip button.pulse { animation: tab-pulse-tab 1.2s ease-in-out 2; }
+  .tabstrip button[aria-selected="true"].pulse { animation-name: tab-pulse-on; }
+  @keyframes tab-pulse-on { 0%, 100% { background: var(--tab-on); } 50% { background: color-mix(in srgb, var(--accent) 25%, var(--tab-on)); } }
+  @keyframes tab-pulse-tab { 0%, 100% { background: var(--tab); } 50% { background: color-mix(in srgb, var(--accent) 25%, var(--tab)); } }
   @keyframes tab-pulse { 0%, 100% { background: transparent; } 50% { background: color-mix(in srgb, var(--accent) 25%, transparent); } }
   .drop-bar { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent); pointer-events: none; z-index: 2; }
   .area-body.drop-over::after { content: ""; position: absolute; inset: 0; outline: 2px solid var(--accent); outline-offset: -2px; pointer-events: none; z-index: 2; }
@@ -443,6 +446,20 @@
   .cp-table td.cp-id { font-family: ui-monospace, Consolas, monospace; color: var(--muted); white-space: nowrap; }
   .cp-table .cp-bad { outline: 2px solid var(--bad); outline-offset: 1px; border-radius: 4px; }
   .cp-table tr.idle td { background: color-mix(in srgb, var(--warn) 6%, transparent); }
+  /* the row whose film Claude is making now: a ring of light runs round it (a still ring when motion isn't welcome) */
+  @property --cp-ring { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
+  .cp-table tr.cp-making { position: relative; }
+  .cp-table tr.cp-making td { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+  .cp-table tr.cp-making::after {
+    content: ""; position: absolute; inset: 0; border-radius: 6px; padding: 2px; pointer-events: none;
+    background: conic-gradient(from var(--cp-ring), transparent 0 55%, var(--trim) 75%, var(--accent) 88%, transparent 100%);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor;
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); mask-composite: exclude;
+  }
+  @media (prefers-reduced-motion: no-preference) { .cp-table tr.cp-making::after { animation: cp-ring 2.4s linear infinite; } }
+  @media (prefers-reduced-motion: reduce) { .cp-table tr.cp-making::after { background: var(--accent); } }
+  @keyframes cp-ring { to { --cp-ring: 360deg; } }
+  .cp-tasks .st.cp-making-now { color: var(--accent); font-weight: 600; }
   .cp-table .cp-del { padding: 2px 8px; }
   .cp-add-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
   .cp-add-row button { font-size: 18px; line-height: 1; width: 32px; height: 32px; padding: 0; font-weight: 600; }
@@ -1190,7 +1207,7 @@ async function pollConsole() {
   if (consoleBusy || document.hidden) return;
   consoleBusy = true;
   try {
-    const r = await fetch("/api/console?after=" + consoleState.seq);
+    const r = await fetch("/api/console?after=" + consoleState.seq, { signal: AbortSignal.timeout(5000) });
     if (!r.ok) return;
     const m = FPC.mergeLines(consoleState, await r.json());
     consoleState = m.state;
@@ -1465,9 +1482,7 @@ function stepHtml(step) {
       </div>
       <p><button type="button" data-produce="webhook-test">Send a test event</button> <button type="button" data-produce="webhook-hermes">Fill in Hermes Agent's address</button> <span id="webhookTest"></span></p>
       <h3 style="margin-top:12px">Campaign films</h3>
-      <label class="row" style="font-weight:400"><input type="checkbox" data-pref="agent.launch.enabled" style="width:auto;margin:0" ${settings.prefs["agent.launch.enabled"] ? "checked" : ""}> Start Claude for campaign films</label>
-      <div class="hint">When a campaign film is due, FreePoster starts Claude Code on this computer to make it. Uses your Claude plan; runs on this computer's GPU.</div>
-      ${settings.prefs["agent.launch.status"] ? `<div class="muted">${esc(settings.prefs["agent.launch.status"])}</div>` : ""}
+      ${settings.prefs["agent.launch.status"] ? `<div class="muted">Claude Code: ${esc(settings.prefs["agent.launch.status"])}</div>` : ""}
       <div class="grid2"><div class="field"><label for="p_language">Film language</label>
         <input id="p_language" data-pref="agent.language" value="${esc(settings.prefs["agent.language"])}" autocomplete="off" spellcheck="false">
         <div class="hint">The language agent films are made in, like en or pt-BR.</div></div></div>
@@ -1894,8 +1909,15 @@ $("workspace").addEventListener("click", (e) => {
 // openMenu(items, x, y): items are { label, disabled?, action?, submenu?: items }. One root menu plus at most one
 // open submenu per level; all close on Escape, outside pointerdown, blur, resize, any scroll, or after an action.
 let ctxMenus = [];
+let ctxPrevFocus = null;
 let ctxQuiet = false; // true while focus is moved back to a parent item (so the focus handler does not reopen its submenu)
-function closeMenus() { for (const m of ctxMenus) m.remove(); ctxMenus = []; }
+function closeMenus(restore = true) {
+  const had = ctxMenus.length > 0;
+  for (const m of ctxMenus) m.remove();
+  ctxMenus = [];
+  const prev = ctxPrevFocus; ctxPrevFocus = null;
+  if (had && restore && prev && document.contains(prev)) { try { prev.focus({ preventScroll: true }); } catch {} }
+}
 function placeMenu(menu, x, y, anchor) {
   const w = menu.offsetWidth, h = menu.offsetHeight, vw = innerWidth, vh = innerHeight;
   let left = x, top = y;
@@ -1973,14 +1995,18 @@ function buildMenu(items, depth, x, y, anchor) {
   return menu;
 }
 function openMenu(items, x, y) {
-  closeMenus();
-  buildMenu(items, 0, x, y).querySelector("button")?.focus();
+  closeMenus(false);
+  ctxPrevFocus = document.activeElement;
+  const first = buildMenu(items, 0, x, y).querySelector("button");
+  ctxQuiet = true; // initial focus must not open the submenu; hover or ArrowRight does
+  try { first?.focus(); } finally { ctxQuiet = false; }
 }
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && ctxMenus.length) { e.preventDefault(); closeMenus(); } });
-document.addEventListener("pointerdown", () => closeMenus());
-addEventListener("blur", closeMenus);
-addEventListener("resize", closeMenus);
-document.addEventListener("scroll", (e) => { if (ctxMenus.length && !ctxMenus.some((m) => m.contains(e.target))) closeMenus(); }, true);
+document.addEventListener("pointerdown", () => closeMenus(false));
+document.addEventListener("focusout", (e) => { if (ctxMenus.length && e.relatedTarget && !e.relatedTarget.closest?.(".ctx-menu")) closeMenus(false); });
+addEventListener("blur", () => closeMenus(false));
+addEventListener("resize", () => closeMenus(false));
+document.addEventListener("scroll", (e) => { if (ctxMenus.length && !ctxMenus.some((m) => m.contains(e.target)) && e.target !== $("consoleLog")) closeMenus(); }, true);
 
 // ---- tab context menus (delegated: applyLayout rebuilds the buttons) ----
 function addTabTo(id, area) {
@@ -3338,7 +3364,7 @@ const CP_LIB = [["hook", "Hooks"], ["angle", "Angles"], ["cta", "CTAs"], ["type"
 const CP_KIND_WORD = { hook: "hook", angle: "angle", cta: "CTA" };
 const CP_AUTOPOST_WARNING = "Videos with only these types will post without asking you.";
 let cp = null; // the last /api/campaigns answer
-/** The model select a change just switched ("<campaign>:<row>"), highlighted until `until` so the user sees it moved. */
+/** The model or style select a change just switched ("<campaign>:<row>", its field), highlighted until `until` so the user sees it moved. */
 let cpFlash = null;
 let cpLib = { entries: [], types: [] };
 let cpAi = null; // today's AI use with its ceiling
@@ -3614,6 +3640,7 @@ const cpCtx = () => ({
   lemoInstalled: cp?.lemoInstalled ?? false,
   models: cp?.models ?? [],
   defaultClaude: cp?.defaultClaude ?? "",
+  defaultStyle: cpDefaultStyle(),
 });
 
 /** Why Save Changes is held back: a row without a time or a day (only while there is something to save). */
@@ -3654,10 +3681,10 @@ function cpRowHtml(c, r, withModel) {
   // An Agent row's style can still be unchosen: say so rather than show the first style as if it were picked.
   const styleOpts = (agent && r.style === null ? `<option value="" selected>Choose a Lemo style</option>` : "") + cpGroupOptions(FreePosterRows.styleGroups(r, ctx), r.style);
   const lemo = FreePosterRows.isLemo(r.style) ? ctx.lemo.find((l) => l.key === r.style) : null;
-  const styleCell = `<select ${f("style")} aria-label="Editing style">${styleOpts}</select>${lemo?.needsImageGen ? `<div class="muted" style="font-size:12px">needs your image generator</div>` : ""}`;
-  const flash = cpFlash?.key === `${c.id}:${r.id}` && Date.now() < cpFlash.until;
+  const flash = cpFlash?.key === `${c.id}:${r.id}` && Date.now() < cpFlash.until ? cpFlash.field : null;
+  const styleCell = `<select ${f("style")}${flash === "style" ? ` class="cp-flash"` : ""} aria-label="Editing style">${styleOpts}</select>${lemo?.needsImageGen ? `<div class="muted" style="font-size:12px">needs your image generator</div>` : ""}`;
   const modelCell = drive ? `<span class="muted" title="Drive videos are already made">–</span>`
-    : `<select ${f("model")}${flash ? ` class="cp-flash"` : ""} aria-label="Model">${cpGroupOptions(FreePosterRows.modelOptions(r, ctx), r.model ?? "")}</select>`;
+    : `<select ${f("model")}${flash === "model" ? ` class="cp-flash"` : ""} aria-label="Model">${cpGroupOptions(FreePosterRows.modelOptions(r, ctx), r.model ?? "")}</select>`;
   const typeOpts = [`<option value="" ${r.type === null ? "selected" : ""}>None</option>`]
     .concat(cpLib.types.map((t) => `<option value="${t.id}" ${t.id === r.type ? "selected" : ""}>${esc(t.name)}</option>`));
   const tp = cpTimeParts(r.time);
@@ -3669,9 +3696,10 @@ function cpRowHtml(c, r, withModel) {
   const days = CP_DAYS.map(([d]) => `<button type="button" id="cpR${c.id}_${r.id}_d${d}" data-cp-row="${c.id}:${r.id}" data-cp-day="${d}" aria-pressed="${r.days.includes(d)}"
     title="${CP_DAY_NAME[d]}" aria-label="${CP_DAY_NAME[d]}">${CP_DAY_LETTER[d]}</button>`).join("");
   const issues = cpRowIssues(r);
-  return `<tr class="${issues.length ? "idle" : ""}">
+  const making = cp?.making && cp.making.campaignId === c.id && cp.making.rowId === r.id ? cp.making : null;
+  return `<tr class="${[issues.length ? "idle" : "", making ? "cp-making" : ""].join(" ").trim()}"${making ? ` title="${esc(cpMakingWords(making))}"` : ""}>
     <td class="cp-id" title="This video's id">${FreePosterRows.hexId(r.id)}</td>
-    <td><select ${f("origin")} aria-label="Origin"><option value="create" ${r.origin === "create" ? "selected" : ""}>Create</option><option value="drive" ${drive ? "selected" : ""}>Drive</option><option value="agent" ${agent ? "selected" : ""}>Agent</option></select></td>
+    <td><select ${f("origin")} aria-label="Origin">${cpGroupOptions([{ label: "", options: FreePosterRows.originOptions(r, ctx) }], r.origin)}</select></td>
     ${withModel ? `<td>${modelCell}</td>` : ""}
     <td><input type="number" ${f("quantity")} min="${CP_QTY[0]}" max="${CP_QTY[1]}" step="1" value="${esc(r.quantity)}" aria-label="Quantity"
       ${drive ? `title="A Drive file posts once; quantity is ignored for it"` : ""}></td>
@@ -3702,6 +3730,12 @@ function cpTableHtml(c) {
     ${idle.length ? `<div class="cp-idle">Not running yet:<ul>${idle.map(([i, x]) => `<li>Row ${i + 1}: ${esc(x.join(", "))}</li>`).join("")}</ul></div>` : ""}`;
 }
 
+/** What Claude is doing on the film it's making: "Claude is making it now (40%: rendering)". */
+function cpMakingWords(m) {
+  const how = m.percent === null ? "starting" : `${m.percent}%${m.step ? `: ${m.step}` : ""}`;
+  return `Claude is making it now (${how})`;
+}
+
 function cpTaskHtml(t) {
   const ch = t.choices ?? {};
   const name = ch.libraryName ? ` ${esc(ch.libraryName)}` : t.kind === "post" ? ` “${esc(ch.instruction?.name ?? "")}”` : t.kind === "rule" ? " (from a rule)" : "";
@@ -3713,7 +3747,9 @@ function cpTaskHtml(t) {
   const waiting = t.state === "queued" && ch.waiting;
   if (waiting) notes.push(ch.waiting);
   const retry = t.state === "failed" ? ` <button type="button" data-cp-retry="${t.id}" data-focus="cp-retry-${t.id}" title="Run this video again from the step that failed">Retry</button>` : "";
-  return `<li><span class="st ${esc(t.state)}">${waiting ? "Waiting for tomorrow's AI budget" : esc(CP_STATE_WORD[t.state] ?? t.state)}</span> · ${esc(t.kind)}${name}${bits ? ` · ${bits}` : ""}${retry}
+  const making = cp?.making?.taskId === t.id ? cp.making : null;
+  const word = making ? cpMakingWords(making) : waiting ? "Waiting for tomorrow's AI budget" : CP_STATE_WORD[t.state] ?? t.state;
+  return `<li><span class="st ${esc(t.state)}${making ? " cp-making-now" : ""}">${esc(word)}</span> · ${esc(t.kind)}${name}${bits ? ` · ${bits}` : ""}${retry}
     ${t.error ? `<span class="why err">${esc(t.error)}</span>` : ""}${notes.map((n) => `<span class="why">Note: ${esc(n)}</span>`).join("")}</li>`;
 }
 
@@ -3911,13 +3947,14 @@ function cpSetField(row, field, el, key) {
   Object.assign(row, out.row);
   // Only an Agent row may leave its style unchosen; anywhere else it starts on the default editing style.
   if (field === "origin" && row.origin !== "agent" && row.style === null) row.style = cpDefaultStyle();
-  if (out.flash === "model") {
-    cpFlash = { key, until: Date.now() + CP_FLASH_MS };
+  if (out.flash) {
+    const flashed = out.flash;
+    cpFlash = { key, field: flashed, until: Date.now() + CP_FLASH_MS };
     setTimeout(() => {
       if (cpFlash?.key !== key || Date.now() < cpFlash.until) return; // a later flash on the same row runs its own timer
       cpFlash = null;
       const [cid, rid] = key.split(":");
-      document.getElementById(`cpR${cid}_${rid}_model`)?.classList.remove("cp-flash");
+      document.getElementById(`cpR${cid}_${rid}_${flashed}`)?.classList.remove("cp-flash");
     }, CP_FLASH_MS + 20);
   }
   return CP_REDRAW_FIELDS.has(field) || out.flash !== undefined;

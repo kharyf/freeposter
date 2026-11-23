@@ -402,11 +402,9 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
 
   // Setup choices kept as prefs rather than in .env, each with its check (null = fine). A blank language is the default.
   const SETUP_PREFS: Record<string, (v: unknown) => string | null> = {
-    "agent.launch.enabled": (v) => typeof v === "boolean" ? null : "must be true or false",
     "agent.language": (v) => typeof v === "string" && (v.trim() === "" || /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/.test(v.trim())) ? null : "must be a language code, like en or pt-BR",
   };
   const prefsView = () => ({
-    "agent.launch.enabled": store.pref<boolean>("agent.launch.enabled") === true,
     "agent.language": store.pref<string>("agent.language") ?? "en",
     "agent.launch.status": store.pref<string>("agent.launch.status") ?? null,
   });

@@ -19,8 +19,6 @@ export const LEASE_MINUTES = 120;
 /** The time kept between an Agent row's delivery and its post time for the review. */
 export const REVIEW_BUFFER_MINUTES = 30;
 export const MAX_BRIEF_OFFERS = 2;
-/** The pref that turns on the local launcher (FreePoster starts Claude itself for each open brief). */
-export const LAUNCH_PREF = "agent.launch.enabled";
 
 const MIN = 60_000;
 const DAY = 24 * 3_600_000;
@@ -66,6 +64,15 @@ export interface Lease {
   token: string;
   /** when this claim was taken (a renewal keeps it) */
   claimedAt: number;
+}
+
+/** How far the agent says its film is, as it last reported. */
+export interface Progress {
+  /** 0 to 100 */
+  percent: number;
+  /** what it's doing now, in a few words */
+  step: string | null;
+  at: number;
 }
 
 type Leased = { ok: true; brief: Brief; leaseUntil: number; token: string } | { ok: false; error: string };
@@ -155,6 +162,24 @@ export function claimBrief(cs: CampaignStore, taskId: number, holder: string, no
   const offers = c.offers ?? 0;
   if (offers >= MAX_BRIEF_OFFERS) return fail(`no offers left for task ${taskId}`);
   return lease(cs, t!, { holder, token: randomUUID(), claimedAt: now }, now, offers + 1);
+}
+
+/**
+ * The holder says how far its film is (renew_brief's percent and step). Only the live claim may; `changed` is false
+ * when it said the same as last time (so a repeat isn't logged again).
+ */
+export function reportProgress(cs: CampaignStore, taskId: number, token: string, percent: number, step: string | null, now: number):
+  { ok: true; changed: boolean; progress: Progress } | { ok: false; error: string } {
+  const t = cs.task(taskId);
+  const why = refusal(cs, t, taskId);
+  if (why) return fail(why);
+  const c = choicesOf(t!);
+  const held = notHeld(c, taskId, token, now);
+  if (held) return fail(held);
+  const progress: Progress = { percent: Math.max(0, Math.min(100, Math.round(percent))), step, at: now };
+  const changed = c.progress?.percent !== progress.percent || c.progress?.step !== progress.step;
+  cs.updateTask(taskId, { choices: { ...t!.choices, progress } });
+  return { ok: true, changed, progress };
 }
 
 /** The claim's lease runs another stretch, never past the brief's deadline. */

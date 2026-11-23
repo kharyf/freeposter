@@ -399,3 +399,30 @@ test("saving the table makes today's tasks at once, from the rows just saved", a
   await send("PUT", `/api/campaigns/${campaignId}/rows`, { rows: "x" });
   assert.equal(calls.materialize.length, 1);
 });
+
+test("GET /api/campaigns says which film FreePoster's Claude is making: its row and progress", async () => {
+  const { send, store, campaignId } = setup();
+  assert.equal((await send("GET", "/api/campaigns")).json().making, null, "nothing is being made");
+  const cs = new CampaignStore(store);
+  const taskId = cs.addTask({
+    campaignId, date: "2026-11-23", dayIndex: 1, instructionIndex: 100_003, kind: "make", state: "awaiting_agent",
+    choices: { progress: { percent: 60, step: "rendering", at: 1 } } as never,
+  })!;
+  // The worker answers from the launcher: here, the task above.
+  const res = await withMaking(store, { taskId, campaignId });
+  assert.deepEqual(res, { taskId, campaignId, date: "2026-11-23", rowId: 3, percent: 60, step: "rendering" });
+});
+
+/** GET /api/campaigns' `making`, with a worker whose launcher is making the given task. */
+async function withMaking(store: ReturnType<typeof newStore>, making: { taskId: number; campaignId: number }) {
+  const cs = new CampaignStore(store);
+  const worker = { campaigns: cs, ai: null, making: () => making } as unknown as CampaignWorker;
+  const app = buildServer(store, new Runner(store, publishers, tmp()), publishers, {}, undefined, undefined, undefined, undefined, worker);
+  try {
+    const res = await app.inject({ method: "GET", url: "/api/campaigns", headers: OWN });
+    assert.equal(res.statusCode, 200, res.body);
+    return res.json().making;
+  } finally {
+    await app.close();
+  }
+}

@@ -5,7 +5,7 @@
 import type { Store } from "../db.ts";
 import { queueEvent } from "../notify.ts";
 import type { ToolDef } from "../produce/mcp-tools.ts";
-import { claimBrief, giveUpBrief, openBriefs, renewBrief, submitBrief, type Brief } from "./briefs.ts";
+import { claimBrief, giveUpBrief, openBriefs, renewBrief, reportProgress, submitBrief, type Brief } from "./briefs.ts";
 import { syncLooks } from "./looks.ts";
 import { CampaignStore } from "./store.ts";
 import { iso } from "./view.ts";
@@ -132,19 +132,39 @@ export function agentTools(opts: {
         const r = leased(claimBrief(cs(), taskId(args), opts.agent(), Date.now(), token(args) || undefined));
         return {
           brief: view(r.brief), lease_until: iso(r.leaseUntil), claim_token: r.token,
-          next: `Make this film with the lemo-opuscar skill, using the brief's look (${r.brief.look}), language and instructions as the answers to its questions: don't ask the user anything. ${r.brief.script ? "Film this script as written, in the brief's style: don't write a new one." : "Write the treatment, then render."} Call renew_brief with your claim_token at least every 30 minutes (the lease ends at lease_until), and when the file is ready call submit_brief with your claim_token, its absolute video_path and the library_version you used. Write the post's caption and title yourself and pass them to submit_brief: ${r.brief.cta.url ? `the caption must include the CTA link ${r.brief.cta.url}, and no other link` : "the brief's CTA has no link, so put no link in them"}. If you can't make it, call give_up_brief with your claim_token and the reason. If needs_image_gen is true and you have no image generator, call give_up_brief at once.`,
+          next: `Make this film with the lemo-opuscar skill, using the brief's look (${r.brief.look}), language and instructions as the answers to its questions: don't ask the user anything. ${r.brief.script ? "Film this script as written, in the brief's style: don't write a new one." : "Write the treatment, then render."} Call renew_brief with your claim_token at least every 30 minutes (the lease ends at lease_until), passing percent and step as you go so the user sees how far the film is. When the file is ready call submit_brief with your claim_token, its absolute video_path and the library_version you used. Write the post's caption and title yourself and pass them to submit_brief: ${r.brief.cta.url ? `the caption must include the CTA link ${r.brief.cta.url}, and no other link` : "the brief's CTA has no link, so put no link in them"}. If you can't make it, call give_up_brief with your claim_token and the reason. If needs_image_gen is true and you have no image generator, call give_up_brief at once.`,
         };
       },
     },
     {
       name: "renew_brief",
       title: "Renew a brief's lease",
-      description: "Extends your hold on a brief while you work (never past its deadline), given the claim_token claim_brief returned. Call it at least every 30 minutes.",
-      inputSchema: { type: "object", properties: { task_id: { type: "integer" }, claim_token: TOKEN }, required: ["task_id", "claim_token"], additionalProperties: false },
+      description: "Extends your hold on a brief while you work (never past its deadline), given the claim_token claim_brief returned. Call it at least every 30 minutes, and at each milestone with percent (0 to 100) and step (what you're doing now, in a few words): FreePoster shows the user how far the film is. For example 5 once claimed, 20 when the treatment is written, 40 when the voice and references are ready, 60 when rendering starts, more as it renders, 95 when the file is ready.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          task_id: { type: "integer" },
+          claim_token: TOKEN,
+          percent: { type: "integer", minimum: 0, maximum: 100 },
+          step: { type: "string", maxLength: 120 },
+        },
+        required: ["task_id", "claim_token"],
+        additionalProperties: false,
+      },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       async run(args) {
-        only(args, ["task_id", "claim_token"], "renew_brief");
-        const r = leased(renewBrief(cs(), taskId(args), token(args), Date.now()));
+        only(args, ["task_id", "claim_token", "percent", "step"], "renew_brief");
+        const id = taskId(args);
+        const percent = args.percent;
+        if (percent !== undefined && (!Number.isInteger(percent) || (percent as number) < 0 || (percent as number) > 100)) throw fail("percent must be a whole number from 0 to 100");
+        const step = text(args, "step", 120, false)?.trim() ?? null;
+        if (step !== null && percent === undefined) throw fail("step goes with percent: say how far the film is too");
+        const r = leased(renewBrief(cs(), id, token(args), Date.now()));
+        if (percent !== undefined) {
+          const p = reportProgress(cs(), id, token(args), percent as number, step, Date.now());
+          if (!p.ok) throw fail(p.error);
+          if (p.changed) console.log(`[campaign task ${id}] film ${p.progress.percent}% complete${step ? `: ${step}` : ""}`);
+        }
         return { lease_until: iso(r.leaseUntil) };
       },
     },

@@ -919,14 +919,14 @@ test("an agent row waits until six hours before its slot, then posts a brief", a
   assert.match(body.summary, new RegExp(`call claim_brief with task_id ${t.id}$`));
 });
 
-test("brief events say FreePoster handles them when the launcher is on", async () => {
+test("brief events say FreePoster handles them while Claude is connected", async () => {
   const off = agentSetup();
   off.clock.now = at(2026, 11, 17, 12);
   await off.tick();
-  assert.equal(JSON.parse(off.events("brief.requested")[0].body).handled_by, undefined, "launcher off: an agent claims it");
+  assert.equal(JSON.parse(off.events("brief.requested")[0].body).handled_by, undefined, "Claude not connected: an agent claims it");
 
   const s = agentSetup();
-  s.store.setPref("agent.launch.enabled", true);
+  s.store.setPref("ai.providers", { claude: { plan: null, connectedAt: 1 } });
   s.clock.now = at(2026, 11, 17, 12);
   await s.tick();
   const req = JSON.parse(s.events("brief.requested")[0].body);

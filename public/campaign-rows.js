@@ -7,30 +7,37 @@
   function isLemo(style) { return style !== null && style !== undefined && style.indexOf("lemo:") === 0; }
   function isClaudeModel(model) { return model !== null && model !== undefined && model.indexOf("claude:") === 0; }
 
+  /** Whether Claude is connected under AI Providers: the server lists only connected providers' models. */
+  function claudeConnected(ctx) {
+    return ctx.models.some(function (p) { return p.provider === CLAUDE_GROUP; });
+  }
+
+  /** The Origin choices: Agent (a film Claude makes) only while Claude is connected, or when the row already is one. */
+  function originOptions(row, ctx) {
+    var out = [{ value: "create", label: "Create" }, { value: "drive", label: "Drive" }];
+    if (row.origin === "agent" || claudeConnected(ctx)) out.push({ value: "agent", label: "Agent" });
+    return out;
+  }
+
   function showModelColumn(rows) {
     return rows.some(function (r) { return r.origin === "create" || r.origin === "agent"; });
   }
 
-  function lemoGroups(ctx, enabled) {
-    if (!ctx.lemo.length) {
-      return [{ label: "Lemo-Opuscar films", options: [{ value: "", label: ctx.lemoInstalled ? "No Lemo styles found" : "Lemo-Opuscar isn't installed on this computer", disabled: true }] }];
-    }
+  /** The Lemo styles, grouped by category. None at all when the library has none (the row's issues say why). */
+  function lemoGroups(ctx) {
+    if (!ctx.lemo.length) return [];
     var cats = {};
     var loose = []; // a style without a category: its own group, after the categorised ones
     ctx.lemo.forEach(function (l) {
       if (l.category === null || l.category === undefined || l.category === "") loose.push(l);
       else (cats[l.category] = cats[l.category] || []).push(l);
     });
-    var prefix = enabled ? "Lemo-Opuscar films (Claude)" : "Lemo-Opuscar films: need a Claude model on Claude Code";
+    var prefix = "Lemo-Opuscar films (Claude)";
     var group = function (label, list) {
       var items = list.slice().sort(function (a, b) { return a.name < b.name ? -1 : a.name > b.name ? 1 : 0; });
       return {
         label: label,
-        options: items.map(function (l) {
-          var o = { value: l.key, label: l.name, title: l.description };
-          if (!enabled) o.disabled = true;
-          return o;
-        }),
+        options: items.map(function (l) { return { value: l.key, label: l.name, title: l.description }; }),
       };
     };
     var groups = Object.keys(cats).sort().map(function (cat) { return group(prefix + ": " + cat, cats[cat]); });
@@ -42,19 +49,17 @@
     var groups = [];
     var freePoster = { label: "FreePoster edits", options: ctx.styles.map(function (s) { return { value: s.id, label: s.name }; }) };
     if (row.origin === "drive") groups.push(freePoster);
-    else if (row.origin === "agent") groups = lemoGroups(ctx, true);
-    else {
-      // Use AI settings (null) can become Claude by picking a Lemo style, so only an explicit non-Claude model disables them.
-      groups = [freePoster].concat(lemoGroups(ctx, row.model === null || isClaudeModel(row.model)));
-    }
+    else if (row.origin === "agent") groups = lemoGroups(ctx);
+    // A Create row offers the Lemo styles only once its model is a Claude model: never shown greyed out, just not there.
+    else groups = [freePoster].concat(isClaudeModel(row.model) ? lemoGroups(ctx) : []);
     var s = row.style;
     if (s !== null && s !== undefined) {
       var listed = groups.some(function (g) { return g.options.some(function (o) { return o.value === s; }); });
       if (!listed) {
         var option;
         var known = isLemo(s) ? ctx.lemo.filter(function (l) { return l.key === s; })[0] : ctx.styles.filter(function (x) { return x.id === s; })[0];
-        // A style the table can't offer on this row (a Lemo style on Drive, say) keeps its name and is shown, never dropped.
-        if (known) option = { value: s, label: known.name, disabled: true, selected: true };
+        // A style the table can't offer on this row (a saved one from before) keeps its name and is shown, never dropped.
+        if (known) option = { value: s, label: known.name, selected: true };
         else option = { value: s, label: s + (isLemo(s) ? " (no longer in Lemo-Opuscar)" : " (gone)"), selected: true };
         if (!groups.length) groups.push({ label: "", options: [] });
         groups[groups.length - 1].options.push(option);
@@ -78,7 +83,7 @@
     return groups;
   }
 
-  /** The row after the user changed one field. `flash: "model"` asks the table to highlight the model it just switched. */
+  /** The row after the user changed one field. `flash` ("model" or "style") asks the table to highlight the cell it just switched. */
   function applyChange(row, field, value, ctx) {
     var next = structuredClone(row);
     var flash;
@@ -96,6 +101,11 @@
     if (field === "origin" && value === "create" && isLemo(next.style) && next.model === null) {
       next.model = ctx.defaultClaude;
       flash = "model";
+    }
+    // A Create row offers a Lemo style only with a Claude model: switching the model off Claude takes the default edit.
+    if (field === "model" && next.origin === "create" && !isClaudeModel(next.model) && isLemo(next.style) && ctx.defaultStyle) {
+      next.style = ctx.defaultStyle;
+      flash = "style";
     }
     return flash ? { row: next, flash: flash } : { row: next };
   }
@@ -183,7 +193,7 @@
   root.FreePosterRows = {
     reviveGone: reviveGone,
     newRow: newRow,    hexId: hexId, saveProblems: saveProblems,
-    isLemo: isLemo, isClaudeModel: isClaudeModel, showModelColumn: showModelColumn,
+    isLemo: isLemo, isClaudeModel: isClaudeModel, claudeConnected: claudeConnected, originOptions: originOptions, showModelColumn: showModelColumn,
     styleGroups: styleGroups, modelOptions: modelOptions, applyChange: applyChange, rowIssues: rowIssues, sameRows: sameRows,
   };
 })(typeof globalThis !== "undefined" ? globalThis : this);

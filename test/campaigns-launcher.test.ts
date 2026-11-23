@@ -18,6 +18,9 @@ const look: Look = { key: "lemo:ukiyo-e", producer: "lemo-opuscar", name: "Ukiyo
 
 interface Call { cmd: string; args: string[]; opts?: Parameters<ProgramRun>[3] }
 
+/** Connects Claude under AI Providers: that alone has FreePoster start Claude Code for open briefs. */
+const connectClaude = (store: { setPref(k: string, v: unknown): void }) => store.setPref("ai.providers", { claude: { plan: null, connectedAt: 1 } });
+
 function setup(opts: { enabled?: boolean; claude?: string } = {}) {
   const store = newStore();
   const cs = new CampaignStore(store);
@@ -28,7 +31,7 @@ function setup(opts: { enabled?: boolean; claude?: string } = {}) {
   } as unknown as TaskChoices;
   const brief = buildBrief(store, choices, look, T0 + 10 * 3_600_000, T0);
   const add = (n: number) => cs.addTask({ campaignId, date: "2026-11-19", dayIndex: 4, instructionIndex: n, kind: "make", choices: { ...choices, brief }, state: "awaiting_agent" })!;
-  if (opts.enabled !== false) store.setPref("agent.launch.enabled", true);
+  if (opts.enabled !== false) connectClaude(store);
   const calls: Call[] = [];
   let finish: (r: { code: number | null; stdout: string; stderr: string }) => void = () => {};
   const run: ProgramRun = (cmd, args, _stdin, o) => {
@@ -136,25 +139,31 @@ test("a launch's timeout is the time left to the brief's deadline, at least 5 mi
   await running;
 });
 
-test("does nothing when disabled", async () => {
+test("does nothing while Claude isn't connected", async () => {
   const s = setup({ enabled: false });
   s.add(1);
   await s.launcher.tick();
   assert.equal(s.calls.length, 0);
-  s.store.setPref("agent.launch.enabled", "yes"); // only true turns it on
+  s.store.setPref("ai.providers", { openrouter: { plan: null, connectedAt: 1 } }); // another provider doesn't start Claude
   await s.launcher.tick();
   assert.equal(s.calls.length, 0);
+  connectClaude(s.store);
+  const running = s.launcher.tick();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(s.calls.length, 1, "connecting Claude is all it takes");
+  s.finish({ code: 0, stdout: "", stderr: "" });
+  await running;
 });
 
-test("a disabled launcher says it's off, once", async () => {
+test("without Claude connected the launcher says so, once", async () => {
   const s = setup({ enabled: false });
   await s.launcher.tick();
-  assert.equal(s.store.pref("agent.launch.status"), "off");
+  assert.equal(s.store.pref("agent.launch.status"), "Claude isn't connected under AI Providers");
   let writes = 0;
   const set = s.store.setPref.bind(s.store);
   s.store.setPref = (k, v) => { if (k === "agent.launch.status") writes++; set(k, v); };
   await s.launcher.tick();
-  s.store.setPref("agent.launch.enabled", true);
+  connectClaude(s.store);
   await s.launcher.tick(); // nothing open: idle
   await s.launcher.tick();
   assert.equal(s.store.pref("agent.launch.status"), "idle");
@@ -338,4 +347,57 @@ test("starts Claude Code with the brief's model", async () => {
   assert.equal(plain.includes("--model"), false);
   d.finish({ code: 0, stdout: "", stderr: "" });
   await again;
+});
+
+/** Runs fn with console.log captured: the Console tab shows what this process logs. */
+async function logged(fn: () => Promise<void>): Promise<string[]> {
+  const lines: string[] = [];
+  const log = console.log;
+  console.log = (...a: unknown[]) => { lines.push(a.join(" ")); };
+  try { await fn(); } finally { console.log = log; }
+  return lines;
+}
+
+test("the Console is told when Claude starts a film and when it finishes it", async () => {
+  const s = setup();
+  const id = s.add(100_001); // the campaign table's row 1
+  const t = s.cs.task(id)!;
+  s.cs.updateTask(id, { choices: { ...t.choices, postTime: "09:15" } });
+  const lines = await logged(async () => {
+    const running = s.launcher.tick();
+    await new Promise((r) => setImmediate(r));
+    // Claude delivers before its run ends.
+    const now = s.cs.task(id)!;
+    s.cs.updateTask(id, { choices: { ...now.choices, delivery: { path: "x.mp4", hash: "h", manifest: { look: look.key, libraryVersion: "1" } } } });
+    s.clock.now += 12 * 60_000;
+    s.finish({ code: 0, stdout: "", stderr: "" });
+    await running;
+  });
+  assert.deepEqual(lines.filter((l) => l.startsWith(`[campaign task ${id}]`)), [
+    `[campaign task ${id}] Claude started making the ${look.key} film (campaign "Films", row 0000001 for 2026-11-19 09:15): 0% complete`,
+    `[campaign task ${id}] Claude finished the film (100% complete) after 12 min; it goes to review`,
+  ]);
+});
+
+test("the Console says how a run without a film ended", async () => {
+  const failed = setup();
+  failed.add(1);
+  const a = await logged(async () => {
+    const running = failed.launcher.tick();
+    await new Promise((r) => setImmediate(r));
+    failed.finish({ code: 1, stdout: "", stderr: "auth failed" });
+    await running;
+  });
+  assert.ok(a.some((l) => /Claude's run ended after 1 min without a film: auth failed$/.test(l)), a.join("\n"));
+
+  const stopped = setup();
+  stopped.add(1);
+  const { launcher } = abortable(stopped);
+  const b = await logged(async () => {
+    const running = launcher.tick();
+    await new Promise((r) => setImmediate(r));
+    launcher.abort("its campaign was stopped");
+    await running;
+  });
+  assert.ok(b.some((l) => /Claude was stopped after 1 min: its campaign was stopped$/.test(l)), b.join("\n"));
 });

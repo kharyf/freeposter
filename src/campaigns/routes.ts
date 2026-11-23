@@ -9,10 +9,10 @@ import { trustedRequest } from "../mcp.ts";
 import { campaignVocabulary, modelIds, undoChange } from "./autorun.ts";
 import { lemoIsInstalled, lemoSyncedAt, syncLemoLibrary } from "./lemo-library.ts";
 import { allLooks } from "./looks.ts";
-import { parseRows } from "./rows.ts";
+import { parseRows, ROW_INSTRUCTION_BASE } from "./rows.ts";
 import { CampaignStore, filesHeldBy, HIDDEN_CAP, releaseHeldFile, type Campaign, type LibraryKind, type TaskState } from "./store.ts";
 import { iso } from "./view.ts";
-import { dayKey, type CampaignWorker } from "./worker.ts";
+import { dayKey, type CampaignWorker, type TaskChoices } from "./worker.ts";
 
 const KINDS: LibraryKind[] = ["hook", "angle", "cta"];
 const FINISHED: TaskState[] = ["posted", "kept", "missed", "failed", "replaced"];
@@ -74,6 +74,19 @@ function campaignRoutes(app: FastifyInstance, store: Store, worker?: CampaignWor
   };
   const setExists = (id: unknown) => typeof id === "number" && accountSets(store).some((s) => s.id === id);
 
+  /** The launched Claude's film, as the Campaigns tab shows it (a ring round its row); null when none is being made. */
+  const makingView = () => {
+    const m = worker?.making?.();
+    const t = m ? cs.task(m.taskId) : undefined;
+    if (!t) return null;
+    const p = (t.choices as unknown as TaskChoices).progress;
+    return {
+      taskId: t.id, campaignId: t.campaignId, date: t.date,
+      rowId: t.instructionIndex >= ROW_INSTRUCTION_BASE ? t.instructionIndex - ROW_INSTRUCTION_BASE : null,
+      percent: p?.percent ?? null, step: p?.step ?? null,
+    };
+  };
+
   // ---- campaigns ----
 
   /** Every campaign; with ?today=1 each carries its tasks for today too (the tab's Today panels, in one call). */
@@ -93,6 +106,8 @@ function campaignRoutes(app: FastifyInstance, store: Store, worker?: CampaignWor
       models: worker?.ai?.modelChoices() ?? [],
       /** the model a row switches to when it needs Claude */
       defaultClaude: DEFAULT_CLAUDE_MODEL_ID,
+      /** the film FreePoster's own Claude is making now: its task, campaign, table row, and how far it says it is */
+      making: makingView(),
       /** the looks an Agent row can pick (hidden ones left out) */
       looks: allLooks(store).map((l) => ({ key: l.key, name: l.name, producer: l.producer, needsImageGen: l.needsImageGen, category: l.category, description: l.description })),
     };
