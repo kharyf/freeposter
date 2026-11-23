@@ -40,6 +40,12 @@ export const SEC_MIN = 5, SEC_MAX = 300;
 export const ROW_TEXT_MAX = 2000;
 /** A row's tasks number their instructions from here (this + the row's id), apart from older line-indexed tasks. */
 export const ROW_INSTRUCTION_BASE = 100_000;
+/** The next row id to hand out: one counter for every campaign, so a row id is never reused. */
+export const ROW_ID_PREF = "campaigns.rowId.next";
+/** Set once the ids rows had per campaign were renumbered from the global counter. */
+export const ROW_IDS_MIGRATED_PREF = "campaigns.rowIds.v1";
+/** How a row's id is shown: seven hex digits, or "new" for a row not saved yet (id <= 0). */
+export const rowIdHex = (id: number): string => (id <= 0 ? "new" : id.toString(16).padStart(7, "0"));
 
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 type Obj = Record<string, unknown>;

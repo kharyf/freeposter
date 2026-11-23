@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { CampaignStore, confirmedForText, heldNames } from "../src/campaigns/store.ts";
 import { DAYS, type CompiledCampaign } from "../src/campaigns/spec.ts";
+import { compileRows, ROW_ID_PREF, ROW_IDS_MIGRATED_PREF, ROW_INSTRUCTION_BASE, rowIdHex, type Row } from "../src/campaigns/rows.ts";
 import { newStore } from "./helpers.ts";
 
 const compiled = (): CompiledCampaign => ({ version: 1, days: Object.fromEntries(DAYS.map((d) => [d, []])) as unknown as CompiledCampaign["days"], rules: [] });
@@ -158,4 +159,54 @@ test("opening the store migrates old Agent rows once and logs the removed edit",
   assert.equal(cs.changes(untouched).length, 0, "a campaign with no look in its rows is left alone");
   cs = new CampaignStore(store);
   assert.equal(cs.changes(id).length, 1, "a second open logs nothing new");
+});
+
+const newRow = (over: Partial<Row> = {}): Row => ({
+  id: -1, quantity: 1, hook: { pick: "random" }, angle: { pick: "random" }, cta: { pick: "random" }, style: "basic", model: null, type: null,
+  time: "18:00", days: ["tue"], sec: 30, origin: "create", text: "", ...over,
+});
+
+test("setRows gives new rows (id <= 0) global ids from 1, never reused across campaigns", () => {
+  const cs = new CampaignStore(newStore());
+  const mkc = (name: string) => cs.create({ name, text: "", accountSetId: null, defaultPostTimes: [], dailyPostCap: 3 });
+  const a = mkc("A");
+  const b = mkc("B");
+  const given = [newRow({ id: -1 }), newRow({ id: -2 })];
+  assert.deepEqual(cs.setRows(a, given).map((r) => r.id), [1, 2]);
+  assert.deepEqual(given.map((r) => r.id), [-1, -2], "the caller's rows are left alone");
+  assert.deepEqual(cs.setRows(b, [newRow({ id: -1 })]).map((r) => r.id), [3]);
+  cs.setRows(a, [newRow({ id: 1 })]); // row 2 deleted
+  assert.deepEqual(cs.setRows(a, [newRow({ id: 1 }), newRow({ id: -1 })]).map((r) => r.id), [1, 4]);
+  assert.equal(rowIdHex(4), "0000004");
+  assert.equal(rowIdHex(26), "000001a");
+  assert.equal(rowIdHex(-1), "new");
+});
+
+test("migrateRowIds renumbers every campaign's rows once, keeping tasks and the change log on their rows", () => {
+  const store = newStore();
+  let cs = new CampaignStore(store);
+  store.deletePref(ROW_IDS_MIGRATED_PREF);
+  store.deletePref(ROW_ID_PREF);
+  const mkc = (name: string) => cs.create({ name, text: "", accountSetId: null, defaultPostTimes: [], dailyPostCap: 3 });
+  const A = mkc("A"), B = mkc("B");
+  const rowsOf = () => [newRow({ id: 1 }), newRow({ id: 2, days: ["wed"] })];
+  const raw = (id: number, rows: Row[]) => cs.db.prepare("UPDATE campaigns SET rows = ? WHERE id = ?").run(JSON.stringify(rows), id);
+  raw(A, rowsOf());
+  raw(B, rowsOf());
+  const taskB2 = cs.addTask({
+    campaignId: B, date: "2026-11-17", dayIndex: 2, instructionIndex: ROW_INSTRUCTION_BASE + 2, kind: "make",
+    choices: { instruction: { kind: "make", row: 2 } },
+  })!;
+  const before = { rows: rowsOf(), compiled: compileRows(rowsOf()) };
+  const changeB = cs.logChange({ campaignId: B, agent: "x", before, after: before, reason: "r" });
+  cs = new CampaignStore(store);
+  assert.deepEqual(cs.campaign(A)!.rows.map((r) => r.id), [1, 2]);
+  assert.deepEqual(cs.campaign(B)!.rows.map((r) => r.id), [3, 4]);
+  assert.equal(cs.task(taskB2)!.instructionIndex, ROW_INSTRUCTION_BASE + 4);
+  assert.equal((cs.task(taskB2)!.choices as any).instruction.row, 4);
+  assert.deepEqual((cs.change(changeB)!.after as any).rows.map((r: any) => r.id), [3, 4]);
+  assert.ok(JSON.stringify((cs.change(changeB)!.after as any).compiled).includes('"row":4'));
+  new CampaignStore(store); // a second instance: no second renumbering
+  assert.deepEqual(cs.campaign(B)!.rows.map((r) => r.id), [3, 4]);
+  assert.equal(store.pref<number>(ROW_ID_PREF), 5);
 });

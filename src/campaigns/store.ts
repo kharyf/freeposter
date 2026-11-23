@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import type { Store } from "../db.ts";
 import type { DriveFileRecord } from "../types.ts";
 import { retimeRows } from "./retime.ts";
-import { compileRows, isLemo, migrateRow, type Row } from "./rows.ts";
+import { compileRows, isLemo, migrateRow, ROW_ID_PREF, ROW_IDS_MIGRATED_PREF, ROW_INSTRUCTION_BASE, type Row } from "./rows.ts";
 import type { CompiledCampaign } from "./spec.ts";
 
 const SCHEMA = `
@@ -325,6 +325,70 @@ export class CampaignStore {
       }
     }
     this.migrateLooks();
+    this.migrateRowIds();
+  }
+
+  /** Told after a table is saved or restored, with the rows before and after (the worker sets it). */
+  onRowsChanged?: (campaignId: number, before: Row[], after: Row[]) => void;
+
+  /**
+   * Row ids used to count from 1 in each campaign. Once, every campaign's rows are renumbered from the one global
+   * counter, and what names a row follows: its tasks (instruction index and the row in their choices) and the rows,
+   * schedules and row numbers in the change log. Written with SQL directly, so no hook fires.
+   */
+  private migrateRowIds() {
+    if (this.store.pref<boolean>(ROW_IDS_MIGRATED_PREF) === true) return;
+    this.db.exec("BEGIN");
+    try {
+      let next = 1; // whatever the counter held so far came from saving old rows (migrateLooks); numbering starts over
+      const maps = new Map<number, Map<number, number>>();
+      const mapOf = (campaignId: number) => {
+        let m = maps.get(campaignId);
+        if (!m) maps.set(campaignId, (m = new Map()));
+        return m;
+      };
+      // A row id seen only in a task or the log (its row was deleted before) still gets a fresh id of its own.
+      const newId = (campaignId: number, old: number) => {
+        const m = mapOf(campaignId);
+        if (!m.has(old)) m.set(old, next++);
+        return m.get(old)!;
+      };
+      const campaigns = this.db.prepare("SELECT id, rows FROM campaigns ORDER BY id").all() as { id: number; rows: string | null }[];
+      for (const c of campaigns) {
+        const old = (c.rows ? JSON.parse(c.rows) : []) as Record<string, unknown>[];
+        const rows = old.map((r) => ({ ...r, id: newId(c.id, r.id as number) }));
+        this.db.prepare("UPDATE campaigns SET rows = ?, compiled = ? WHERE id = ?")
+          .run(JSON.stringify(rows), JSON.stringify(compileRows(rows.map(migrateRow) as unknown as Row[])), c.id);
+      }
+      // Two passes, so a task's new number never meets another task's old one under the UNIQUE constraint.
+      const tasks = this.db.prepare("SELECT id, campaign_id, instruction_index, choices FROM campaign_tasks WHERE instruction_index >= ?")
+        .all(ROW_INSTRUCTION_BASE) as { id: number; campaign_id: number; instruction_index: number; choices: string }[];
+      this.db.prepare("UPDATE campaign_tasks SET instruction_index = instruction_index + 10000000 WHERE instruction_index >= ?").run(ROW_INSTRUCTION_BASE);
+      for (const t of tasks) {
+        const id = newId(t.campaign_id, t.instruction_index - ROW_INSTRUCTION_BASE);
+        const choices = JSON.parse(t.choices);
+        if (choices?.instruction && typeof choices.instruction.row === "number") choices.instruction.row = id;
+        this.db.prepare("UPDATE campaign_tasks SET instruction_index = ?, choices = ? WHERE id = ?")
+          .run(ROW_INSTRUCTION_BASE + id, JSON.stringify(choices), t.id);
+      }
+      const changes = this.db.prepare("SELECT id, campaign_id, before, after FROM campaign_changes").all() as { id: number; campaign_id: number; before: string; after: string }[];
+      for (const ch of changes) {
+        const renumber = (json: string) => {
+          const v = JSON.parse(json);
+          if (!v || !Array.isArray(v.rows)) return json;
+          v.rows = v.rows.map((r: Record<string, unknown>) => (r && typeof r.id === "number" ? { ...r, id: newId(ch.campaign_id, r.id) } : r));
+          v.compiled = compileRows(v.rows.map((r: Record<string, unknown>) => migrateRow(r)) as unknown as Row[]);
+          return JSON.stringify(v);
+        };
+        this.db.prepare("UPDATE campaign_changes SET before = ?, after = ? WHERE id = ?").run(renumber(ch.before), renumber(ch.after), ch.id);
+      }
+      this.store.setPref(ROW_ID_PREF, next);
+      this.store.setPref(ROW_IDS_MIGRATED_PREF, true);
+      this.db.exec("COMMIT");
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
   }
 
   /**
@@ -441,13 +505,26 @@ export class CampaignStore {
    * The table saved: its schedule is what runs, confirmed at once (the table is the user's own authority). A row's new
    * time also moves the videos it already started that haven't gone out (retimeRows).
    */
-  setRows(id: number, rows: Row[]) {
+  setRows(id: number, given: Row[]): Row[] {
     const now = Date.now();
     const before = this.campaign(id)?.rows ?? [];
+    // A row with no id yet (<= 0) gets the next one from the global counter; the caller's rows are left alone.
+    const rows = given.map((r) => (r.id <= 0 ? { ...r, id: this.nextRowId() } : { ...r }));
+    const highest = Math.max(0, ...rows.map((r) => r.id));
+    if (highest >= (this.store.pref<number>(ROW_ID_PREF) ?? 1)) this.store.setPref(ROW_ID_PREF, highest + 1);
     this.db
       .prepare("UPDATE campaigns SET rows = ?, compiled = ?, compiled_sha = text_sha, confirmed_at = ?, updated_at = ? WHERE id = ?")
       .run(JSON.stringify(rows), JSON.stringify(compileRows(rows)), now, now, id);
     retimeRows(this.store, id, before, rows, now);
+    this.onRowsChanged?.(id, before, rows);
+    return rows;
+  }
+
+  /** The next row id, from the one counter every campaign shares (only setRows asks). */
+  nextRowId(): number {
+    const next = this.store.pref<number>(ROW_ID_PREF) ?? 1;
+    this.store.setPref(ROW_ID_PREF, next + 1);
+    return next;
   }
 
   setEnabled(id: number, on: boolean) {
@@ -478,6 +555,7 @@ export class CampaignStore {
                 WHERE id = ?`)
       .run(JSON.stringify(c.rows ?? []), c.text, c.textSha, c.compiled ? JSON.stringify(c.compiled) : null, c.compiledSha, c.confirmedAt, c.dailyPostCap, Date.now(), id);
     retimeRows(this.store, id, before, c.rows ?? []);
+    this.onRowsChanged?.(id, before, c.rows ?? []);
   }
 
   isRunnable(c: Campaign): boolean {
