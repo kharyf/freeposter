@@ -11,6 +11,7 @@ import * as openrouter from "./ai/openrouter.ts";
 import { AI_JOBS, PROVIDER_IDS, type AiJob, type ProviderId } from "./ai/providers.ts";
 import type { AiService } from "./ai/router.ts";
 import { findClaude } from "./claude.ts";
+import { consoleBuffer } from "./console-buffer.ts";
 import { codeDir, config, dataDir, DEFAULT_PORT, edition, envFile, isConfigured, isLocalUrl, needsRedirectPage, redirectUri, saveSettings, setting, SETTINGS, type SettingKey } from "./config.ts";
 import { randomToken } from "./crypto.ts";
 import type { SignIn, Store } from "./db.ts";
@@ -129,6 +130,9 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   app.get("/layout.js", (_req, reply) => reply.type("text/javascript").send(layoutJs));
   const campaignRowsJs = readFileSync(join(codeDir, "public", "campaign-rows.js"), "utf8");
   app.get("/campaign-rows.js", (_req, reply) => reply.type("text/javascript").send(campaignRowsJs));
+  const consoleViewJs = readFileSync(join(codeDir, "public", "console-view.js"), "utf8");
+  app.get("/console-view.js", (_req, reply) => reply.type("text/javascript").send(consoleViewJs));
+  app.get("/api/console", async (req) => consoleBuffer.since(Number((req.query as { after?: string }).after ?? 0)));
 
   /** The editing styles as the window lists them. */
   const styleViews = () => {

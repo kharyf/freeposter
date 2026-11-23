@@ -4,6 +4,7 @@ import { test } from "node:test";
 import type { Publisher } from "../src/platforms/base.ts";
 import { publishers as real } from "../src/platforms/index.ts";
 import { Runner } from "../src/runner.ts";
+import { consoleBuffer } from "../src/console-buffer.ts";
 import { buildServer } from "../src/server.ts";
 import type { Platform } from "../src/types.ts";
 import { account, multipart, newStore, tmp, verticalSilent } from "./helpers.ts";
@@ -71,5 +72,23 @@ test("GET /campaign-rows.js serves the rules file", async () => {
   assert.equal(res.statusCode, 200);
   assert.match(String(res.headers["content-type"]), /text\/javascript/);
   assert.match(res.body, /FreePosterRows/);
+  await app.close();
+});
+
+test("GET /api/console returns captured lines; /console-view.js is served", async () => {
+  const store = newStore();
+  const app = buildServer(store, new Runner(store, real, tmp()), real);
+  const line = consoleBuffer.push("info", "hello console");
+  const res = await app.inject({ method: "GET", url: "/api/console?after=0" });
+  assert.equal(res.statusCode, 200);
+  const body = res.json();
+  assert.ok(body.lines.some((l: { text: string }) => l.text === "hello console"));
+  assert.ok(body.latest >= line.seq);
+  const next = await app.inject({ method: "GET", url: `/api/console?after=${body.latest}` });
+  assert.deepEqual(next.json().lines, []);
+  const js = await app.inject({ method: "GET", url: "/console-view.js" });
+  assert.equal(js.statusCode, 200);
+  assert.match(String(js.headers["content-type"]), /javascript/);
+  assert.match(js.body, /FreePosterConsole/);
   await app.close();
 });

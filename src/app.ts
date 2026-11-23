@@ -1,3 +1,4 @@
+import { consoleBuffer, installConsoleCapture } from "./console-buffer.ts";
 import { basename, join } from "node:path";
 import { runProgram } from "./ai/cli.ts";
 import { AiService, setAi } from "./ai/router.ts";
@@ -48,6 +49,7 @@ export function keepRunning(store: Store): boolean {
 
 /** Opens the database, starts the HTTP server and job runner. */
 export async function startApp(options: ServerOptions = {}): Promise<RunningApp> {
+  installConsoleCapture(consoleBuffer); // after desktop.ts swapped console.* for its file writer, so we chain onto it
   if (!isLocalUrl(config.baseUrl) && !config.appPassword) {
     throw new Error(`BASE_URL ${config.baseUrl} is reachable from outside; set APP_PASSWORD so only you can post.`);
   }
