@@ -117,7 +117,7 @@ function campaignRoutes(app: FastifyInstance, store: Store, worker?: CampaignWor
   app.put("/api/campaigns/:id/rows", async (req, reply) => {
     const c = campaignOf(req.params, reply);
     if (!c) return;
-    const r = parseRows(bodyOf(req).rows, campaignVocabulary(store, cs, modelIds(worker?.ai)));
+    const r = parseRows(bodyOf(req).rows, campaignVocabulary(store, cs, modelIds(worker?.ai)), new Set(c.rows.map((x) => x.id)));
     if (!r.ok) return bad(reply, "the table couldn't be saved", r.problems);
     cs.setRows(c.id, r.value);
     try {

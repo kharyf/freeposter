@@ -267,7 +267,7 @@ function campaign(store: ReturnType<typeof newStore>) {
   const id = cs.create({ name: "Weekday Growth", text: "", accountSetId: null, defaultPostTimes: [], dailyPostCap: 100 });
   const row = (quantity = 1) => ({
     id: 1, quantity, hook: { pick: "named", id: hook }, angle: { pick: "random" }, cta: { pick: "named", id: cta }, style: "basic",
-    type: null, time: null, days: ["tue"], sec: 30, origin: "create", text: "",
+    type: null, time: "09:00", days: ["tue"], sec: 30, origin: "create", text: "",
   });
   cs.setRows(id, [row() as never]);
   return { cs, id, hook, cta, row };

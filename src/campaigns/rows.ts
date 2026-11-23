@@ -24,7 +24,7 @@ export interface Row {
   model: string | null;
   /** a video type id, or none */
   type: number | null;
-  /** 24-hour "HH:MM" it posts at, or null: a Create video made and kept, not posted */
+  /** 24-hour "HH:MM" it posts at (a saved row always has one) */
   time: string | null;
   days: Day[];
   /** seconds: a Create video's length; a Drive row's, recorded for analytics. Null until it's filled in. */
@@ -70,15 +70,23 @@ export function migrateRow(raw: Record<string, unknown>): Record<string, unknown
 
 /**
  * The strict check of a table. Unknown fields are refused; every problem is collected. On success, a normalized copy,
- * with a warning for each row sent in the old shape (with "look").
+ * with a warning for each row sent in the old shape (with "look"). An id is a positive whole number (with `known`, one
+ * of the campaign's rows), or null / negative for a new row: a null becomes a negative id nothing else in the table
+ * uses, and saving the rows gives it its real id.
  */
-export function parseRows(raw: unknown, vocab: Vocabulary): { ok: true; value: Row[]; warnings: string[] } | { ok: false; problems: string[] } {
+export function parseRows(raw: unknown, vocab: Vocabulary, known?: Set<number>): { ok: true; value: Row[]; warnings: string[] } | { ok: false; problems: string[] } {
   const problems: string[] = [];
   const warnings: string[] = [];
   if (!Array.isArray(raw)) return { ok: false, problems: ["rows must be a list"] };
   if (raw.length > ROWS_MAX) return { ok: false, problems: [`at most ${ROWS_MAX} rows`] };
   const ids = new Set<number>();
   const value: Row[] = [];
+  const sentIds = new Set(raw.map((x) => (isObj(x) ? x.id : undefined)).filter((v): v is number => typeof v === "number"));
+  let standIn = 0;
+  const nextStandIn = (): number => {
+    do standIn++; while (sentIds.has(-standIn));
+    return -standIn;
+  };
   raw.forEach((sent, i) => {
     const at = `row ${i + 1}`;
     const problem = (msg: string) => problems.push(`${at}: ${msg}`);
@@ -91,9 +99,17 @@ export function parseRows(raw: unknown, vocab: Vocabulary): { ok: true; value: R
     const r = migrateRow(sent);
     for (const k of Object.keys(r)) if (!KEYS.includes(k)) problem(`unknown field "${k}"`);
     const int = (v: unknown, min: number, max: number) => typeof v === "number" && Number.isInteger(v) && v >= min && v <= max;
-    if (!int(r.id, 1, 1_000_000_000)) problem("id must be a whole number from 1");
-    else if (ids.has(r.id as number)) problem(`id ${String(r.id)} is used twice`);
-    else ids.add(r.id as number);
+    let id = 0;
+    if (r.id === null) id = nextStandIn();
+    else if (int(r.id, -1_000_000_000, -1)) id = r.id as number;
+    else if (!int(r.id, 1, 1_000_000_000)) problem("id must be a whole number from 1, or null for a new row");
+    else if (known && !known.has(r.id as number)) problem(`id ${String(r.id)} isn't a row of this campaign; send null for a new row`);
+    else id = r.id as number;
+    if (id !== 0) {
+      if (ids.has(id)) problem(`id ${id} is used twice`);
+      else ids.add(id);
+    }
+    const name = id > 0 ? `row ${rowIdHex(id)}` : at;
     if (!int(r.quantity, QTY_MIN, QTY_MAX)) problem(`quantity must be a whole number from ${QTY_MIN} to ${QTY_MAX}`);
     const pick = (v: unknown, kind: "hook" | "angle" | "cta", library: Vocabulary["hooks"]): RowPick => {
       const word = kind === "cta" ? "CTA" : kind;
@@ -121,10 +137,12 @@ export function parseRows(raw: unknown, vocab: Vocabulary): { ok: true; value: R
     if (r.model !== null && !isModelId(r.model)) problem('model must be a model id like "claude:claude-opus-5-5", or null');
     // Compacted results drop null and empty fields, so a missing one reads as null (text: "").
     if (r.type !== null && r.type !== undefined && !(typeof r.type === "number" && vocab.types.some((t) => t.id === r.type))) problem(`no video type with id ${String(r.type)}`);
-    if (r.time !== null && r.time !== undefined && !(typeof r.time === "string" && TIME.test(r.time))) problem('time must be a 24-hour "HH:MM" time, or null');
+    if (r.time === null || r.time === undefined) problems.push(`${name}: needs a post time`);
+    else if (!(typeof r.time === "string" && TIME.test(r.time))) problem('time must be a 24-hour "HH:MM" time');
     let days: Day[] = [];
     if (!Array.isArray(r.days) || r.days.some((d) => !DAYS.includes(d as Day))) problem(`days must be a list of ${DAYS.join(", ")}`);
     else days = DAYS.filter((d) => (r.days as unknown[]).includes(d)); // Sunday first, each once
+    if (Array.isArray(r.days) && !days.length) problems.push(`${name}: needs at least one day`);
     if (r.sec !== null && r.sec !== undefined && !int(r.sec, SEC_MIN, SEC_MAX)) problem(`length must be a whole number of seconds from ${SEC_MIN} to ${SEC_MAX}, or null`);
     if (r.origin !== "create" && r.origin !== "drive" && r.origin !== "agent") problem('origin must be "create", "drive" or "agent"');
     let text = "";
@@ -133,7 +151,7 @@ export function parseRows(raw: unknown, vocab: Vocabulary): { ok: true; value: R
     else text = r.text;
     if (r.origin === "drive" && text.includes("_")) problem("a Drive file name is the part before the first underscore, so it can't contain one");
     value.push({
-      id: r.id as number, quantity: r.quantity as number, hook, angle, cta, style: style === undefined ? String(r.style) : style, model: r.model as string | null,
+      id, quantity: r.quantity as number, hook, angle, cta, style: style === undefined ? String(r.style) : style, model: r.model as string | null,
       type: (r.type as number | null) ?? null, time: (r.time as string | null) ?? null, days, sec: (r.sec as number | null) ?? null, origin: r.origin as Row["origin"], text,
     });
   });

@@ -177,3 +177,22 @@ test("a style with a colon that isn't a Lemo style is refused like any unknown s
   }
   assert.equal(parseRows([create({ style: "lemo:impasto", model: "claude:claude-opus-5-5" })], vocab).ok, true);
 });
+
+test("parseRows refuses a row with no time or no days, naming it by its id", () => {
+  const r = parseRows([create({ id: 12, time: null }), create({ id: 13, days: [] })], vocab);
+  assert.equal(r.ok, false);
+  assert.deepEqual(!r.ok && r.problems, ["row 000000c: needs a post time", "row 000000d: needs at least one day"]);
+  const n = parseRows([create({ id: null, time: null })], vocab);
+  assert.deepEqual(!n.ok && n.problems, ["row 1: needs a post time"]);
+});
+
+test("parseRows takes null or negative ids as new rows and refuses unknown positive ids", () => {
+  const ok = parseRows([create({ id: null }), create({ id: -5 }), create({ id: 3 })], vocab, new Set([3]));
+  assert.ok(ok.ok);
+  assert.deepEqual(ok.ok && ok.value.map((r) => r.id), [-1, -5, 3]);
+  const bad = parseRows([create({ id: 9 })], vocab, new Set([3]));
+  assert.equal(bad.ok, false);
+  assert.match(!bad.ok ? bad.problems[0] : "", /id 9 isn't a row of this campaign; send null for a new row/);
+  const dup = parseRows([create({ id: -2 }), create({ id: -2 })], vocab);
+  assert.equal(dup.ok, false);
+});

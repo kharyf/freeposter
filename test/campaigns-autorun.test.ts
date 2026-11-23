@@ -85,11 +85,11 @@ test("no type approval, Autorun, start/stop or kill switch through a change", as
 
 test("rows must pass the strict check, then run at once", async () => {
   const s = setup();
-  const bad = await s.change({ rows: [s.row({ quantity: 11 }), { ...s.row({ id: 2 }), extra: 1 }] });
+  const bad = await s.change({ rows: [s.row({ quantity: 11 }), { ...s.row({ id: null as never }), extra: 1 }] });
   assert.equal(bad.ok, false);
   assert.match(s.problems(bad), /row 1: quantity/);
   assert.match(s.problems(bad), /row 2: unknown field "extra"/);
-  const ok = await s.change({ rows: [s.row({ quantity: 3 }), s.row({ id: 2, quantity: 1, style: "fancy", type: s.type, days: ["wed", "fri"], text: "Show the before and after" })] });
+  const ok = await s.change({ rows: [s.row({ quantity: 3 }), s.row({ id: null as never, quantity: 1, style: "fancy", type: s.type, days: ["wed", "fri"], text: "Show the before and after" })] });
   assert.equal(ok.ok, true, JSON.stringify(ok));
   const c = s.cs.campaign(s.id)!;
   assert.equal(s.cs.isRunnable(c), true);
@@ -212,13 +212,13 @@ test("a type that posts without approval can't be newly attached; one the table 
   assert.match(s.problems(refused), /without approval/);
   // the user's own table used it: the agent may keep using it (on another row too)
   s.cs.setRows(s.id, [s.row({ type: auto })]);
-  const ok = await s.change({ rows: [s.row({ type: auto }), s.row({ id: 2, type: auto, days: ["wed"] })] });
+  const ok = await s.change({ rows: [s.row({ type: auto }), s.row({ id: null as never, type: auto, days: ["wed"] })] });
   assert.ok(ok.ok, JSON.stringify(ok));
 });
 
 test("a Drive row posts its file by name, labelled by its named hook, angle and CTA", async () => {
   const s = setup();
-  const r = await s.change({ rows: [s.row(), s.row({ id: 2, origin: "drive", text: "Gatekeeping", time: "17:30", days: ["mon"], angle: { pick: "named", id: s.angle }, sec: 45 })] });
+  const r = await s.change({ rows: [s.row(), s.row({ id: null as never, origin: "drive", text: "Gatekeeping", time: "17:30", days: ["mon"], angle: { pick: "named", id: s.angle }, sec: 45 })] });
   assert.ok(r.ok, JSON.stringify(r));
   const mon = s.cs.campaign(s.id)!.compiled!.days.mon[0] as PostInstruction;
   assert.equal(mon.kind, "post");
@@ -278,4 +278,22 @@ test("a change logged before rows had a model can still be undone, and undo writ
   assert.equal(saved[0].quantity, 2);
   assert.equal("look" in saved[0], false, "no look written back");
   assert.equal(saved[0].model, null);
+});
+
+test("an Autorun change can add a row with id null and can't invent an id", async () => {
+  const s = setup();
+  const [kept] = s.cs.campaign(s.id)!.rows;
+  const invented = await s.change({ rows: [s.row({ id: kept.id }), s.row({ id: kept.id + 1000 })] });
+  assert.equal(invented.ok, false);
+  assert.match(s.problems(invented), /isn't a row of this campaign; send null for a new row/);
+  const noTime = await s.change({ rows: [s.row({ id: kept.id, time: null })] });
+  assert.equal(noTime.ok, false);
+  assert.match(s.problems(noTime), /needs a post time/);
+  const ok = await s.change({ rows: [s.row({ id: kept.id }), s.row({ id: null as never, days: ["wed"] })] });
+  assert.ok(ok.ok, JSON.stringify(ok));
+  const rows = s.cs.campaign(s.id)!.rows;
+  assert.equal(rows[0].id, kept.id);
+  assert.ok(rows[1].id > 0 && rows[1].id !== kept.id);
+  const [log] = s.cs.changes(s.id);
+  assert.equal((log.after as any).rows[1].id, rows[1].id, "the log holds the id it was given");
 });

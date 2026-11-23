@@ -209,7 +209,7 @@ export async function applyAgentChange(
   let compiled: CompiledCampaign | null = null;
   let warnings: string[] = [];
   if (change.rows !== undefined) {
-    const r = parseRows(change.rows, withAdds);
+    const r = parseRows(change.rows, withAdds, new Set(c.rows.map((x) => x.id)));
     if (!r.ok) return { ok: false, problems: r.problems };
     rows = r.value;
     warnings = r.warnings;

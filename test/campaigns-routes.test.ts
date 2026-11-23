@@ -109,7 +109,7 @@ test("campaigns: create, list, and the settings routes", async () => {
 
 test("the table saves whole and runs at once; a bad one is a 400 with its problems and changes nothing", async () => {
   const { send, cs, campaignId, row, hook } = setup();
-  let res = await send("PUT", `/api/campaigns/${campaignId}/rows`, { rows: [row(), row({ id: 2, origin: "drive", text: "Gatekeeping", time: "17:30", days: ["mon", "fri"], quantity: 3 })] });
+  let res = await send("PUT", `/api/campaigns/${campaignId}/rows`, { rows: [row({ id: null as never }), row({ id: null as never, origin: "drive", text: "Gatekeeping", time: "17:30", days: ["mon", "fri"], quantity: 3 })] });
   assert.equal(res.statusCode, 200, res.body);
   assert.equal(res.json().rows.length, 2);
   assert.equal(res.json().runnable, true);
@@ -119,7 +119,8 @@ test("the table saves whole and runs at once; a bad one is a 400 with its proble
   assert.deepEqual([c.compiled!.days.mon[0].kind, c.compiled!.days.fri[0].kind], ["post", "post"]);
 
   // a row that can't run yet is kept, and left out of the schedule
-  res = await send("PUT", `/api/campaigns/${campaignId}/rows`, { rows: [row({ days: [] }), row({ id: 2, origin: "drive", text: "", days: ["mon"] })] });
+  const [id1, id2] = (res.json().rows as { id: number }[]).map((x) => x.id);
+  res = await send("PUT", `/api/campaigns/${campaignId}/rows`, { rows: [row({ id: id1, sec: null }), row({ id: id2, origin: "drive", text: "", days: ["mon"] })] });
   assert.equal(res.statusCode, 200, res.body);
   assert.equal(cs.campaign(campaignId)!.rows.length, 2);
   assert.ok(Object.values(cs.campaign(campaignId)!.compiled!.days).every((d) => d.length === 0));
@@ -128,7 +129,7 @@ test("the table saves whole and runs at once; a bad one is a 400 with its proble
   for (const bad of [
     [row({ quantity: 0 })], [row({ quantity: 11 })], [row({ sec: 4 })], [row({ sec: 301 })], [row({ time: "9am" })],
     [row({ days: ["funday" as never] })], [row({ hook: { pick: "named", id: 999 } })], [row({ style: "nope" })], [row({ type: 42 })],
-    [row({ origin: "drive", text: "has_underscore" })], [row(), row()], [{ ...row(), extra: 1 }],
+    [row({ origin: "drive", text: "has_underscore" })], [row({ id: id1 }), row({ id: id1 })], [{ ...row({ id: id1 }), extra: 1 }], [row({ id: id1, time: null })], [row({ id: id1, days: [] })], [row({ id: 99999 })],
   ]) {
     res = await send("PUT", `/api/campaigns/${campaignId}/rows`, { rows: bad });
     assert.equal(res.statusCode, 400, JSON.stringify(bad));
@@ -136,6 +137,30 @@ test("the table saves whole and runs at once; a bad one is a 400 with its proble
   }
   assert.equal(JSON.stringify(cs.campaign(campaignId)), before);
   assert.ok(hook);
+});
+
+test("PUT rows assigns ids to new rows and returns them", async () => {
+  const { send, campaignId, cs, row } = setup();
+  let res = await send("PUT", `/api/campaigns/${campaignId}/rows`, { rows: [row({ id: null as never })] });
+  assert.equal(res.statusCode, 200, res.body);
+  const id = res.json().rows[0].id as number;
+  assert.ok(id > 0);
+  assert.equal(cs.campaign(campaignId)!.rows[0].id, id);
+  res = await send("PUT", `/api/campaigns/${campaignId}/rows`, { rows: [row({ id }), row({ id: null as never })] });
+  assert.equal(res.statusCode, 200, res.body);
+  const ids = (res.json().rows as { id: number }[]).map((x) => x.id);
+  assert.equal(ids[0], id, "a kept row keeps its id");
+  assert.ok(ids[1] > id);
+});
+
+test("PUT rows refuses a row without a time or a day", async () => {
+  const { send, campaignId, row } = setup();
+  let res = await send("PUT", `/api/campaigns/${campaignId}/rows`, { rows: [row({ id: null as never, time: null })] });
+  assert.equal(res.statusCode, 400);
+  assert.match(res.json().problems.join(" "), /needs a post time/);
+  res = await send("PUT", `/api/campaigns/${campaignId}/rows`, { rows: [row({ id: null as never, days: [] })] });
+  assert.equal(res.statusCode, 400);
+  assert.match(res.json().problems.join(" "), /needs at least one day/);
 });
 
 test("Stop Campaign and Start Campaign go through the worker", async () => {
@@ -346,7 +371,7 @@ test("GET /api/campaigns includes models, defaultClaude and lemoInstalled", asyn
 test("saving an agent row with a Lemo style round-trips", async () => {
   const { send, store, campaignId, row } = setup();
   syncLooks(store, "lemo-opuscar", [{ key: "lemo:ukiyo-e", name: "Ukiyo-e", description: "", needsImageGen: false, libraryVersion: "1" }]);
-  const agent = row({ origin: "agent", style: "lemo:ukiyo-e", id: 2 });
+  const agent = row({ origin: "agent", style: "lemo:ukiyo-e", id: null as never });
   const res = await send("PUT", `/api/campaigns/${campaignId}/rows`, { rows: [agent] });
   assert.equal(res.statusCode, 200, res.body);
   const saved = (await send("GET", "/api/campaigns")).json().campaigns.find((c: { id: number }) => c.id === campaignId);
@@ -359,7 +384,7 @@ test("saving an agent row with a Lemo style round-trips", async () => {
 
 test("an agent row with no style saves, and is left out of the schedule", async () => {
   const { send, campaignId, row } = setup();
-  const res = await send("PUT", `/api/campaigns/${campaignId}/rows`, { rows: [row({ origin: "agent", style: null })] });
+  const res = await send("PUT", `/api/campaigns/${campaignId}/rows`, { rows: [row({ id: null as never, origin: "agent", style: null })] });
   assert.equal(res.statusCode, 200, res.body);
   assert.equal(res.json().rows[0].style, null);
   assert.deepEqual(res.json().compiled.days.tue, []);
@@ -367,7 +392,7 @@ test("an agent row with no style saves, and is left out of the schedule", async 
 
 test("saving the table makes today's tasks at once, from the rows just saved", async () => {
   const { send, calls, campaignId, row } = setup();
-  const res = await send("PUT", `/api/campaigns/${campaignId}/rows`, { rows: [row({ time: "21:45" })] });
+  const res = await send("PUT", `/api/campaigns/${campaignId}/rows`, { rows: [row({ id: null as never, time: "21:45" })] });
   assert.equal(res.statusCode, 200, res.body);
   assert.deepEqual(calls.materialize, [JSON.stringify([["21:45"]])], "after the save, before the answer");
   // A table that couldn't be saved makes nothing.

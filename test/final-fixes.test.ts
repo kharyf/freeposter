@@ -17,10 +17,10 @@ test("get_campaign's compacted rows go straight back into update_campaign", asyn
   const id = cs.create({ name: "Weekday Growth", text: "", accountSetId: null, defaultPostTimes: [], dailyPostCap: 100 });
   cs.setRows(id, [{
     id: 1, quantity: 1, hook: { pick: "named", id: hook }, angle: { pick: "random" }, cta: { pick: "named", id: cta }, style: "basic",
-    type: null, time: null, days: ["tue"], sec: 30, origin: "create", model: null, text: "",
+    type: null, time: "09:00", days: ["tue"], sec: 30, origin: "create", model: null, text: "",
   } as never, {
     id: 2, quantity: 1, hook: { pick: "random" }, angle: { pick: "random" }, cta: { pick: "named", id: cta }, style: null,
-    type: null, time: null, days: ["wed"], sec: null, origin: "agent", model: null, text: "",
+    type: null, time: "10:00", days: ["wed"], sec: null, origin: "agent", model: null, text: "",
   } as never]);
   cs.setAutorun(id, true);
   const post = (op: string, body: unknown) => app.inject({ method: "POST", url: `/agent/v1/${op}`, headers: HOST, payload: body as any });
@@ -32,13 +32,13 @@ test("get_campaign's compacted rows go straight back into update_campaign", asyn
   assert.equal(back.statusCode, 200, back.body);
 });
 
-test("parseRows reads missing type, time, sec, model, text and an Agent row's style as empty", () => {
+test("parseRows reads missing type, sec, model, text and an Agent row's style as empty", () => {
   const { store } = mcpFixture({ campaigns: true });
   const vocab = campaignVocabulary(store, new CampaignStore(store));
-  const r = parseRows([{ id: 1, quantity: 1, hook: { pick: "random" }, angle: { pick: "random" }, cta: { pick: "random" }, days: ["tue"], origin: "agent" }], vocab);
+  const r = parseRows([{ id: 1, quantity: 1, hook: { pick: "random" }, angle: { pick: "random" }, cta: { pick: "random" }, days: ["tue"], time: "09:00", origin: "agent" }], vocab);
   assert.ok(r.ok, r.ok ? "" : r.problems.join("; "));
-  if (r.ok) assert.deepEqual([r.value[0].type, r.value[0].time, r.value[0].sec, r.value[0].model, r.value[0].text, r.value[0].style], [null, null, null, null, "", null]);
-  const bad = parseRows([{ id: 1, quantity: 1, hook: { pick: "random" }, angle: { pick: "random" }, cta: { pick: "random" }, days: ["tue"], origin: "create" }], vocab);
+  if (r.ok) assert.deepEqual([r.value[0].type, r.value[0].sec, r.value[0].model, r.value[0].text, r.value[0].style], [null, null, null, "", null]);
+  const bad = parseRows([{ id: 1, quantity: 1, hook: { pick: "random" }, angle: { pick: "random" }, cta: { pick: "random" }, days: ["tue"], time: "09:00", origin: "create" }], vocab);
   assert.equal(bad.ok, false, "a Create row still needs a style");
 });
 
