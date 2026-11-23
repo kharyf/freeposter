@@ -12,10 +12,12 @@
     --tiktok: #111; --instagram: #c13584; --facebook: #1877f2; --x: #000; --youtube: #e00;
     /* Analytics chart series, one per platform in a fixed order (validated: adjacent CVD and normal-vision gates) */
     --s-tiktok: #2a78d6; --s-instagram: #eb6834; --s-facebook: #1baf7a; --s-x: #eda100; --s-youtube: #e87ba4;
+    --tab: #ebe9e4; --tab-on: #d5d1c8;
   }
   @media (prefers-color-scheme: dark) {
     :root { --bg: #161615; --panel: #201f1d; --ink: #ecebe7; --muted: #a09d96; --line: #34322e; --accent: #6d95ff; --ok: #4cc283; --warn: #f0a640; --bad: #ff6b5e; --tiktok: #ddd; --x: #ddd;
-      --s-tiktok: #3987e5; --s-instagram: #d95926; --s-facebook: #199e70; --s-x: #c98500; --s-youtube: #d55181; }
+      --s-tiktok: #3987e5; --s-instagram: #d95926; --s-facebook: #199e70; --s-x: #c98500; --s-youtube: #d55181;
+      --tab: #3a3936; --tab-on: #0e0e0d; }
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
@@ -152,10 +154,15 @@
   #consoleLog mark { background: color-mix(in srgb, var(--accent) 35%, transparent); color: inherit; border-radius: 2px; }
   #consoleJump { position: absolute; right: 20px; bottom: 16px; padding: 6px 12px; border-radius: 14px; border: 1px solid var(--line); background: var(--accent); color: #fff; cursor: pointer; }
   #workspace, .mid { position: relative; }
-  .tabstrip { position: relative; display: flex; flex: none; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
+  .tabstrip { position: relative; display: flex; flex: none; gap: 4px; padding: 6px 6px 0; align-items: flex-end; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
   .tabstrip::-webkit-scrollbar { display: none; }
-  .tabstrip button { flex: none; white-space: nowrap; border: 0; border-top: 2px solid transparent; border-radius: 0; background: none; color: var(--muted); padding: 6px 12px; font-size: 13px; font-weight: 600; }
-  .tabstrip button[aria-selected="true"] { color: var(--ink); border-top-color: var(--accent); }
+  .tabstrip button { flex: none; white-space: nowrap; background: var(--tab); border: 2px solid transparent; border-bottom: 0; border-radius: 10px 10px 0 0; color: var(--muted); padding: 6px 12px; font-size: 13px; font-weight: 600; }
+  .tabstrip button[aria-selected="true"] { background: var(--tab-on); border-color: var(--accent); color: var(--ink); }
+  .ctx-menu { position: fixed; z-index: 1000; min-width: 160px; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,.25); }
+  .ctx-menu button { display: flex; width: 100%; justify-content: space-between; gap: 16px; align-items: center; text-align: left; background: none; border: 0; border-radius: 5px; padding: 6px 10px; font: inherit; font-size: 13px; color: var(--ink); cursor: default; }
+  .ctx-menu button:hover, .ctx-menu button:focus { outline: none; background: color-mix(in srgb, var(--accent) 14%, transparent); }
+  .ctx-menu button[aria-disabled="true"] { opacity: .45; }
+  .ctx-menu button[aria-disabled="true"]:hover { background: none; }
   .tabstrip .tab-badge { display: inline-block; margin-left: 6px; min-width: 16px; padding: 0 5px; border-radius: 8px; background: var(--accent); color: var(--bg); font-size: 11px; line-height: 16px; text-align: center; }
   .tabstrip button.pulse { animation: tab-pulse 1.2s ease-in-out 2; }
   @keyframes tab-pulse { 0%, 100% { background: transparent; } 50% { background: color-mix(in srgb, var(--accent) 25%, transparent); } }
@@ -1882,6 +1889,117 @@ $("workspace").addEventListener("click", (e) => {
   const b = e.target.closest(".tabstrip button[data-tab]");
   if (!b) return;
   revealTab(b.dataset.tab);
+});
+// ---- context menu component ----
+// openMenu(items, x, y): items are { label, disabled?, action?, submenu?: items }. One root menu plus at most one
+// open submenu per level; all close on Escape, outside pointerdown, blur, resize, any scroll, or after an action.
+let ctxMenus = [];
+let ctxQuiet = false; // true while focus is moved back to a parent item (so the focus handler does not reopen its submenu)
+function closeMenus() { for (const m of ctxMenus) m.remove(); ctxMenus = []; }
+function placeMenu(menu, x, y, anchor) {
+  const w = menu.offsetWidth, h = menu.offsetHeight, vw = innerWidth, vh = innerHeight;
+  let left = x, top = y;
+  if (anchor) { // submenu: right of the item, or left when it would not fit
+    left = anchor.right - 2;
+    if (left + w > vw) left = anchor.left - w + 2;
+    top = anchor.top - 5;
+  }
+  menu.style.left = Math.max(0, Math.min(left, vw - w)) + "px";
+  menu.style.top = Math.max(0, Math.min(top, vh - h)) + "px";
+}
+function buildMenu(items, depth, x, y, anchor) {
+  while (ctxMenus.length > depth) ctxMenus.pop().remove();
+  const menu = document.createElement("div");
+  menu.className = "ctx-menu";
+  menu.setAttribute("role", "menu");
+  const btns = [];
+  for (const it of items) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.setAttribute("role", "menuitem");
+    const label = document.createElement("span");
+    label.textContent = it.label;
+    b.append(label);
+    if (it.disabled) b.setAttribute("aria-disabled", "true");
+    if (it.submenu) {
+      b.setAttribute("aria-haspopup", "menu");
+      const arrow = document.createElement("span");
+      arrow.textContent = "▸";
+      b.append(arrow);
+    }
+    const openSub = () => {
+      if (!it.submenu || it.disabled || ctxQuiet) return;
+      if (ctxMenus[depth + 1]?.owner === b) return; // already open for this item
+      buildMenu(it.submenu, depth + 1, 0, 0, b.getBoundingClientRect()).owner = b;
+    };
+    b.addEventListener("mouseenter", () => {
+      b.focus({ preventScroll: true });
+      if (it.submenu) openSub(); else while (ctxMenus.length > depth + 1) ctxMenus.pop().remove();
+    });
+    b.addEventListener("focus", () => { if (it.submenu) openSub(); else while (ctxMenus.length > depth + 1) ctxMenus.pop().remove(); });
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (it.disabled) return;
+      if (it.submenu) { openSub(); return; }
+      closeMenus();
+      it.action?.();
+    });
+    b.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowRight" && it.submenu && !it.disabled) {
+        e.preventDefault(); openSub();
+        ctxMenus[depth + 1]?.querySelector("button")?.focus();
+      }
+    });
+    btns.push(b);
+    menu.append(b);
+  }
+  menu.addEventListener("keydown", (e) => {
+    const i = btns.indexOf(document.activeElement);
+    if (e.key === "ArrowDown") { e.preventDefault(); btns[(i + 1) % btns.length].focus(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); btns[(i - 1 + btns.length) % btns.length].focus(); }
+    else if (e.key === "ArrowLeft" && depth > 0) {
+      e.preventDefault();
+      const parent = ctxMenus[depth - 1];
+      while (ctxMenus.length > depth) ctxMenus.pop().remove();
+      ctxQuiet = true;
+      try { (menu.owner || parent.querySelector("button"))?.focus(); } finally { ctxQuiet = false; }
+    }
+    else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); document.activeElement?.click(); }
+  });
+  menu.addEventListener("pointerdown", (e) => e.stopPropagation());
+  document.body.append(menu);
+  ctxMenus.push(menu);
+  placeMenu(menu, x, y, anchor);
+  return menu;
+}
+function openMenu(items, x, y) {
+  closeMenus();
+  buildMenu(items, 0, x, y).querySelector("button")?.focus();
+}
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && ctxMenus.length) { e.preventDefault(); closeMenus(); } });
+document.addEventListener("pointerdown", () => closeMenus());
+addEventListener("blur", closeMenus);
+addEventListener("resize", closeMenus);
+document.addEventListener("scroll", (e) => { if (ctxMenus.length && !ctxMenus.some((m) => m.contains(e.target))) closeMenus(); }, true);
+
+// ---- tab context menus (delegated: applyLayout rebuilds the buttons) ----
+function addTabTo(id, area) {
+  const wasShown = visibleTabs(layout).includes(id);
+  commitLayout(FPL.addTab(layout, id, area));
+  if (wasShown && visibleTabs(layout).includes(id)) onTabShown(id); // already visible: commitLayout did not announce it, so refit
+}
+$("workspace").addEventListener("contextmenu", (e) => {
+  const strip = e.target.closest(".tabstrip");
+  if (!strip) return; // elsewhere the browser's own menu stays
+  e.preventDefault();
+  const b = e.target.closest("button[data-tab]");
+  if (b) {
+    const id = b.dataset.tab;
+    openMenu([{ label: "Delete Tab", disabled: !FPL.canCloseTab(layout, id), action: () => commitLayout(FPL.closeTab(layout, id)) }], e.clientX, e.clientY);
+  } else {
+    const area = strip.closest(".area").dataset.area;
+    openMenu([{ label: "Add Tab", submenu: FPL.addTabChoices(layout, area).map((c) => ({ label: c.label, disabled: c.disabled, action: () => addTabTo(c.id, area) })) }], e.clientX, e.clientY);
+  }
 });
 for (const a of ["left", "bottom", "right"]) {
   $("toggle" + a[0].toUpperCase() + a.slice(1)).addEventListener("click", () => commitLayout(FPL.setCollapsed(layout, a, !layout.areas[a].collapsed)));
