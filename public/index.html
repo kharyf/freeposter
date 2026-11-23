@@ -581,6 +581,7 @@
       <div id="aiBody" class="muted">Loading…</div>
   </div>
 </div>
+<div class="panel" id="panel-console" data-tab="console" role="tabpanel" aria-label="Console" hidden></div>
 <div id="styles" class="panel page" data-tab="styles" role="tabpanel" aria-label="Editing styles" hidden>
   <div class="styles-head">
     <p class="muted">A Drive video is edited in the style its name gives, as in <code>Gatekeeping_11.1.26_5.30.pm_<strong>Basic</strong>.mp4</code>, or in the default style when its name gives none.</p>
@@ -1182,6 +1183,7 @@ function applyLayout() {
       p.hidden = ar.collapsed || id !== ar.active;
     }
   }
+  for (const id of layout.closed) panelEl(id).hidden = true; // a deleted tab's panel stays wherever its node is
   ws.style.setProperty("--left-w", layout.areas.left.size + "px");
   ws.style.setProperty("--right-w", layout.areas.right.size + "px");
   ws.style.setProperty("--bottom-h", layout.areas.bottom.size + "px");
@@ -1200,6 +1202,7 @@ function commitLayout(next) {
 }
 
 function revealTab(id) {
+  if (layout.closed.includes(id)) return commitLayout(FPL.activateTab(layout, id)); // reopens it and opens its area
   commitLayout(FPL.activateTab(FPL.setCollapsed(layout, FPL.areaOf(layout, id), false), id));
 }
 
