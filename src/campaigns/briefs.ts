@@ -177,7 +177,7 @@ function checkSubmit(cs: CampaignStore, t: CampaignTask | undefined, taskId: num
   if (c.brief!.deadline < now) return fail(`the deadline for task ${taskId} has passed`);
   const held = notHeld(c, taskId, token, now);
   if (held) return fail(held);
-  for (const other of cs.tasksIn(["awaiting_agent", "editing", "reviewing", "scheduled", "posted", "kept"])) {
+  for (const other of cs.tasksIn(["awaiting_agent", "editing", "reviewing", "scheduled", "posted", "kept", "replaced"])) {
     if (other.id !== taskId && choicesOf(other).delivery?.hash === hash) return fail(`this file was already delivered for task ${other.id}`);
   }
   return null;

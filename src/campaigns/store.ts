@@ -292,7 +292,8 @@ export function filesHeldBy(store: Store, campaignId: number): { driveId: string
 /** Whether a campaign task has taken this held Drive file to post (in any state since: it's never released). */
 export function driveFileTaken(store: Store, driveId: string): boolean {
   if (!ready.has(store)) { store.db.exec(SCHEMA); ready.add(store); }
-  return Boolean(store.db.prepare("SELECT 1 FROM campaign_tasks WHERE json_extract(choices, '$.driveId') = ? LIMIT 1").get(driveId));
+  // A task its changed row replaced gave the file back (to the remade task, or with a note when nothing will post it).
+  return Boolean(store.db.prepare("SELECT 1 FROM campaign_tasks WHERE json_extract(choices, '$.driveId') = ? AND state <> 'replaced' LIMIT 1").get(driveId));
 }
 
 /** The lowercased `{name}`s new Drive files are held for (see heldBy). */

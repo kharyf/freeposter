@@ -118,6 +118,9 @@ const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 /** States a task is still being worked on in. */
 const ACTIVE: TaskState[] = ["queued", "awaiting_agent", "scripting", "rendering", "editing", "reviewing", "scheduled"];
 const PENDING_JOBS = ["queued", "running", "retry", "waiting_quota"];
+/** Whether a job's upload has begun: it tried, it isn't waiting any more, or it carries an upload checkpoint. */
+const uploadBegun = (j: { state: string; attempts: number; progress: Record<string, unknown> }) =>
+  j.attempts > 0 || !["queued", "retry", "waiting_quota"].includes(j.state) || Object.keys(j.progress).some((k) => k !== "heldFrom");
 /** Campaign reviews wait for the user well past their post time (approved a later day, it takes a later time). */
 const REVIEW_HOURS = 24 * 7;
 /** How far ahead a post is placed before giving up (a cap of 0, say). */
@@ -605,7 +608,9 @@ export class CampaignWorker {
   private async startEdit(id: number, video: string, styleId: string | null) {
     const style = styleById(this.store, styleId);
     if (!style) return this.fail(id, `the editing style ${styleId ?? "(none)"} no longer exists`);
-    const edit = this.store.createEdit(video, await hashFile(video), style.settings);
+    const hash = await hashFile(video);
+    if (this.replaced(id)) return; // its row changed while the video was being read
+    const edit = this.store.createEdit(video, hash, style.settings);
     this.campaigns.updateTask(id, { state: "editing", editId: edit.id });
     log({ id }, `edit ${edit.id} (${style.name})`);
   }
@@ -1000,7 +1005,7 @@ export class CampaignWorker {
     if (this.stopped(t)) return;
     const name = ins.name.toLowerCase();
     const from = addDays(t.date, -(KEPT_WINDOW_DAYS - 1));
-    const taken = this.store.db.prepare("SELECT 1 FROM campaign_tasks WHERE id != ? AND json_extract(choices, '$.sourceTaskId') = ? LIMIT 1");
+    const taken = this.store.db.prepare("SELECT 1 FROM campaign_tasks WHERE id != ? AND state <> 'replaced' AND json_extract(choices, '$.sourceTaskId') = ? LIMIT 1");
     const kept = this.campaigns.tasksIn(["kept"])
       .filter((k) => String((k.choices as unknown as TaskChoices).libraryName ?? "").toLowerCase() === name && k.date >= from && k.date <= t.date)
       .sort((a, b) => (a.date === b.date ? b.id - a.id : a.date < b.date ? 1 : -1))
@@ -1214,38 +1219,44 @@ export class CampaignWorker {
     const find = this.store.db.prepare(
       `SELECT id FROM campaign_tasks WHERE campaign_id = ? AND instruction_index = ? AND state IN (${ACTIVE.map(() => "?").join(",")}) AND copy >= ? ORDER BY id`,
     );
-    const retired: Retirement[] = [];
-    let n = 0;
+    const done: { taskId: number; r: Retirement }[] = [];
     for (const r of plan) {
       const ids = find.all(campaignId, ROW_INSTRUCTION_BASE + r.rowId, ...ACTIVE, r.fromCopy) as { id: number }[];
       for (const { id } of ids) {
         const t = this.campaigns.task(id);
         if (!t || (r.days !== "all" && !r.days.includes(DAYS[t.dayIndex]))) continue;
         try {
-          if (this.retire(t)) {
-            n++;
-            if (!retired.includes(r)) retired.push(r);
-          }
+          if (this.retire(t, r.remake)) done.push({ taskId: id, r });
         } catch (err) {
           console.error(`[campaign task ${id}] couldn't be replaced: ${(err as Error).message}`);
         }
       }
     }
-    if (n > 0) {
+    if (done.length) {
       const name = this.campaigns.campaign(campaignId)?.name ?? `campaign ${campaignId}`;
-      const hexes = [...new Set(retired.map((r) => rowIdHex(r.rowId)))];
-      const remade = retired.some((r) => r.remake);
-      const now = this.now();
-      queueEvent(this.store, "campaign.remade", `campaign.remade:${campaignId}:${now}`, { campaign_id: campaignId, rows: hexes, retired: n },
-        `Campaign "${name}": ${n} videos of row(s) ${hexes.join(", ")} ${remade ? "are being made again from the changed row" : "were removed"}`);
+      const hexes = [...new Set(done.map((d) => rowIdHex(d.r.rowId)))];
+      const part = (remake: boolean) => {
+        const these = done.filter((d) => d.r.remake === remake);
+        if (!these.length) return null;
+        const rows = [...new Set(these.map((d) => rowIdHex(d.r.rowId)))];
+        const one = these.length === 1;
+        return `${these.length} video${one ? "" : "s"} of row${rows.length === 1 ? "" : "s"} ${rows.join(", ")} ${remake ? (one ? "is being made again" : "are being made again") : one ? "was removed" : "were removed"}`;
+      };
+      // Keyed by the tasks it retired, which are retired only once: every save is told, however close together.
+      queueEvent(this.store, "campaign.remade", `campaign.remade:${campaignId}:${done.map((d) => d.taskId).join(",")}`,
+        { campaign_id: campaignId, rows: hexes, retired: done.length },
+        `Campaign "${name}": ${[part(true), part(false)].filter(Boolean).join("; ")}`);
     }
-    return n;
+    return done.length;
   }
 
-  /** Replaces one task: its agent launch, production, edit, review and held post stop, then it gives back its slot. */
-  private retire(t: CampaignTask): boolean {
-    // A post already let go (or started uploading) goes out as it is.
-    if (t.state === "scheduled" && t.postId !== null && this.store.jobsForPost(t.postId).some((j) => typeof j.progress.heldFrom !== "number")) return false;
+  /**
+   * Replaces one task: its agent launch, production, edit, review and post not yet tried stop, then it gives back its
+   * slot. Its held Drive file goes to the remade task (remake), or says why nothing was posted.
+   */
+  private retire(t: CampaignTask, remake: boolean): boolean {
+    // A post whose upload has begun on any platform goes out as it is.
+    if (t.state === "scheduled" && t.postId !== null && this.store.jobsForPost(t.postId).some(uploadBegun)) return false;
     try {
       this.onRetire(t.id);
     } catch (err) {
@@ -1264,12 +1275,43 @@ export class CampaignWorker {
       this.reviews.reviews.close(r.id, "superseded");
       this.reviews.reviews.markDirty(r.id);
     }
-    // An approval not placed yet (still reviewing) has a held post too: it must never go out on its own.
+    // An approval not placed yet (still reviewing) has a held post too: it must never go out on its own. A placed
+    // post never tried is cancelled the same way (cancelPost keeps only jobs that tried, and there are none).
     const postId = t.postId ?? r?.postId ?? null;
-    const started = postId !== null ? this.cancelHeld(postId) : "";
+    let started = "";
+    if (postId !== null) {
+      const held = this.store.jobsForPost(postId).some((j) => typeof j.progress.heldFrom === "number");
+      if (held) started = this.cancelHeld(postId);
+      else if (this.store.post(postId)) this.store.cancelPost(postId);
+    }
     if (!this.campaigns.retireTask(t.id)) return false;
+    const c = t.choices as unknown as TaskChoices;
+    // A kept video a post line had placed is kept again, for the remade line to take.
+    if (c.sourceTaskId && postId !== null && !this.store.post(postId)) {
+      const src = this.campaigns.task(c.sourceTaskId);
+      if (src?.state === "posted" && src.postId === postId) this.campaigns.updateTask(src.id, { state: "kept", postId: null });
+    }
+    if (c.driveId) this.releaseDriveFile(t, c.driveId, remake);
     log(t, `replaced: its row was changed${started ? `. ${started}` : ""}`);
     return true;
+  }
+
+  /**
+   * A replaced task's Drive file, not posted: held again for the remade task to take, or (its row no longer wants
+   * it) finished with a note saying why nothing was posted, as a failed task's is.
+   */
+  private releaseDriveFile(t: CampaignTask, driveId: string, remake: boolean) {
+    const f = this.store.driveFile(driveId);
+    if (!f || f.postId !== null || (f.state !== "held" && f.state !== "cancelled")) return;
+    if (remake) {
+      const name = this.campaigns.campaign(t.campaignId)?.name ?? (t.choices as unknown as TaskChoices).campaignName;
+      this.store.upsertDriveFile(driveId, { state: "held", postId: null, note: `held by campaign ${name}` });
+    } else {
+      this.store.upsertDriveFile(driveId, {
+        state: "failed",
+        note: "its campaign row was changed or removed before it posted; nothing was posted. To post it, upload it again",
+      });
+    }
   }
 
   // ---- stopping one campaign ----

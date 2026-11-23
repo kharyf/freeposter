@@ -12,11 +12,12 @@ import { syncLooks } from "../src/campaigns/looks.ts";
 import type { Script, writeScript } from "../src/campaigns/script.ts";
 import { DAYS, type CompiledCampaign, type Day, type MakeInstruction, type PostInstruction } from "../src/campaigns/spec.ts";
 import { ROW_INSTRUCTION_BASE, type Row } from "../src/campaigns/rows.ts";
-import { CampaignStore } from "../src/campaigns/store.ts";
+import { CampaignStore, filesHeldBy } from "../src/campaigns/store.ts";
 import { CampaignWorker, localAt } from "../src/campaigns/worker.ts";
 import { publishers } from "../src/platforms/index.ts";
 import type { ProductionSpec } from "../src/produce/spec.ts";
 import { ProductionStore } from "../src/produce/store.ts";
+import { hashFile } from "../src/review/media.ts";
 import { ReviewService } from "../src/review/service.ts";
 import { account, makeVideo, newStore, tmp } from "./helpers.ts";
 
@@ -1701,7 +1702,7 @@ test("changing a row's hook retires its reviewing video and the next materialize
   assert.ok(ev, "the user is told");
   assert.deepEqual(ev.rows, ["0000001"]);
   assert.equal(ev.retired, 1);
-  assert.equal(ev.summary, 'Campaign "Table": 1 videos of row(s) 0000001 are being made again from the changed row');
+  assert.equal(ev.summary, 'Campaign "Table": 1 video of row 0000001 is being made again');
   assert.equal(s.worker.materialize(), 1);
   const fresh = s.cs.tasksOn(id, "2026-11-17").find((x) => x.id !== t.id)!;
   assert.equal(fresh.copy, 0);
@@ -1737,12 +1738,30 @@ test("an approved post that has started uploading is left alone", async () => {
   await s.tick();
   const placed = s.cs.task(t.id)!;
   assert.equal(placed.state, "scheduled", placed.error ?? "");
-  assert.ok(s.store.jobsForPost(placed.postId!).every((j) => j.progress.heldFrom === undefined), "released to go out");
+  // Its upload has begun: the job is running, one attempt in.
+  s.store.db.prepare("UPDATE jobs SET state = 'running', attempts = 1 WHERE post_id = ?").run(placed.postId!);
   s.worker.campaigns.setRows(id, [tableRow(s, { time: "18:00", text: "a new direction" })]);
   assert.equal(s.cs.task(t.id)!.state, "scheduled");
   assert.equal(s.cs.task(t.id)!.copy, 0);
   assert.ok(s.store.post(placed.postId!), "its post stays");
   assert.equal(s.worker.materialize(), 0, "nothing is made again for its slot");
+});
+
+test("an approved post released but never tried is cancelled and made again", async () => {
+  const s = setup();
+  const id = tableCampaign(s, [tableRow(s, { time: "18:00" })]);
+  s.worker.materialize();
+  const [t] = s.cs.tasksOn(id, "2026-11-17");
+  await s.toReview(t.id);
+  await s.approve(t.id);
+  await s.tick();
+  const placed = s.cs.task(t.id)!;
+  assert.equal(placed.state, "scheduled", placed.error ?? "");
+  assert.ok(s.store.jobsForPost(placed.postId!).every((j) => j.progress.heldFrom === undefined && j.attempts === 0), "released, never tried");
+  s.worker.campaigns.setRows(id, [tableRow(s, { time: "18:00", text: "a new direction" })]);
+  assert.equal(s.cs.task(t.id)!.state, "replaced");
+  assert.equal(s.store.post(placed.postId!), undefined, "its post is cancelled");
+  assert.equal(s.worker.materialize(), 1, "its slot is made again");
 });
 
 test("an approved post still held (its campaign stopped) is cancelled and made again", async () => {
@@ -1808,8 +1827,92 @@ test("lowering the quantity retires copy 1 and nothing is remade for it", () => 
   assert.equal(s.cs.task(b.id)!.state, "replaced");
   assert.equal(s.worker.materialize(), 0);
   const [ev] = remadeEvents(s);
-  assert.match(ev.summary, /were removed/);
-  assert.doesNotMatch(ev.summary, /made again/);
+  assert.equal(ev.summary, 'Campaign "Table": 1 video of row 0000001 was removed');
+});
+
+test("one save that remakes one row and removes another says both", () => {
+  const s = setup();
+  const id = tableCampaign(s, [tableRow(s, { id: 12, time: "18:00", quantity: 2 }), tableRow(s, { id: 13, time: "19:00" })]);
+  assert.equal(s.worker.materialize(), 3);
+  s.worker.campaigns.setRows(id, [tableRow(s, { id: 12, time: "18:00", quantity: 2, text: "new" })]);
+  const [ev] = remadeEvents(s);
+  assert.equal(ev.summary, 'Campaign "Table": 2 videos of row 000000c are being made again; 1 video of row 000000d was removed');
+  assert.equal(ev.retired, 3);
+  assert.deepEqual(ev.rows, ["000000c", "000000d"]);
+});
+
+test("two saves in the same millisecond are each told", () => {
+  const s = setup();
+  const id = tableCampaign(s, [tableRow(s, { time: "18:00" })]);
+  s.worker.materialize();
+  s.worker.campaigns.setRows(id, [tableRow(s, { time: "18:00", text: "A" })]);
+  s.worker.materialize();
+  s.worker.campaigns.setRows(id, [tableRow(s, { time: "18:00", text: "B" })]);
+  assert.equal(remadeEvents(s).length, 2, "the clock didn't move between them");
+});
+
+test("a film made for the old row can't be delivered again for the remade task", async () => {
+  const s = scriptedSetup();
+  s.clock.now = at(2026, 11, 17, 12);
+  await s.tick();
+  const token = claimed(s.cs, s.task.id, "agent-1", s.clock.now);
+  const first = await submitBrief(s.store, s.cs, s.task.id, token, { videoPath: clips[4], manifest: { look: LOOK.key, libraryVersion: "1.4.0" }, caption: AGENT_CAPTION }, s.clock.now);
+  assert.ok(first.ok, first.ok ? "" : first.error);
+  s.worker.campaigns.setRows(s.id, [tableRow(s, { origin: "create", style: LOOK.key, model: "claude:claude-sonnet-5-5", time: "18:00", sec: 9, text: "new direction" })]);
+  assert.equal(s.cs.task(s.task.id)!.state, "replaced");
+  assert.equal(s.worker.materialize(), 1);
+  await s.tick();
+  await s.tick();
+  const fresh = s.cs.tasksOn(s.id, "2026-11-17").find((x) => x.id !== s.task.id)!;
+  assert.equal(s.cs.task(fresh.id)!.state, "awaiting_agent", s.cs.task(fresh.id)!.error ?? "");
+  const again = claimed(s.cs, fresh.id, "agent-1", s.clock.now);
+  const out = await submitBrief(s.store, s.cs, fresh.id, again, { videoPath: clips[4], manifest: { look: LOOK.key, libraryVersion: "1.4.0" }, caption: AGENT_CAPTION }, s.clock.now);
+  assert.equal(out.ok, false);
+  assert.match(out.ok ? "" : out.error, new RegExp(`already delivered for task ${s.task.id}`));
+});
+
+/** A Drive row posting a held _RAW file, its task reviewing that file. */
+async function driveReviewing() {
+  const s = setup();
+  const id = tableCampaign(s, [tableRow(s, { origin: "drive", text: "Launch", time: "20:00" })]);
+  s.store.upsertDriveFile("f1", {
+    name: "Launch_RAW.mp4", state: "held", size: 1, sourcePath: clips[5], sha256: await hashFile(clips[5]), caption: "Launch day", title: "Launch",
+    uploadedAt: TUE - 3_600_000, choice: { name: "Launch", styleId: null, setId: 1, raw: true, latest: TUE + 86_400_000 }, heldBy: id, note: "held by campaign Table",
+  });
+  s.worker.materialize();
+  const [t] = s.cs.tasksOn(id, "2026-11-17");
+  await s.tick(); // takes the file
+  await s.tick(); // asks for its review
+  const lt = s.cs.task(t.id)!;
+  assert.equal(lt.state, "reviewing", lt.error ?? "");
+  assert.ok(lt.reviewId);
+  assert.equal((lt.choices as any).driveId, "f1");
+  return { ...s, id, task: lt };
+}
+
+test("a Drive row changed while its file is reviewing: the remade task takes the same file", async () => {
+  const s = await driveReviewing();
+  const promo = s.cs.addType({ name: "Promo", color: "#f00" });
+  s.worker.campaigns.setRows(s.id, [tableRow(s, { origin: "drive", text: "Launch", time: "20:00", type: promo })]);
+  assert.equal(s.cs.task(s.task.id)!.state, "replaced");
+  assert.equal(s.store.driveFile("f1")!.state, "held");
+  assert.equal(s.worker.materialize(), 1);
+  await s.tick();
+  const fresh = s.cs.tasksOn(s.id, "2026-11-17").find((x) => x.id !== s.task.id)!;
+  assert.equal((s.cs.task(fresh.id)!.choices as any).driveId, "f1", s.cs.task(fresh.id)!.error ?? "");
+  await s.tick();
+  assert.equal(s.cs.task(fresh.id)!.state, "reviewing", s.cs.task(fresh.id)!.error ?? "");
+});
+
+test("a Drive row removed while its file is reviewing: the file says why nothing was posted", async () => {
+  const s = await driveReviewing();
+  s.worker.campaigns.setRows(s.id, []);
+  assert.equal(s.cs.task(s.task.id)!.state, "replaced");
+  const f = s.store.driveFile("f1")!;
+  assert.notEqual(f.state, "held");
+  assert.match(f.note ?? "", /row was changed or removed/);
+  assert.match(f.note ?? "", /upload it again/);
+  assert.deepEqual(filesHeldBy(s.store, s.id), []);
 });
 
 test("a row changed inside a caller's transaction retires its videos without opening one of its own", () => {
@@ -1821,5 +1924,5 @@ test("a row changed inside a caller's transaction retires its videos without ope
   s.worker.campaigns.setRows(id, []);
   s.store.db.exec("COMMIT");
   assert.equal(s.cs.task(t.id)!.state, "replaced");
-  assert.match(remadeEvents(s)[0].summary, /were removed/);
+  assert.equal(remadeEvents(s)[0].summary, 'Campaign "Table": 1 video of row 0000001 was removed');
 });
