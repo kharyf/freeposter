@@ -1658,3 +1658,21 @@ test("an early Lemo task is scripted and its brief goes out at once", async () =
   assert.equal(done.state, "awaiting_agent", done.error ?? "");
   assert.equal((done.choices as any).brief.postAt, at(2026, 11, 19, 9));
 });
+
+test("a Lemo film made early and approved before its day posts at its own time on its own day", async () => {
+  const s = scriptedSetup(undefined, at(2026, 11, 17, 10));
+  const id = tableCampaign(s, [tableRow(s, { id: 9, origin: "create", style: LOOK.key, model: "claude:claude-sonnet-5-5", days: ["thu"], time: "09:00", sec: 9 })]);
+  s.worker.materialize();
+  const [t0] = s.cs.tasksOn(id, "2026-11-19");
+  assert.ok(t0);
+  await s.tick();
+  const token = claimed(s.cs, t0.id, "agent-1", s.clock.now);
+  const out = await submitBrief(s.store, s.cs, t0.id, token, { videoPath: clips[4], manifest: { look: LOOK.key, libraryVersion: "1.4.0" }, caption: AGENT_CAPTION }, s.clock.now);
+  assert.ok(out.ok, out.ok ? "" : out.error);
+  await s.tick();
+  await s.approve(t0.id);
+  await s.tick();
+  const t = s.cs.task(t0.id)!;
+  assert.equal(t.state, "scheduled", t.error ?? "");
+  assert.equal(s.store.post(t.postId!)!.scheduledAt, at(2026, 11, 19, 9));
+});

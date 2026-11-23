@@ -11,7 +11,7 @@
 //    own edit, or for _RAW the file, goes to a campaign review), until the local day ends (then "missed"). A Drive
 //    file with that name already reviewing or scheduled by its filename is never posted again: the task is missed.
 //  - placing an approved post: the review service makes a campaign's post held; this worker picks its time (the
-//    line's time today, now if that has passed today, the next free default time if approved on a later day), keeps
+//    line's time on its own day, even if approved earlier; now if that has passed today; the next free default time if approved on a later day), keeps
 //    the daily cap by the day it actually posts, writes its labels, and only then releases it.
 //  - kill switch: stopAll() holds every campaign post not yet out and nothing new is scheduled or started; renders
 //    under way finish. resumeAll() lets them go.
@@ -889,7 +889,7 @@ export class CampaignWorker {
 
   /**
    * When an approved post goes out (placed within a tick of the approval, or after a restart or resumeAll, so "now"
-   * is when it's placed). On its own day: its time, or now if that has passed. A later day: the campaign's next free
+   * is when it's placed). Before its day (a film made ahead): its time on its own day. On its own day: its time, or now if that has passed. A later day: the campaign's next free
    * default time. Either way, a day already at the daily cap (counted by the day posts
    * actually go out) passes it on to the next day's first default time, and a minute another campaign post has
    * taken moves it on a minute.
@@ -900,7 +900,9 @@ export class CampaignWorker {
     const full = (day: string) => this.postsOn(campaign.id, day, t.id).length >= campaign.dailyPostCap;
     let day = dayKey(now);
     let candidate: number | null = null;
-    if (day === t.date) {
+    if (day < t.date) {
+      candidate = localAt(t.date, c.postTime!); // approved before its day (a film made ahead): at its own time
+    } else if (day === t.date) {
       candidate = Math.max(localAt(t.date, c.postTime!), now);
     } else {
       // The next default time that's still ahead and that no other post of this campaign has taken.
