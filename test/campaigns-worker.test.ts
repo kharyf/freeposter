@@ -1943,17 +1943,15 @@ async function placedVideo() {
   return { ...s, id, task: placed, postId: placed.postId! };
 }
 
-test("a released post waiting for quota that never tried is left alone, never replaced with its post surviving", async () => {
+test("a released post the daily cap deferred before its first try is cancelled whole and made again", async () => {
   const s = await placedVideo();
-  // The daily cap deferred its first try: the attempt was refunded, nothing was sent.
+  // The daily cap deferred its first try: the attempt was refunded, nothing reached the platform.
   s.store.db.prepare("UPDATE jobs SET state = 'waiting_quota', attempts = 0, progress = '{}' WHERE post_id = ?").run(s.postId);
   s.worker.campaigns.setRows(s.id, [tableRow(s, { time: "18:00", text: "a new direction" })]);
-  const t = s.cs.task(s.task.id)!;
-  assert.equal(t.state, "scheduled");
-  assert.equal(t.copy, 0);
-  assert.ok(s.store.post(s.postId), "its post stays");
-  assert.equal(s.store.jobsForPost(s.postId).length, 1);
-  assert.equal(s.worker.materialize(), 0, "nothing is made again for its slot");
+  assert.equal(s.cs.task(s.task.id)!.state, "replaced");
+  assert.equal(s.store.post(s.postId), undefined, "its post is cancelled, never left to post the old video");
+  assert.equal(s.store.jobsForPost(s.postId).length, 0);
+  assert.equal(s.worker.materialize(), 1, "its slot is made again");
 });
 
 test("a two-platform post where one upload tried and one didn't is left alone", async () => {

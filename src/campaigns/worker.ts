@@ -1282,6 +1282,7 @@ export class CampaignWorker {
     if (post && held) started = this.cancelHeld(post.id);
     else if (post) {
       this.store.cancelPost(post.id);
+      // Defensive only: postNeverTried just said every job goes, with no await in between, so this can't fire.
       if (this.store.post(post.id)) return false;
     }
     if (!this.campaigns.retireTask(t.id)) return false;

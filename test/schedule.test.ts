@@ -113,3 +113,22 @@ test("a scheduled job becomes due at its time, and old databases gain the schedu
   assert.equal(store.claimNextJob(new Set())?.postId, postId);
   store.close();
 });
+
+test("cancelPost deletes a job the daily cap deferred before its first try, but never a retry that refunded its attempt", () => {
+  const store = newStore();
+  const x = store.upsertAccount(account("x"));
+  const post = (sha: string) => store.createPost({ caption: "", title: "", sourcePath: "x.mp4", sha256: sha, tiktok: null, scheduledAt: Date.now() + HOUR }, [x.id]);
+  // Deferred by the cap: the runner refunded the attempt and returned before anything reached the platform.
+  const deferred = post("s-deferred");
+  store.db.prepare("UPDATE jobs SET state = 'waiting_quota', attempts = 0, progress = '{}' WHERE post_id = ?").run(deferred);
+  assert.equal(store.postNeverTried(deferred), true);
+  assert.equal(store.cancelPost(deferred).cancelled, 1);
+  assert.equal(store.post(deferred), undefined, "the post goes with its last job");
+  // A retry with its attempt refunded (still processing) had uploaded already: kept.
+  const retried = post("s-retry");
+  store.db.prepare("UPDATE jobs SET state = 'retry', attempts = 0, progress = '{}' WHERE post_id = ?").run(retried);
+  assert.equal(store.postNeverTried(retried), false);
+  assert.equal(store.cancelPost(retried).cancelled, 0);
+  assert.ok(store.post(retried));
+  assert.equal(store.jobsForPost(retried).length, 1);
+});

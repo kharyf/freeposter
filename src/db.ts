@@ -161,11 +161,15 @@ function parseOr<T>(text: string | null, fallback: T): T {
 }
 
 /**
- * A job that never tried and can be deleted (SQL, on the jobs table): queued with nothing recorded, or held with
- * holding all its progress says (queued, in a retry or waiting for quota). A job that has tried, or carries an upload
- * checkpoint, may have half-made a post on its platform. cancelPost and postNeverTried both use this one rule.
+ * A job that never tried and can be deleted (SQL, on the jobs table): queued with nothing recorded; waiting for quota
+ * with nothing recorded (the daily cap deferred its first try: the runner refunds the attempt and returns before
+ * anything reaches the platform); or held with holding all its progress says (queued, in a retry or waiting for
+ * quota). Not a retry whose attempt was refunded: that happens after an upload (still processing). A job that has
+ * tried, or carries an upload checkpoint, may have half-made a post on its platform. cancelPost and postNeverTried
+ * both use this one rule.
  */
 const NEVER_TRIED = `attempts = 0 AND ((state = 'queued' AND progress = '{}')
+  OR (state = 'waiting_quota' AND progress = '{}')
   OR (state IN ('queued', 'retry', 'waiting_quota') AND json_extract(progress, '$.heldFrom') IS NOT NULL AND json_remove(progress, '$.heldFrom') = '{}'))`;
 
 export class Store {
@@ -643,10 +647,10 @@ export class Store {
   }
 
   /**
-   * Cancels a post's unstarted jobs: never tried, nothing sent. A held one counts when holding is all its progress
-   * says (in a retry or waiting for quota too). A job that has tried, or carries an upload checkpoint (an Instagram
-   * container, a Facebook upload), is left alone, like jobs under way: it may have half-made a post on the platform.
-   * Deletes the post when no jobs remain.
+   * Cancels a post's unstarted jobs (NEVER_TRIED): never tried, nothing sent. One the daily cap deferred before its
+   * first try counts, and a held one when holding is all its progress says (in a retry or waiting for quota too). A
+   * job that has tried, or carries an upload checkpoint (an Instagram container, a Facebook upload), is left alone,
+   * like jobs under way: it may have half-made a post on the platform. Deletes the post when no jobs remain.
    */
   cancelPost(postId: number): { cancelled: number; deleted: Post | undefined; orphanedSource: string | null } {
     const post = this.post(postId);
