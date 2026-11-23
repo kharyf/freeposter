@@ -12,9 +12,16 @@ export interface Retirement {
   remake: boolean;
 }
 
-/** Everything about a row except when it posts (time, days) and how many are made (quantity). */
+/**
+ * Every Row field except the ones that only move a video (time, days) or count them (quantity), and the id. Checked against
+ * Row at compile time: a new Row field fails typecheck until it is listed here or among the excluded ones.
+ */
+const CONTENT_FIELDS = ["hook", "angle", "cta", "style", "model", "type", "sec", "origin", "text"] as const satisfies readonly (keyof Omit<Row, "id" | "time" | "days" | "quantity">)[];
+type Missing = Exclude<keyof Omit<Row, "id" | "time" | "days" | "quantity">, (typeof CONTENT_FIELDS)[number]>;
+const _allClassified: [Missing] extends [never] ? true : never = true;
+void _allClassified;
 const content = (r: Row): string =>
-  JSON.stringify([r.hook, r.angle, r.cta, r.style, r.model, r.type, r.sec, r.origin, r.text].map((v) => (v !== null && typeof v === "object" ? canon(v) : v)));
+  JSON.stringify(CONTENT_FIELDS.map((k) => r[k]).map((v) => (v !== null && typeof v === "object" ? canon(v) : v)));
 const canon = (o: object): object => Object.fromEntries(Object.entries(o).sort(([a], [b]) => (a < b ? -1 : 1)));
 
 export function planRetirements(before: Row[], after: Row[]): Retirement[] {

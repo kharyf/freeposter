@@ -192,7 +192,14 @@ test("parseRows takes null or negative ids as new rows and refuses unknown posit
   assert.deepEqual(ok.ok && ok.value.map((r) => r.id), [-1, -5, 3]);
   const bad = parseRows([create({ id: 9 })], vocab, new Set([3]));
   assert.equal(bad.ok, false);
-  assert.match(!bad.ok ? bad.problems[0] : "", /id 9 isn't a row of this campaign; send null for a new row/);
+  assert.match(!bad.ok ? bad.problems[0] : "", /id 0000009 isn't a row of this campaign; send null for a new row/);
   const dup = parseRows([create({ id: -2 }), create({ id: -2 })], vocab);
   assert.equal(dup.ok, false);
+});
+
+test("parseRows names ids in hex, as the ID column shows them", () => {
+  const bad = parseRows([create({ id: 26 })], vocab, new Set([3]));
+  assert.match(!bad.ok ? bad.problems[0] : "", /id 000001a isn't a row of this campaign/);
+  const dup = parseRows([create({ id: 26 }), create({ id: 26 })], vocab, new Set([26]));
+  assert.match(!dup.ok ? dup.problems.join(";") : "", /id 000001a is used twice/);
 });

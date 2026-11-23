@@ -2,6 +2,7 @@ import "./isolated-home.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { calendar, campaignPlan } from "../src/calendar.ts";
+import { syncLooks } from "../src/campaigns/looks.ts";
 import { ROW_INSTRUCTION_BASE, type Row } from "../src/campaigns/rows.ts";
 import { DAYS } from "../src/campaigns/spec.ts";
 import { CampaignStore } from "../src/campaigns/store.ts";
@@ -123,4 +124,16 @@ test("a row's new time moves an open brief: its post time, and an Agent row's de
   const b = cs.task(scripted)!.choices as any;
   assert.equal(b.brief.postAt, localAt(date, "10:00"));
   assert.equal(b.brief.deadline, scriptedDeadline, "a Create row's Lemo film stays due within a day");
+});
+
+test("a planned note says when it's made: on its day, or up to 48 hours ahead for a Create Lemo row", () => {
+  const { store, cs } = setup([row(), row({ id: 2, style: "lemo:a", model: "claude:claude-opus-5-5", time: "10:00" })]);
+  syncLooks(store, "lemo-opuscar", [{ key: "lemo:a", name: "A", description: "d", needsImageGen: false, libraryVersion: "1" }]);
+  const from = dayFromNow(3), to = from + DAY;
+  const plan = campaignPlan(store, cs, from, to);
+  const plain = plan.find((e) => new Date(e.at).getHours() === 9)!;
+  const lemo = plan.find((e) => new Date(e.at).getHours() === 10)!;
+  assert.match(plain.note ?? "", /made on its day/);
+  assert.doesNotMatch(lemo.note ?? "", /made on its day/);
+  assert.match(lemo.note ?? "", /48 hours/);
 });

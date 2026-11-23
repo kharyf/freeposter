@@ -154,17 +154,34 @@
     return out;
   }
 
-  /** A row for the + button: a Create row with no time or day yet, and a stand-in id below every id in the table (the server gives the real one on save). */
-  function newRow(rows, last, defaultStyle) {
+  /** A row for the + button: a Create row with no time or day yet, and a stand-in id below every id in the table and below `lowest`, the lowest stand-in the campaign ever handed out, so a deleted row's id is never reused while a save is in flight (the server gives the real one on save). */
+  function newRow(rows, last, defaultStyle, lowest) {
     return {
-      id: Math.min.apply(null, [0].concat(rows.map(function (r) { return r.id; }))) - 1,
+      id: Math.min.apply(null, [0, lowest || 0].concat(rows.map(function (r) { return r.id; }))) - 1,
       quantity: 1, hook: { pick: "random" }, angle: { pick: "random" }, cta: { pick: "random" },
-      style: last && last.style !== undefined ? last.style : defaultStyle, type: null, time: null, days: [], sec: 30, origin: "create",
+      style: last && last.style != null ? last.style : defaultStyle, type: null, time: null, days: [], sec: 30, origin: "create",
       model: last && last.model !== undefined ? last.model : null, text: "",
     };
   }
 
+  /**
+   * Before a save: a positive id the campaign no longer has (Autorun deleted that row meanwhile) becomes a fresh stand-in, so the
+   * row is made again instead of refused. Returns the rows and the lowest stand-in handed out so far.
+   */
+  function reviveGone(rows, saved, lowest) {
+    var have = {};
+    saved.forEach(function (r) { have[r.id] = true; });
+    var low = lowest || 0;
+    rows.forEach(function (r) { if (r.id < low) low = r.id; });
+    var out = rows.map(function (r) {
+      if (r.id > 0 && !have[r.id]) { low -= 1; var n = structuredClone(r); n.id = low; return n; }
+      return r;
+    });
+    return { rows: out, lowest: low };
+  }
+
   root.FreePosterRows = {
+    reviveGone: reviveGone,
     newRow: newRow,    hexId: hexId, saveProblems: saveProblems,
     isLemo: isLemo, isClaudeModel: isClaudeModel, showModelColumn: showModelColumn,
     styleGroups: styleGroups, modelOptions: modelOptions, applyChange: applyChange, rowIssues: rowIssues, sameRows: sameRows,

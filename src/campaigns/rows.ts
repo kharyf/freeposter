@@ -103,10 +103,10 @@ export function parseRows(raw: unknown, vocab: Vocabulary, known?: Set<number>):
     if (r.id === null) id = nextStandIn();
     else if (int(r.id, -1_000_000_000, -1)) id = r.id as number;
     else if (!int(r.id, 1, 1_000_000_000)) problem("id must be a whole number from 1, or null for a new row");
-    else if (known && !known.has(r.id as number)) problem(`id ${String(r.id)} isn't a row of this campaign; send null for a new row`);
+    else if (known && !known.has(r.id as number)) problem(`id ${typeof r.id === "number" ? rowIdHex(r.id) : String(r.id)} isn't a row of this campaign; send null for a new row`);
     else id = r.id as number;
     if (id !== 0) {
-      if (ids.has(id)) problem(`id ${id} is used twice`);
+      if (ids.has(id)) problem(`id ${id > 0 ? rowIdHex(id) : id} is used twice`);
       else ids.add(id);
     }
     const name = id > 0 ? `row ${rowIdHex(id)}` : at;

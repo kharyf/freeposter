@@ -307,3 +307,24 @@ test("newRow: a whole Create row with a stand-in id, which the server accepts on
   const withTime = { ...fresh, id: -1, style: "bold", time: "09:00", days: ["mon"] };
   assert.equal(parseRows([withTime], vocab).ok, true);
 });
+
+test("newRow: a last row with no style (null) falls back to the default style", () => {
+  assert.equal(j(R.newRow([], row({ style: null }), "calm")).style, "calm");
+  assert.equal(j(R.newRow([], row({ style: "bold" }), "calm")).style, "bold");
+});
+
+test("newRow: a stand-in id is never handed out twice, even after its row was deleted mid-save", () => {
+  const a = j(R.newRow([], undefined, "calm", 0));
+  assert.equal(a.id, -1);
+  const b = j(R.newRow([], undefined, "calm", a.id));
+  assert.equal(b.id, -2);
+  assert.equal(j(R.newRow([row({ id: -7 })], undefined, "calm", -3)).id, -8);
+});
+
+test("reviveGone: a positive id the campaign no longer has becomes a fresh stand-in; others are kept", () => {
+  const rows = [row({ id: 5 }), row({ id: 6 }), row({ id: -1 })];
+  const out = j(R.reviveGone(rows, [row({ id: 5 })], -1));
+  assert.deepEqual(out.rows.map((r: any) => r.id), [5, -2, -1]);
+  assert.equal(out.lowest, -2);
+  assert.deepEqual(j(R.reviveGone(rows, rows.slice(0, 2), 0)).rows.map((r: any) => r.id), [5, 6, -1]);
+});

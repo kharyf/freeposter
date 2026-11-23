@@ -157,7 +157,7 @@ export function campaignPlan(store: Store, cs: CampaignStore, from: number, to: 
           if (at < from || at >= to || at < now) continue;
           out.push({
             ...base, key: `plan:${c.id}:${key}:${instructionIndex}:${copy}`, at, name: lineName(ins), style: lineStyle(store, ins),
-            status: "planned", note: `Planned by campaign ${c.name}. It's made on its day and waits for your review, so it can post later than this.`,
+            status: "planned", note: `Planned by campaign ${c.name}. ${ins.kind === "make" && ins.look && ins.scripted === true ? "Claude films it up to 48 hours before its time" : "It's made on its day"} and it waits for your review, so it can post later than this.`,
           });
         }
       });

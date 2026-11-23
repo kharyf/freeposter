@@ -3136,6 +3136,7 @@ const cpFormIds = (p) => ["name", "text", "kw", "url"].map((f) => `${p}${f}`);
 let cpSeq = 0; // answers to older loads are dropped
 let cpArFor = null; // the campaign the Autorun dialog is asking about
 const cpRows = {}; // campaign id -> its table as edited here, until Save Changes has the server save exactly that
+const cpLowest = {}; // campaign id -> the lowest stand-in row id handed out so far (never reused, even once its row is deleted)
 const cpBase = {}; // campaign id -> the saved table those edits started from (to tell when Autorun changed it since)
 const cpSaving = {}; // campaign id -> the chain of its table saves (one at a time, in order)
 const cpNotes = {}; // campaign id -> { kind, text, problems? } under the card's buttons
@@ -3555,7 +3556,7 @@ function cpCardHtml(c) {
     title="Saves your changes to the table. Until then the campaign keeps running on the table as it was last saved.">Save Changes</button>`;
   const blocked = problems.length ? `<div class="cp-note err" role="status">Can't save yet:<ul>${problems.map((p) => `<li>${esc(p)}</li>`).join("")}</ul></div>` : "";
   const under = cpChangedUnder(c)
-    ? `<div class="cp-note err" role="status">Autorun changed this table while you were editing it. Save Changes replaces its change with your table.</div>` : "";
+    ? `<div class="cp-note err" role="status">Autorun changed this table while you were editing it. Save Changes replaces its change with your table; a row it deleted that you still have comes back as a new row.</div>` : "";
   return `<section class="cp-card" data-cp-card="${c.id}">
     <div class="section-head"><h2 class="cp-name">${esc(c.name)}</h2>${cpChip(c)}${save}${run}</div>
     ${under}${blocked}
@@ -3586,6 +3587,11 @@ function cpApply(id, r, okText) {
  * exactly it. Edits made while it's on its way stay unsaved, on top of what it saved.
  */
 function cpSaveRows(id) {
+  // A row Autorun deleted meanwhile still has its saved id, which the server refuses: it goes back as a new row.
+  if (cpRows[id]) {
+    const revived = FreePosterRows.reviveGone(cpRows[id], cpCampaign(id)?.rows ?? [], cpLowest[id]);
+    cpRows[id] = revived.rows; cpLowest[id] = revived.lowest;
+  }
   const sent = structuredClone(cpRows[id] ?? cpCampaign(id)?.rows ?? []);
   cpSaving[id] = (cpSaving[id] ?? Promise.resolve()).then(async () => {
     const r = await cpCall("PUT", `/api/campaigns/${id}/rows`, { rows: sent });
@@ -3740,7 +3746,8 @@ $("cpList").addEventListener("click", async (e) => {
     const id = Number(add.dataset.cpAddrow);
     const rows = cpEditRows(id);
     const last = rows[rows.length - 1];
-    const fresh = FreePosterRows.newRow(rows, last, cpDefaultStyle());
+    const fresh = FreePosterRows.newRow(rows, last, cpDefaultStyle(), cpLowest[id]);
+    cpLowest[id] = fresh.id;
     // Made a Create row by the same rule as switching one to Create: a Lemo style copied with no model gets the default Claude.
     rows.push(FreePosterRows.applyChange(fresh, "origin", "create", cpCtx()).row);
     return cpEdited(id);

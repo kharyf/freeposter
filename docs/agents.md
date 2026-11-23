@@ -171,6 +171,8 @@ When a brief is due, FreePoster logs `brief.requested` (a film is wanted) or `br
 
 The file must be portrait 9:16, pass FreePoster's usual video checks, and last within 20% (at least 2 seconds) of the brief's `sec` when it has one. A video that fails comes back as an error saying why, and the agent can fix and deliver again before the deadline. For an Agent row the deadline is 30 minutes before the post time, so you have time to review. A brief with a `script` (a Create row) or with no post time is due within a day; a scripted film that arrives after `post_at` still posts once approved. If nothing arrives by then, the slot is skipped.
 
+A Create row's Lemo film is offered 48 hours before its slot (at once, if it's saved closer than that). When the user changes a campaign row, FreePoster makes its unposted videos again and logs `campaign.remade`; it's news only, and the agent needs to do nothing.
+
 If it can't make the film, the agent calls `give_up_brief` with a reason: the task fails and you get a Telegram message saying the agent gave up and why.
 
 If you tap Redo on an agent film, FreePoster gives the agent a new round of the brief, with your note added to its instructions, for the same slot (the `review.redo` event says `handled_by: "freeposter"`).
