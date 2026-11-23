@@ -983,7 +983,7 @@ export class Store {
     if (postId !== null) {
       // The task whose review made the post (a kept video's post line shares the post, but doesn't own it).
       const owner = this.db.prepare(
-        "SELECT t.id FROM campaign_tasks t JOIN posts p ON p.id = t.post_id AND p.review_id = t.review_id WHERE p.id = ? ORDER BY t.id LIMIT 1",
+        "SELECT t.id FROM campaign_tasks t JOIN posts p ON p.id = t.post_id AND p.review_id = t.review_id WHERE p.id = ? AND t.state <> 'replaced' ORDER BY t.id LIMIT 1",
       ).get(postId) as { id: number } | undefined;
       if (!owner) return "this campaign post has no campaign task to place it any more, so it can't be retried";
       taskId = owner.id;

@@ -214,3 +214,10 @@ export function abortOnStop(launcher: AgentLauncher): (campaignId: number | null
     else if (running.campaignId === campaignId) launcher.abort("its campaign was stopped");
   };
 }
+
+/** What the campaign worker calls for each task its changed row replaced: a launch running for that task is ended. */
+export function abortOnRetire(launcher: AgentLauncher): (taskId: number) => void {
+  return (taskId) => {
+    if (launcher.runningFor()?.taskId === taskId) launcher.abort("its row was changed");
+  };
+}

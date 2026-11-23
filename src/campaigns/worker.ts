@@ -36,7 +36,8 @@ import type { Production, ProductionStore } from "../produce/store.ts";
 import { generateMusic, generateSpeech } from "../produce/wan-audio.ts";
 import { hashFile } from "../review/media.ts";
 import type { ReviewRequest, ReviewService, Subject } from "../review/service.ts";
-import { ROW_INSTRUCTION_BASE } from "./rows.ts";
+import { planRetirements, type Retirement } from "./remake.ts";
+import { ROW_INSTRUCTION_BASE, rowIdHex, type Row } from "./rows.ts";
 import { BRIEF_LEAD_HOURS, CLAUDE_LEAD_HOURS, LAUNCH_PREF, MAX_BRIEF_OFFERS, REVIEW_BUFFER_MINUTES, buildBrief, giveUpBrief, type Brief, type Delivery, type Lease } from "./briefs.ts";
 import { lookByKey, type Look } from "./looks.ts";
 import { buildGeneratedProduction, writeScript, type Script } from "./script.ts";
@@ -48,6 +49,8 @@ export interface Productions {
   productions: ProductionStore;
   createStaged(spec: ProductionSpec): Promise<Production>;
   borrowGpu<T>(fn: () => Promise<T>): Promise<{ value: T } | null>;
+  /** Stops a production (a replaced task's video); false when it was already finished. */
+  cancel?: (id: number) => boolean;
 }
 
 export interface CampaignWorkerDeps {
@@ -213,6 +216,8 @@ export class CampaignWorker {
    * agent launch through it, so this worker never needs the launcher.
    */
   onStop: (campaignId: number | null) => void = () => {};
+  /** Called for each task retired because its row changed, before anything of it is undone: the app ends its agent launch through it. */
+  onRetire: (taskId: number) => void = () => {};
 
   constructor(deps: CampaignWorkerDeps) {
     this.store = deps.store;
@@ -229,6 +234,15 @@ export class CampaignWorker {
     this.dir = deps.dir ?? join(dataDir, "campaigns");
     this.reviews.ownedByCampaign = (s) => this.owns(s);
     this.reviews.agentFilm = (r) => this.agentFilmReview(r.id);
+    // A saved (or restored) table retires the videos its changed rows no longer want. It may run inside the caller's
+    // transaction (Autorun's), so it opens none of its own, and its failure never fails the save.
+    this.campaigns.onRowsChanged = (id, before, after) => {
+      try {
+        this.retireChangedRows(id, before, after);
+      } catch (err) {
+        console.error(`campaign ${id}: couldn't retire the changed rows' videos: ${(err as Error).message}`);
+      }
+    };
   }
 
   start(intervalMs = 15_000) {
@@ -453,8 +467,11 @@ export class CampaignWorker {
     } catch (err) {
       console.error(`campaigns: materialize: ${(err as Error).message}`);
     }
-    for (const t of this.campaigns.tasksIn(ACTIVE)) {
-      if (this.work.has(t.id)) continue;
+    for (const listed of this.campaigns.tasksIn(ACTIVE)) {
+      if (this.work.has(listed.id)) continue;
+      // A save while an earlier task's step was awaited may have replaced this one since the list was read.
+      const t = this.campaigns.task(listed.id);
+      if (!t || !ACTIVE.includes(t.state)) continue;
       try {
         await this.step(t);
       } catch (err) {
@@ -528,6 +545,7 @@ export class CampaignWorker {
         if (err instanceof OverBudget || (err as Error)?.name === "OverBudget") return this.waitForBudget(id);
         throw err;
       }
+      if (this.replaced(id)) return; // its row changed while the script was being written
       this.setChoices(id, { script });
     }
     // A Create row with a Lemo style: an agent films the script (no WanGP voiceover or music). Until its brief is
@@ -561,8 +579,13 @@ export class CampaignWorker {
       });
       if (!done) return; // a GPU shot is running: next tick
     }
+    if (this.replaced(id)) return;
     const audio = this.choices(id);
     const p = await this.productions.createStaged(buildGeneratedProduction(script, { voiceover: audio.voiceover!, music: audio.music! }, true));
+    if (this.replaced(id)) {
+      this.productions.cancel?.(p.id); // its row changed while the production was being staged
+      return;
+    }
     this.campaigns.updateTask(id, { productionId: p.id });
     log({ id }, `production ${p.id} queued`);
   }
@@ -809,6 +832,11 @@ export class CampaignWorker {
     // approved without the user once its file is made, and placed like any approved post. Otherwise it waits.
     const unseen = mayPostUnseen(this.campaigns, c.types ?? []);
     const review = unseen ? await this.reviews.autoApprove(q, c.types) : await this.reviews.request(q);
+    if (this.replaced(t.id)) {
+      // Its row changed while the review was being made: nobody will place it.
+      if (this.reviews.reviews.close(review.id, "superseded")) this.reviews.reviews.markDirty(review.id);
+      return;
+    }
     this.campaigns.updateTask(t.id, { state: "reviewing", reviewId: review.id });
     const what = subject.kind !== "file" ? `edit ${t.editId}` : file ? `the Drive file ${file.name}` : `the agent's film ${subject.path}`;
     log(t, `${what} sent for review (review ${review.id})${review.auto ? ", approved by its types" : ""}`);
@@ -1123,7 +1151,7 @@ export class CampaignWorker {
 
   fail(id: number, error: string, notify = true) {
     const t = this.campaigns.task(id);
-    if (!t) return;
+    if (!t || t.state === "replaced") return; // a replaced task has nothing left to fail
     this.campaigns.updateTask(id, { state: "failed", error });
     const r = t.reviewId === null ? undefined : this.reviews.reviews.get(t.reviewId);
     // A held Drive file it took and never posted says why (it isn't taken again, or posted by its filename).
@@ -1166,6 +1194,82 @@ export class CampaignWorker {
       ? `Campaign "${name}" missed ${what} on ${t.date}: ${error}.`
       : `Campaign "${name}" couldn't finish ${what} for ${t.date}: ${error}`;
     queueEvent(this.store, type, round > 1 ? `${type}:${t.id}:${round}` : `${type}:${t.id}`, { campaign_id: t.campaignId, task_id: t.id, date: t.date, error }, summary);
+  }
+
+  // ---- a changed row's videos ----
+
+  private replaced(id: number): boolean {
+    return this.campaigns.task(id)?.state === "replaced";
+  }
+
+  /**
+   * A saved table's changed rows: each one's videos not yet out (planRetirements says which) are replaced, so the
+   * row as it is now is made in their slots (materialize, right after a save from the tab, else the next tick). A
+   * video whose approved post has been let go to post (or started uploading) is left alone. The user is told once
+   * per save. Returns how many were retired.
+   */
+  retireChangedRows(campaignId: number, before: Row[], after: Row[]): number {
+    const plan = planRetirements(before, after);
+    if (!plan.length) return 0;
+    const find = this.store.db.prepare(
+      `SELECT id FROM campaign_tasks WHERE campaign_id = ? AND instruction_index = ? AND state IN (${ACTIVE.map(() => "?").join(",")}) AND copy >= ? ORDER BY id`,
+    );
+    const retired: Retirement[] = [];
+    let n = 0;
+    for (const r of plan) {
+      const ids = find.all(campaignId, ROW_INSTRUCTION_BASE + r.rowId, ...ACTIVE, r.fromCopy) as { id: number }[];
+      for (const { id } of ids) {
+        const t = this.campaigns.task(id);
+        if (!t || (r.days !== "all" && !r.days.includes(DAYS[t.dayIndex]))) continue;
+        try {
+          if (this.retire(t)) {
+            n++;
+            if (!retired.includes(r)) retired.push(r);
+          }
+        } catch (err) {
+          console.error(`[campaign task ${id}] couldn't be replaced: ${(err as Error).message}`);
+        }
+      }
+    }
+    if (n > 0) {
+      const name = this.campaigns.campaign(campaignId)?.name ?? `campaign ${campaignId}`;
+      const hexes = [...new Set(retired.map((r) => rowIdHex(r.rowId)))];
+      const remade = retired.some((r) => r.remake);
+      const now = this.now();
+      queueEvent(this.store, "campaign.remade", `campaign.remade:${campaignId}:${now}`, { campaign_id: campaignId, rows: hexes, retired: n },
+        `Campaign "${name}": ${n} videos of row(s) ${hexes.join(", ")} ${remade ? "are being made again from the changed row" : "were removed"}`);
+    }
+    return n;
+  }
+
+  /** Replaces one task: its agent launch, production, edit, review and held post stop, then it gives back its slot. */
+  private retire(t: CampaignTask): boolean {
+    // A post already let go (or started uploading) goes out as it is.
+    if (t.state === "scheduled" && t.postId !== null && this.store.jobsForPost(t.postId).some((j) => typeof j.progress.heldFrom !== "number")) return false;
+    try {
+      this.onRetire(t.id);
+    } catch (err) {
+      console.error(`campaigns: after replacing task ${t.id}: ${(err as Error).message}`);
+    }
+    if (t.productionId !== null) {
+      const p = this.productions.productions.get(t.productionId);
+      if (p && (p.state === "queued" || p.state === "rendering" || p.state === "assembling")) this.productions.cancel?.(p.id);
+    }
+    if (t.editId !== null) {
+      const e = this.store.edit(t.editId);
+      if (e && e.state !== "superseded" && e.state !== "rejected") this.store.closeEdit(t.editId, "superseded");
+    }
+    const r = t.reviewId === null ? undefined : this.reviews.reviews.get(t.reviewId);
+    if (r && (r.state === "preparing" || r.state === "pending")) {
+      this.reviews.reviews.close(r.id, "superseded");
+      this.reviews.reviews.markDirty(r.id);
+    }
+    // An approval not placed yet (still reviewing) has a held post too: it must never go out on its own.
+    const postId = t.postId ?? r?.postId ?? null;
+    const started = postId !== null ? this.cancelHeld(postId) : "";
+    if (!this.campaigns.retireTask(t.id)) return false;
+    log(t, `replaced: its row was changed${started ? `. ${started}` : ""}`);
+    return true;
   }
 
   // ---- stopping one campaign ----

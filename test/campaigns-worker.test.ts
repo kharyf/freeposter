@@ -52,6 +52,7 @@ function setup(opts: { cap?: number; defaults?: string[]; writeScript?: typeof w
     productions: ps,
     createStaged: async (spec: ProductionSpec) => { staged.push(spec); return ps.create(spec, []); },
     borrowGpu: async <T>(fn: () => Promise<T>) => { gpu.push("borrowed"); return { value: await fn() }; },
+    cancel: (id: number) => ps.cancel(id),
   };
   const asked: Question[] = [];
   /** the options each ask was given (the row's model) */
@@ -1675,4 +1676,150 @@ test("a Lemo film made early and approved before its day posts at its own time o
   const t = s.cs.task(t0.id)!;
   assert.equal(t.state, "scheduled", t.error ?? "");
   assert.equal(s.store.post(t.postId!)!.scheduledAt, at(2026, 11, 19, 9));
+});
+
+// ---- a changed row's videos are replaced ----
+
+/** The campaign.remade events, newest last. */
+const remadeEvents = (s: ReturnType<typeof setup>) => s.store.feed(0, 100, ["campaign.remade"]).map((e) => JSON.parse(e.body));
+
+test("changing a row's hook retires its reviewing video and the next materialize remakes it", async () => {
+  const s = setup();
+  const id = tableCampaign(s, [tableRow(s, { time: "18:00", hook: { pick: "named", id: s.hooks[0] } })]);
+  s.worker.materialize();
+  const [t] = s.cs.tasksOn(id, "2026-11-17");
+  await s.toReview(t.id);
+  const reviewId = s.cs.task(t.id)!.reviewId!;
+  const editId = s.cs.task(t.id)!.editId!;
+  s.worker.campaigns.setRows(id, [tableRow(s, { time: "18:00", hook: { pick: "named", id: s.hooks[1] } })]);
+  const old = s.cs.task(t.id)!;
+  assert.equal(old.state, "replaced");
+  assert.ok(old.copy < 0, "out of the row's slot");
+  assert.equal(s.reviews.reviews.get(reviewId)!.state, "superseded");
+  assert.equal(s.store.edit(editId)!.state, "superseded");
+  const [ev] = remadeEvents(s);
+  assert.ok(ev, "the user is told");
+  assert.deepEqual(ev.rows, ["0000001"]);
+  assert.equal(ev.retired, 1);
+  assert.equal(ev.summary, 'Campaign "Table": 1 videos of row(s) 0000001 are being made again from the changed row');
+  assert.equal(s.worker.materialize(), 1);
+  const fresh = s.cs.tasksOn(id, "2026-11-17").find((x) => x.id !== t.id)!;
+  assert.equal(fresh.copy, 0);
+  assert.equal(fresh.state, "queued");
+  assert.equal((fresh.choices as any).hook.id, s.hooks[1]);
+  // A tick never brings the old one back.
+  await s.tick();
+  assert.equal(s.cs.task(t.id)!.state, "replaced");
+});
+
+test("a time-only change still moves the video and doesn't retire it", async () => {
+  const s = setup();
+  const id = tableCampaign(s, [tableRow(s, { time: "18:00" })]);
+  s.worker.materialize();
+  const [t] = s.cs.tasksOn(id, "2026-11-17");
+  await s.tick();
+  const state = s.cs.task(t.id)!.state;
+  s.worker.campaigns.setRows(id, [tableRow(s, { time: "19:00" })]);
+  const after = s.cs.task(t.id)!;
+  assert.equal(after.state, state);
+  assert.equal(after.copy, 0);
+  assert.equal((after.choices as any).postTime, "19:00");
+  assert.equal(remadeEvents(s).length, 0);
+});
+
+test("an approved post that has started uploading is left alone", async () => {
+  const s = setup();
+  const id = tableCampaign(s, [tableRow(s, { time: "18:00" })]);
+  s.worker.materialize();
+  const [t] = s.cs.tasksOn(id, "2026-11-17");
+  await s.toReview(t.id);
+  await s.approve(t.id);
+  await s.tick();
+  const placed = s.cs.task(t.id)!;
+  assert.equal(placed.state, "scheduled", placed.error ?? "");
+  assert.ok(s.store.jobsForPost(placed.postId!).every((j) => j.progress.heldFrom === undefined), "released to go out");
+  s.worker.campaigns.setRows(id, [tableRow(s, { time: "18:00", text: "a new direction" })]);
+  assert.equal(s.cs.task(t.id)!.state, "scheduled");
+  assert.equal(s.cs.task(t.id)!.copy, 0);
+  assert.ok(s.store.post(placed.postId!), "its post stays");
+  assert.equal(s.worker.materialize(), 0, "nothing is made again for its slot");
+});
+
+test("an approved post still held (its campaign stopped) is cancelled and made again", async () => {
+  const s = setup();
+  const id = tableCampaign(s, [tableRow(s, { time: "18:00" })]);
+  s.worker.materialize();
+  const [t] = s.cs.tasksOn(id, "2026-11-17");
+  await s.toReview(t.id);
+  await s.approve(t.id);
+  await s.tick();
+  const postId = s.cs.task(t.id)!.postId!;
+  assert.equal(s.worker.stopCampaign(id), 1);
+  s.worker.campaigns.setRows(id, [tableRow(s, { time: "18:00", text: "a new direction" })]);
+  assert.equal(s.cs.task(t.id)!.state, "replaced");
+  assert.equal(s.store.post(postId), undefined, "its held post is cancelled");
+});
+
+test("two saves in a row never leave two live tasks in one slot", async () => {
+  const s = setup();
+  const id = tableCampaign(s, [tableRow(s, { time: "18:00" })]);
+  s.worker.materialize();
+  await s.tick();
+  s.worker.campaigns.setRows(id, [tableRow(s, { time: "18:00", text: "change A" })]);
+  assert.equal(s.worker.materialize(), 1);
+  await s.tick();
+  s.worker.campaigns.setRows(id, [tableRow(s, { time: "18:00", text: "change B" })]);
+  assert.equal(s.worker.materialize(), 1);
+  await s.tick();
+  const tasks = s.cs.tasksOn(id, "2026-11-17");
+  const live = tasks.filter((x) => x.state !== "replaced");
+  assert.equal(live.length, 1);
+  assert.equal(live[0].copy, 0);
+  assert.equal((live[0].choices as any).instruction.instructions, "change B");
+  assert.equal(tasks.filter((x) => x.state === "replaced").length, 2);
+  assert.ok(tasks.filter((x) => x.state === "replaced").every((x) => x.copy < 0));
+});
+
+test("retiring an awaiting_agent task aborts the launcher run and a late submit_brief is refused", async () => {
+  const s = scriptedSetup();
+  s.clock.now = at(2026, 11, 17, 12);
+  await s.tick();
+  assert.equal(s.cs.task(s.task.id)!.state, "awaiting_agent");
+  const token = claimed(s.cs, s.task.id, "agent-1", s.clock.now);
+  const retired: number[] = [];
+  s.worker.onRetire = (taskId) => { retired.push(taskId); throw new Error("a broken launcher never stops the retirement"); };
+  s.worker.campaigns.setRows(s.id, [tableRow(s, { origin: "create", style: LOOK.key, model: "claude:claude-sonnet-5-5", time: "18:00", sec: 9, text: "new direction" })]);
+  assert.deepEqual(retired, [s.task.id]);
+  assert.equal(s.cs.task(s.task.id)!.state, "replaced");
+  const out = await submitBrief(s.store, s.cs, s.task.id, token, { videoPath: clips[4], manifest: { look: LOOK.key, libraryVersion: "1.4.0" }, caption: AGENT_CAPTION }, s.clock.now);
+  assert.equal(out.ok, false);
+  assert.match(out.ok ? "" : out.error, /no open brief/);
+  assert.equal(openBriefs(s.cs, s.clock.now).some((t) => t.id === s.task.id), false);
+});
+
+test("lowering the quantity retires copy 1 and nothing is remade for it", () => {
+  const s = setup();
+  const id = tableCampaign(s, [tableRow(s, { time: "18:00", quantity: 2 })]);
+  assert.equal(s.worker.materialize(), 2);
+  const [a, b] = s.cs.tasksOn(id, "2026-11-17");
+  assert.deepEqual([a.copy, b.copy], [0, 1]);
+  s.worker.campaigns.setRows(id, [tableRow(s, { time: "18:00", quantity: 1 })]);
+  assert.equal(s.cs.task(a.id)!.state, "queued");
+  assert.equal(s.cs.task(b.id)!.state, "replaced");
+  assert.equal(s.worker.materialize(), 0);
+  const [ev] = remadeEvents(s);
+  assert.match(ev.summary, /were removed/);
+  assert.doesNotMatch(ev.summary, /made again/);
+});
+
+test("a row changed inside a caller's transaction retires its videos without opening one of its own", () => {
+  const s = setup();
+  const id = tableCampaign(s, [tableRow(s, { time: "18:00" })]);
+  s.worker.materialize();
+  const [t] = s.cs.tasksOn(id, "2026-11-17");
+  s.store.db.exec("BEGIN");
+  s.worker.campaigns.setRows(id, []);
+  s.store.db.exec("COMMIT");
+  assert.equal(s.cs.task(t.id)!.state, "replaced");
+  assert.match(remadeEvents(s)[0].summary, /were removed/);
 });

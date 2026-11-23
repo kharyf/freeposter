@@ -15,7 +15,7 @@ import { iso } from "./view.ts";
 import { dayKey, type CampaignWorker } from "./worker.ts";
 
 const KINDS: LibraryKind[] = ["hook", "angle", "cta"];
-const FINISHED: TaskState[] = ["posted", "kept", "missed", "failed"];
+const FINISHED: TaskState[] = ["posted", "kept", "missed", "failed", "replaced"];
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const idParam = (v: unknown): number | null => (typeof v === "string" && /^\d{1,15}$/.test(v) && Number(v) > 0 ? Number(v) : null);

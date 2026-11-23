@@ -128,7 +128,7 @@ export interface Campaign {
 }
 
 export type TaskKind = "make" | "post" | "rule";
-export type TaskState = "queued" | "awaiting_agent" | "scripting" | "rendering" | "editing" | "reviewing" | "scheduled" | "posted" | "kept" | "missed" | "failed";
+export type TaskState = "queued" | "awaiting_agent" | "scripting" | "rendering" | "editing" | "reviewing" | "scheduled" | "posted" | "kept" | "missed" | "failed" | "replaced";
 
 export interface CampaignTask {
   id: number;
@@ -587,6 +587,16 @@ export class CampaignStore {
       .run(Date.now(), id).changes > 0;
   }
 
+  /**
+   * A task whose row was changed (or removed) before its video went out: it's finished as replaced and gives back its
+   * slot as retireMissed does (copy = minus its id), so the row as it is now can be made there. It stays, with its
+   * id, as that day's history. Returns whether it was retired (a task already out of its slot isn't).
+   */
+  retireTask(id: number): boolean {
+    return this.db.prepare("UPDATE campaign_tasks SET state = 'replaced', copy = -id, updated_at = ? WHERE id = ? AND copy >= 0")
+      .run(Date.now(), id).changes > 0;
+  }
+
   task(id: number): CampaignTask | undefined {
     const r = this.db.prepare("SELECT * FROM campaign_tasks WHERE id = ?").get(id);
     return r ? toTask(r) : undefined;
@@ -605,8 +615,9 @@ export class CampaignStore {
       .all(...states).map(toTask);
   }
 
+  /** A replaced task is never changed again: a step still running when its row changed can't bring it back. */
   updateTask(id: number, patch: Partial<Pick<CampaignTask, "state" | "choices" | "productionId" | "editId" | "reviewId" | "postId" | "error" | "copy">>) {
-    this.patch("campaign_tasks", TASK_COLUMNS, id, patch, true);
+    this.patch("campaign_tasks", TASK_COLUMNS, id, patch, true, "state <> 'replaced'");
   }
 
   // ---- rules ----
@@ -668,7 +679,7 @@ export class CampaignStore {
     this.store.setPref("campaigns.killed", on);
   }
 
-  private patch(table: string, columns: Record<string, string>, id: number, patch: Record<string, unknown>, touch: boolean) {
+  private patch(table: string, columns: Record<string, string>, id: number, patch: Record<string, unknown>, touch: boolean, also?: string) {
     const sets: string[] = [];
     const args: (string | number | null)[] = [];
     for (const [k, v] of Object.entries(patch)) {
@@ -682,6 +693,6 @@ export class CampaignStore {
       args.push(Date.now());
     }
     if (!sets.length) return;
-    this.db.prepare(`UPDATE ${table} SET ${sets.join(", ")} WHERE id = ?`).run(...args, id);
+    this.db.prepare(`UPDATE ${table} SET ${sets.join(", ")} WHERE id = ?${also ? ` AND ${also}` : ""}`).run(...args, id);
   }
 }

@@ -3112,7 +3112,8 @@ const CP_DAYS = [["sun", "Sun"], ["mon", "Mon"], ["tue", "Tue"], ["wed", "Wed"],
 const CP_COUNTS = [["making", ["queued", "awaiting_agent", "scripting", "rendering", "editing"]], ["waiting for approval", ["reviewing"]], ["scheduled", ["scheduled"]],
   ["posted", ["posted"]], ["kept", ["kept"]], ["missed", ["missed"]], ["failed", ["failed"]]];
 const CP_STATE_WORD = { queued: "waiting to start", awaiting_agent: "waiting for the agent's film", scripting: "writing the script", rendering: "making the video", editing: "editing",
-  reviewing: "waiting for approval", scheduled: "scheduled", posted: "posted", kept: "kept in the library", missed: "missed", failed: "failed" };
+  reviewing: "waiting for approval", scheduled: "scheduled", posted: "posted", kept: "kept in the library", missed: "missed", failed: "failed",
+  replaced: "replaced (its row was changed)" };
 const CP_LIB = [["hook", "Hooks"], ["angle", "Angles"], ["cta", "CTAs"], ["type", "Types"]];
 const CP_KIND_WORD = { hook: "hook", angle: "angle", cta: "CTA" };
 const CP_AUTOPOST_WARNING = "Videos with only these types will post without asking you.";
@@ -3494,11 +3495,13 @@ function cpTodayHtml(c) {
   const today = cpToday[c.id];
   if (!today) return `<div class="muted">Loading…</div>`;
   if (today.error) return `<div class="cp-note err">Couldn't load today's videos: ${esc(today.error)}</div>`;
+  // A video its changed row replaced isn't today's any more (the day's history still lists it).
+  const tasks = today.tasks.filter((t) => t.state !== "replaced");
   const counts = CP_COUNTS.map(([word, states]) => {
-    const n = today.tasks.filter((t) => states.includes(t.state)).length;
+    const n = tasks.filter((t) => states.includes(t.state)).length;
     return `<span class="${esc(word.split(" ")[0])} ${n ? "" : "z"}">${n} ${word}</span>`;
   }).join("");
-  return `<div class="cp-counts">${counts}</div>${today.tasks.length ? `<ul class="cp-tasks">${today.tasks.map(cpTaskHtml).join("")}</ul>` : ""}`;
+  return `<div class="cp-counts">${counts}</div>${tasks.length ? `<ul class="cp-tasks">${tasks.map(cpTaskHtml).join("")}</ul>` : ""}`;
 }
 
 /** The Drive files this campaign holds: they stay held (even while it is edited or off) until you release one. */

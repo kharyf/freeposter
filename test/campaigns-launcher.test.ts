@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ProgramRun } from "../src/ai/cli.ts";
 import { LEASE_MINUTES, buildBrief, claimBrief, openBriefs } from "../src/campaigns/briefs.ts";
-import { AgentLauncher, abortOnStop } from "../src/campaigns/launcher.ts";
+import { AgentLauncher, abortOnRetire, abortOnStop } from "../src/campaigns/launcher.ts";
 import type { Look } from "../src/campaigns/looks.ts";
 import { CampaignStore } from "../src/campaigns/store.ts";
 import type { TaskChoices } from "../src/campaigns/worker.ts";
@@ -87,6 +87,22 @@ test("Stop Campaign aborts a running launch only for its own campaign", async ()
   await running;
   assert.equal(seen.signal?.aborted, true);
   assert.equal(launcher.abort("nothing running"), false);
+});
+
+test("abortOnRetire stops the run only for its own task", async () => {
+  const s = setup();
+  const id = s.add(1);
+  const { launcher, seen } = abortable(s);
+  const onRetire = abortOnRetire(launcher);
+  const running = launcher.tick();
+  await new Promise((r) => setImmediate(r));
+  onRetire(id + 1);
+  assert.equal(seen.signal?.aborted, false, "another task's retirement leaves it running");
+  onRetire(id);
+  await running;
+  assert.equal(seen.signal?.aborted, true);
+  assert.equal(s.store.pref("agent.launch.status"), "stopped: its row was changed");
+  onRetire(id); // nothing running: nothing happens
 });
 
 test("a launch that ends without a film releases the lease it took, and gives the offer back", async () => {
