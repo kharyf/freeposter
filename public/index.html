@@ -422,6 +422,8 @@
   .cp-table select.cp-flash { outline: 2px solid var(--accent); outline-offset: 1px; background: color-mix(in srgb, var(--accent) 18%, var(--panel)); }
   @media (prefers-reduced-motion: no-preference) { .cp-table select.cp-flash { animation: cp-flash 1.2s ease-out; } }
   @keyframes cp-flash { from { background: color-mix(in srgb, var(--accent) 40%, var(--panel)); } }
+  .cp-table td.cp-id { font-family: ui-monospace, Consolas, monospace; color: var(--muted); white-space: nowrap; }
+  .cp-table .cp-bad { outline: 2px solid var(--bad); outline-offset: 1px; border-radius: 4px; }
   .cp-table tr.idle td { background: color-mix(in srgb, var(--warn) 6%, transparent); }
   .cp-table .cp-del { padding: 2px 8px; }
   .cp-add-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
@@ -3113,7 +3115,7 @@ const CP_COUNTS = [["making", ["queued", "awaiting_agent", "scripting", "renderi
   ["posted", ["posted"]], ["kept", ["kept"]], ["missed", ["missed"]], ["failed", ["failed"]]];
 const CP_STATE_WORD = { queued: "waiting to start", awaiting_agent: "waiting for the agent's film", scripting: "writing the script", rendering: "making the video", editing: "editing",
   reviewing: "waiting for approval", scheduled: "scheduled", posted: "posted", kept: "kept in the library", missed: "missed", failed: "failed",
-  replaced: "replaced (its row was changed)" };
+  replaced: "replaced (its row changed)" };
 const CP_LIB = [["hook", "Hooks"], ["angle", "Angles"], ["cta", "CTAs"], ["type", "Types"]];
 const CP_KIND_WORD = { hook: "hook", angle: "angle", cta: "CTA" };
 const CP_AUTOPOST_WARNING = "Videos with only these types will post without asking you.";
@@ -3395,6 +3397,9 @@ const cpCtx = () => ({
   defaultClaude: cp?.defaultClaude ?? "",
 });
 
+/** Why Save Changes is held back: a row without a time or a day (only while there is something to save). */
+const cpSaveProblems = (c) => (cpUnsaved(c) ? FreePosterRows.saveProblems(cpRowsOf(c)) : []);
+
 /** Why a row isn't in the schedule yet (the same reasons the server leaves it out for). */
 const cpRowIssues = (r) => FreePosterRows.rowIssues(r, cpCtx());
 
@@ -3437,14 +3442,16 @@ function cpRowHtml(c, r, withModel) {
   const typeOpts = [`<option value="" ${r.type === null ? "selected" : ""}>None</option>`]
     .concat(cpLib.types.map((t) => `<option value="${t.id}" ${t.id === r.type ? "selected" : ""}>${esc(t.name)}</option>`));
   const tp = cpTimeParts(r.time);
-  const hours = [`<option value="" ${tp ? "" : "selected"}>--</option>`]
+  // A time is required: until one is picked the hour shows "--", which can't be chosen again.
+  const hours = (tp ? [] : [`<option value="" selected disabled>--</option>`])
     .concat(Array.from({ length: 12 }, (_, i) => i + 1).map((h) => `<option value="${h}" ${tp?.h === h ? "selected" : ""}>${h}</option>`));
   const minutes = Array.from({ length: 60 }, (_, m) => `<option value="${m}" ${(tp?.m ?? 0) === m ? "selected" : ""}>${String(m).padStart(2, "0")}</option>`);
-  const keepTip = "No time: the video is made and kept in the library, not posted";
+  const marked = cpUnsaved(c); // the cells Save Changes is waiting on
   const days = CP_DAYS.map(([d]) => `<button type="button" id="cpR${c.id}_${r.id}_d${d}" data-cp-row="${c.id}:${r.id}" data-cp-day="${d}" aria-pressed="${r.days.includes(d)}"
     title="${CP_DAY_NAME[d]}" aria-label="${CP_DAY_NAME[d]}">${CP_DAY_LETTER[d]}</button>`).join("");
   const issues = cpRowIssues(r);
   return `<tr class="${issues.length ? "idle" : ""}">
+    <td class="cp-id" title="This video's id">${FreePosterRows.hexId(r.id)}</td>
     <td><select ${f("origin")} aria-label="Origin"><option value="create" ${r.origin === "create" ? "selected" : ""}>Create</option><option value="drive" ${drive ? "selected" : ""}>Drive</option><option value="agent" ${agent ? "selected" : ""}>Agent</option></select></td>
     ${withModel ? `<td>${modelCell}</td>` : ""}
     <td><input type="number" ${f("quantity")} min="${CP_QTY[0]}" max="${CP_QTY[1]}" step="1" value="${esc(r.quantity)}" aria-label="Quantity"
@@ -3454,9 +3461,9 @@ function cpRowHtml(c, r, withModel) {
     <td>${cpPickSelect(c, r, "cta")}</td>
     <td>${styleCell}</td>
     <td><select ${f("type")} aria-label="Type">${typeOpts.join("")}</select></td>
-    <td><span class="cp-time" title="${tp ? "" : keepTip}"><select ${f("hour")} aria-label="Hour">${hours.join("")}</select>:<select ${f("minute")} aria-label="Minute" ${tp ? "" : "disabled"}>${minutes.join("")}</select>
+    <td><span class="cp-time${marked && !tp ? " cp-bad" : ""}" title="${tp ? "" : "A post time is needed"}"><select ${f("hour")} aria-label="Hour">${hours.join("")}</select>:<select ${f("minute")} aria-label="Minute" ${tp ? "" : "disabled"}>${minutes.join("")}</select>
       <select ${f("ampm")} aria-label="AM or PM" ${tp ? "" : "disabled"}><option value="am" ${tp?.pm ? "" : "selected"}>AM</option><option value="pm" ${tp?.pm ? "selected" : ""}>PM</option></select></span></td>
-    <td><div class="cp-days" role="group" aria-label="Days">${days}</div></td>
+    <td><div class="cp-days${marked && !r.days.length ? " cp-bad" : ""}" role="group" aria-label="Days">${days}</div></td>
     <td><input type="number" ${f("sec")} min="${CP_SEC[0]}" max="${CP_SEC[1]}" step="1" value="${r.sec === null ? "" : esc(r.sec)}" aria-label="Length in seconds"
       title="${drive ? "Seconds; for a Drive file, recorded for analytics only" : "Seconds"}"></td>
     <td><input type="text" class="cp-rtext" ${f("text")} maxlength="2000" value="${esc(r.text)}"
@@ -3470,8 +3477,8 @@ function cpTableHtml(c) {
   const idle = rows.map((r, i) => [i, cpRowIssues(r)]).filter(([, x]) => x.length);
   const withModel = FreePosterRows.showModelColumn(rows); // every row Drive: nothing is made, so no model to choose
   return `<div class="cp-table-wrap" data-cp-table="${c.id}"><table class="cp-table"><thead><tr>
-      <th>Origin</th>${withModel ? "<th>Model</th>" : ""}<th>Quantity</th><th>Hook</th><th>Angle</th><th>CTA</th><th>Editing Style</th><th>Type</th><th>Time</th><th>Days</th><th>Length (s)</th><th>File Name / Instructions</th><th></th>
-    </tr></thead><tbody>${rows.length ? rows.map((r) => cpRowHtml(c, r, withModel)).join("") : `<tr><td colspan="${withModel ? 13 : 12}" class="muted">No videos yet: press + to add one.</td></tr>`}</tbody></table></div>
+      <th>ID</th><th>Origin</th>${withModel ? "<th>Model</th>" : ""}<th>Quantity</th><th>Hook</th><th>Angle</th><th>CTA</th><th>Editing Style</th><th>Type</th><th>Time</th><th>Days</th><th>Length (s)</th><th>File Name / Instructions</th><th></th>
+    </tr></thead><tbody>${rows.length ? rows.map((r) => cpRowHtml(c, r, withModel)).join("") : `<tr><td colspan="${withModel ? 14 : 13}" class="muted">No videos yet: press + to add one.</td></tr>`}</tbody></table></div>
     <div class="cp-add-row"><button type="button" data-cp-addrow="${c.id}" id="cpAdd${c.id}" title="Add Video" aria-label="Add Video">+</button></div>
     ${idle.length ? `<div class="cp-idle">Not running yet:<ul>${idle.map(([i, x]) => `<li>Row ${i + 1}: ${esc(x.join(", "))}</li>`).join("")}</ul></div>` : ""}`;
 }
@@ -3543,13 +3550,15 @@ function cpCardHtml(c) {
     ? `<button type="button" class="cp-run cp-stop" id="cpRun${c.id}" data-cp-run="${c.id}" data-on="false" title="Holds this campaign's posts and makes nothing new until you start it again">Stop Campaign</button>`
     : `<button type="button" class="cp-run cp-start" id="cpRun${c.id}" data-cp-run="${c.id}" data-on="true" title="Runs this campaign again and lets its held posts go out">Start Campaign</button>`;
   const open = (k) => (cpOpen.has(`${c.id}:${k}`) ? "open" : "");
-  const save = `<button type="button" class="cp-commit" id="cpCommit${c.id}" data-cp-commit="${c.id}" ${cpUnsaved(c) ? "" : "disabled"}
+  const problems = cpSaveProblems(c);
+  const save = `<button type="button" class="cp-commit" id="cpCommit${c.id}" data-cp-commit="${c.id}" ${cpUnsaved(c) && !problems.length ? "" : "disabled"}
     title="Saves your changes to the table. Until then the campaign keeps running on the table as it was last saved.">Save Changes</button>`;
+  const blocked = problems.length ? `<div class="cp-note err" role="status">Can't save yet:<ul>${problems.map((p) => `<li>${esc(p)}</li>`).join("")}</ul></div>` : "";
   const under = cpChangedUnder(c)
     ? `<div class="cp-note err" role="status">Autorun changed this table while you were editing it. Save Changes replaces its change with your table.</div>` : "";
   return `<section class="cp-card" data-cp-card="${c.id}">
     <div class="section-head"><h2 class="cp-name">${esc(c.name)}</h2>${cpChip(c)}${save}${run}</div>
-    ${under}
+    ${under}${blocked}
     <div class="cp-controls">
       <label class="cp-switch cp-autorun ${c.autorun ? "on" : ""}" title="Lets the connected AI agent change this campaign"><input type="checkbox" id="cpAr${c.id}" data-cp-autorun="${c.id}" ${c.autorun ? "checked" : ""}> ⚠ Autorun</label>
     </div>
@@ -3583,7 +3592,14 @@ function cpSaveRows(id) {
     if (r.ok) {
       cp.campaigns = cp.campaigns.map((c) => (c.id === id ? r.body : c));
       if (FreePosterRows.sameRows(cpRows[id], sent)) { delete cpRows[id]; delete cpBase[id]; }
-      else cpBase[id] = structuredClone(r.body.rows ?? sent);
+      else {
+        cpBase[id] = structuredClone(r.body.rows ?? sent);
+        // Rows added before this save now have their real ids; the edits made meanwhile must send those, not the stand-ins.
+        sent.forEach((s, i) => {
+          const saved = r.body.rows?.[i];
+          if (s.id <= 0 && saved) { const mine = cpRows[id].find((x) => x.id === s.id); if (mine) mine.id = saved.id; }
+        });
+      }
       cpNotes[id] = { kind: "ok", text: "Changes saved." };
     } else cpNotes[id] = { kind: "err", text: `Not saved: ${r.error}`, problems: r.problems };
     keepFocus(renderCampaigns);
@@ -3603,7 +3619,7 @@ function cpEditRows(id) {
 /** The Save Changes button follows the table without a redraw (as typing goes on). */
 function cpSyncCommit(id) {
   const c = cpCampaign(id), b = $(`cpCommit${id}`);
-  if (c && b) b.disabled = !cpUnsaved(c);
+  if (c && b) b.disabled = !cpUnsaved(c) || cpSaveProblems(c).length > 0;
 }
 
 /**
@@ -3724,7 +3740,7 @@ $("cpList").addEventListener("click", async (e) => {
     const rows = cpEditRows(id);
     const last = rows[rows.length - 1];
     const fresh = {
-      id: Math.max(0, ...rows.map((r) => r.id)) + 1, quantity: 1, hook: { pick: "random" }, angle: { pick: "random" }, cta: { pick: "random" },
+      id: Math.min(0, ...rows.map((r) => r.id)) - 1, // unsaved: the server gives it its real id quantity: 1, hook: { pick: "random" }, angle: { pick: "random" }, cta: { pick: "random" },
       style: last?.style ?? cpDefaultStyle(), type: null, time: null, days: [], sec: 30, origin: "create", model: last?.model ?? null, text: "",
     };
     // Made a Create row by the same rule as switching one to Create: a Lemo style copied with no model gets the default Claude.

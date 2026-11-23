@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import vm from "node:vm";
-import { rowIssues as serverRowIssues, type Row } from "../src/campaigns/rows.ts";
+import { parseRows, rowIssues as serverRowIssues, type Row } from "../src/campaigns/rows.ts";
 import type { Vocabulary } from "../src/campaigns/spec.ts";
 
 const g: any = { structuredClone };
@@ -269,4 +269,20 @@ test("sameRows: the window's table matches the saved one by content, whatever it
   assert.equal(R.sameRows(a, [a[0]]), false, "a row removed");
   assert.equal(R.sameRows([row({ days: ["mon", "tue"] })], [row({ days: ["tue", "mon"] })]), false, "days are kept in week order, so order counts");
   assert.equal(R.sameRows([row({ hook: { pick: "named", id: 3 } })], [row({ hook: { id: 3, pick: "named" } })]), true);
+});
+
+test("hexId shows 7 hex digits, and 'new' for an unsaved row", () => {
+  assert.equal(R.hexId(1), "0000001"); assert.equal(R.hexId(171), "00000ab"); assert.equal(R.hexId(-2), "new"); assert.equal(R.hexId(0), "new");
+});
+
+test("saveProblems names each row missing a time or a day, as the server does", () => {
+  const vocab: Vocabulary = { styles: [{ id: "bold", token: "bold" }], types: [], hooks: [], angles: [], ctas: [], looks: [], models: [] };
+  const mon = ["mon"]; // the server takes the short day names
+  const rows = [row({ id: 12, time: null, days: mon }), row({ id: 13, days: [] }), row({ id: 14, days: mon }), row({ id: -1, time: null, days: [] }), row({ id: -5, days: [] })];
+  const expected = ["row 000000c: needs a post time", "row 000000d: needs at least one day", "row 4: needs a post time", "row 4: needs at least one day", "row 5: needs at least one day"];
+  assert.deepEqual(j(R.saveProblems(rows)), expected);
+  const server = parseRows(rows as any, vocab);
+  assert.equal(server.ok, false);
+  assert.deepEqual(server.ok ? [] : server.problems, expected);
+  assert.deepEqual(j(R.saveProblems([row(), row({ id: 0, days: [] })])), ["row 2: needs at least one day"]);
 });

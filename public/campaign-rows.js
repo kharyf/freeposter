@@ -140,7 +140,22 @@
   /** Whether two tables hold the same rows in the same order (the window's unsaved changes are none when they do). */
   function sameRows(a, b) { return canonical(a) === canonical(b); }
 
+  /** A row's id as shown: 7 hex digits, or "new" for a row that isn't saved yet (id <= 0). Same as rowIdHex on the server. */
+  function hexId(id) { return id > 0 ? id.toString(16).padStart(7, "0") : "new"; }
+
+  /** What stops the table being saved: a row needs a time and a day. The server's texts and order (row by row, time first). */
+  function saveProblems(rows) {
+    var out = [];
+    rows.forEach(function (r, i) {
+      var name = "row " + (r.id > 0 ? hexId(r.id) : i + 1);
+      if (r.time === null || r.time === undefined) out.push(name + ": needs a post time");
+      if (!r.days.length) out.push(name + ": needs at least one day");
+    });
+    return out;
+  }
+
   root.FreePosterRows = {
+    hexId: hexId, saveProblems: saveProblems,
     isLemo: isLemo, isClaudeModel: isClaudeModel, showModelColumn: showModelColumn,
     styleGroups: styleGroups, modelOptions: modelOptions, applyChange: applyChange, rowIssues: rowIssues, sameRows: sameRows,
   };
