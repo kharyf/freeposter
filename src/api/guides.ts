@@ -12,7 +12,7 @@ export const EVENT_GUIDE = `- production.ready or edit.ready: show the user the 
 - review.expired: ask whether it should still go out; if so, request_review again.
 - post.done: give them the links.
 - brief.requested or brief.expired: if handled_by is "freeposter", don't claim it: FreePoster is starting Claude for it, so just tell the user in one line. Otherwise call claim_brief with its task_id (keep the claim_token it returns for renew_brief, submit_brief and give_up_brief), make the film the brief describes with the lemo-opuscar skill without asking questions, then submit_brief. If you can't, give_up_brief with the reason.
-- campaign.remade: the user changed a campaign row, so FreePoster is making that row's unposted videos again (or removed them). It's news only: tell the user if they ask, and do nothing.
+- campaign.remade: a campaign row was saved with changes (by the user or Autorun), so FreePoster is making that row's videos that haven't started posting again, or removed the ones a deleted row, unticked day or lower quantity no longer asks for (a time-only change just moves them and sends no event). It's news only: tell the user if they ask, and do nothing.
 - review.waiting, review.approved: nothing to do but tell them where things stand if they ask.
 You can't approve anything. If the user says "yes" to you, remind them to tap Approve on the review.`;
 

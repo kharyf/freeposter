@@ -3587,13 +3587,15 @@ function cpApply(id, r, okText) {
  * exactly it. Edits made while it's on its way stay unsaved, on top of what it saved.
  */
 function cpSaveRows(id) {
-  // A row Autorun deleted meanwhile still has its saved id, which the server refuses: it goes back as a new row.
-  if (cpRows[id]) {
-    const revived = FreePosterRows.reviveGone(cpRows[id], cpCampaign(id)?.rows ?? [], cpLowest[id]);
-    cpRows[id] = revived.rows; cpLowest[id] = revived.lowest;
-  }
-  const sent = structuredClone(cpRows[id] ?? cpCampaign(id)?.rows ?? []);
   cpSaving[id] = (cpSaving[id] ?? Promise.resolve()).then(async () => {
+    // Built when this save goes out, not when it was clicked: a save queued behind another must send the real ids the
+    // earlier one gave its new rows, or the server would delete those rows and make them again.
+    // A row Autorun deleted meanwhile still has its saved id, which the server refuses: it goes back as a new row.
+    if (cpRows[id]) {
+      const revived = FreePosterRows.reviveGone(cpRows[id], cpCampaign(id)?.rows ?? [], cpLowest[id]);
+      cpRows[id] = revived.rows; cpLowest[id] = revived.lowest;
+    }
+    const sent = structuredClone(cpRows[id] ?? cpCampaign(id)?.rows ?? []);
     const r = await cpCall("PUT", `/api/campaigns/${id}/rows`, { rows: sent });
     if (r.ok) {
       cp.campaigns = cp.campaigns.map((c) => (c.id === id ? r.body : c));
