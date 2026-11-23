@@ -11,7 +11,7 @@ import { claimBrief, openBriefs, submitBrief } from "../src/campaigns/briefs.ts"
 import { syncLooks } from "../src/campaigns/looks.ts";
 import type { Script, writeScript } from "../src/campaigns/script.ts";
 import { DAYS, type CompiledCampaign, type Day, type MakeInstruction, type PostInstruction } from "../src/campaigns/spec.ts";
-import type { Row } from "../src/campaigns/rows.ts";
+import { ROW_INSTRUCTION_BASE, type Row } from "../src/campaigns/rows.ts";
 import { CampaignStore } from "../src/campaigns/store.ts";
 import { CampaignWorker, localAt } from "../src/campaigns/worker.ts";
 import { publishers } from "../src/platforms/index.ts";
@@ -1628,4 +1628,33 @@ test("a slot missed at its own time, or one that made a video, isn't made again"
   s.cs.setRows(id, [tableRow(s, { id: 1, time: "11:00" }), tableRow(s, { id: 2, time: "13:00" })]);
   assert.equal(s.worker.materialize(), 0);
   assert.deepEqual(s.cs.tasksOn(id, "2026-11-17").map((t) => t.id), [a.id, b.id]);
+});
+
+test("a Create + Lemo row's task is made 48 hours ahead, not before", () => {
+  const s = setup(); syncLooks(s.store, "lemo-opuscar", [LOOK]);
+  s.clock.now = at(2026, 11, 17, 10); // Tue 10:00
+  const id = tableCampaign(s, [
+    tableRow(s, { id: 1, origin: "create", style: LOOK.key, model: "claude:claude-opus-5-5", days: ["thu"], time: "09:00" }), // 47 h
+    tableRow(s, { id: 2, origin: "create", style: LOOK.key, model: "claude:claude-opus-5-5", days: ["thu"], time: "11:00" }), // 49 h
+    tableRow(s, { id: 3, days: ["thu"], time: "09:00" }), // FreePoster style: made on the day
+  ]);
+  s.worker.materialize();
+  assert.deepEqual(s.cs.tasksOn(id, "2026-11-19").map((t) => t.instructionIndex), [ROW_INSTRUCTION_BASE + 1]);
+  s.clock.now = at(2026, 11, 17, 11, 1);
+  s.worker.materialize();
+  assert.deepEqual(s.cs.tasksOn(id, "2026-11-19").map((t) => t.instructionIndex).sort(), [ROW_INSTRUCTION_BASE + 1, ROW_INSTRUCTION_BASE + 2]);
+  assert.equal(s.worker.materialize(), 0, "made once");
+});
+
+test("an early Lemo task is scripted and its brief goes out at once", async () => {
+  const s = scriptedSetup(undefined, at(2026, 11, 17, 10));
+  const id = tableCampaign(s, [tableRow(s, { id: 9, origin: "create", style: LOOK.key, model: "claude:claude-sonnet-5-5", days: ["thu"], time: "09:00", sec: 9 })]);
+  s.worker.materialize();
+  const [t] = s.cs.tasksOn(id, "2026-11-19");
+  assert.ok(t);
+  await s.tick();
+  await s.tick();
+  const done = s.cs.task(t.id)!;
+  assert.equal(done.state, "awaiting_agent", done.error ?? "");
+  assert.equal((done.choices as any).brief.postAt, at(2026, 11, 19, 9));
 });

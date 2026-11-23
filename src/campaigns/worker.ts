@@ -1,6 +1,7 @@
 // Runs confirmed campaigns, with plain code only (the one AI call is the script writer's). Every tick:
 //  - materialize: today's instructions of every runnable campaign become tasks, one per copy (local calendar day;
-//    a day the app was closed is never back-filled). Only a time still ahead is made today: one already come (this
+//    a day the app was closed is never back-filled; a Create row's Lemo film is made ahead, on the next two days, once its
+//    slot is within CLAUDE_LEAD_HOURS, so Claude has that long to film it). Only a time still ahead is made today: one already come (this
 //    minute or earlier, as when a line is added late) is next week's. Each task keeps a snapshot of the instruction it came from and
 //    the hook / angle / CTA it was given, so editing the campaign never changes a task already made, except that a
 //    row's new post time moves its videos not yet out (retime.ts).
@@ -36,7 +37,7 @@ import { generateMusic, generateSpeech } from "../produce/wan-audio.ts";
 import { hashFile } from "../review/media.ts";
 import type { ReviewRequest, ReviewService, Subject } from "../review/service.ts";
 import { ROW_INSTRUCTION_BASE } from "./rows.ts";
-import { BRIEF_LEAD_HOURS, LAUNCH_PREF, MAX_BRIEF_OFFERS, REVIEW_BUFFER_MINUTES, buildBrief, giveUpBrief, type Brief, type Delivery, type Lease } from "./briefs.ts";
+import { BRIEF_LEAD_HOURS, CLAUDE_LEAD_HOURS, LAUNCH_PREF, MAX_BRIEF_OFFERS, REVIEW_BUFFER_MINUTES, buildBrief, giveUpBrief, type Brief, type Delivery, type Lease } from "./briefs.ts";
 import { lookByKey, type Look } from "./looks.ts";
 import { buildGeneratedProduction, writeScript, type Script } from "./script.ts";
 import { DAYS, type MakeInstruction, type Pick as ValuePick, type PostInstruction } from "./spec.ts";
@@ -254,11 +255,19 @@ export class CampaignWorker {
     const key = dayKey(date.getTime());
     const dayIndex = date.getDay();
     const best = new Map<LibraryKind, number[]>();
+    // A Create row's Lemo film is made ahead too: the next two local days, for slots within CLAUDE_LEAD_HOURS.
+    const ahead = [1, 2].map((n) => {
+      const k = addDays(key, n);
+      const [y, m, d] = parseDay(k);
+      return { key: k, dayIndex: new Date(y, m - 1, d, 12).getDay() };
+    });
+    const early = (ins: MakeInstruction | PostInstruction) => ins.kind === "make" && !!ins.look && ins.scripted === true;
     let made = 0;
     for (const c of this.campaigns.campaigns()) {
       if (!this.campaigns.isRunnable(c) || !c.compiled) continue;
       try {
         made += this.materializeCampaign(c, key, dayIndex, best, date.getTime());
+        for (const a of ahead) made += this.materializeCampaign(c, a.key, a.dayIndex, best, date.getTime(), early);
       } catch (err) {
         console.error(`campaign ${c.id}: couldn't make today's tasks: ${(err as Error).message}`);
       }
@@ -266,7 +275,7 @@ export class CampaignWorker {
     return made;
   }
 
-  private materializeCampaign(c: Campaign, key: string, dayIndex: number, best: Map<LibraryKind, number[]>, now: number): number {
+  private materializeCampaign(c: Campaign, key: string, dayIndex: number, best: Map<LibraryKind, number[]>, now: number, only?: (ins: MakeInstruction | PostInstruction) => boolean): number {
     const instructions = c.compiled!.days[DAYS[dayIndex]] ?? [];
     if (!instructions.length) return 0;
     let existing = this.campaigns.tasksOn(c.id, key);
@@ -295,6 +304,7 @@ export class CampaignWorker {
     });
     let made = 0;
     instructions.forEach((ins, index) => {
+      if (only && !only(ins)) return;
       // An Agent row whose look has left the catalogue (hidden by a sync, or never synced) doesn't run: the table
       // says so, and no task is made (nor a failure sent) until the look is back.
       if (ins.kind === "make" && ins.look) {
@@ -310,6 +320,7 @@ export class CampaignWorker {
         // today. A video to keep has no time, so it's always made.
         const hhmm = lineTime(ins, copy, c.defaultPostTimes);
         if (hhmm !== null && localAt(key, hhmm) <= now) continue;
+        if (only && (hhmm === null || localAt(key, hhmm) - now > CLAUDE_LEAD_HOURS * HOUR)) continue;
         const { choices, error } = this.resolve(c, ins, copy, DAY_LABELS[dayIndex], ctx, keepNo.get(`${index}:${copy}`) ?? copy + 1);
         const id = this.campaigns.addTask({
           campaignId: c.id, date: key, dayIndex, instructionIndex, copy, kind: ins.kind, choices: choices as unknown as Record<string, unknown>,
@@ -593,7 +604,7 @@ export class CampaignWorker {
   /**
    * An Agent row's brief goes out BRIEF_LEAD_HOURS before its slot (a film to keep, at once); a Create row's Lemo
    * film's (scripted) goes out as soon as its script is written, however close its slot, as a WanGP video starts at
-   * once. Never while its campaign is stopped. Its look must still be in the catalogue then; once the brief is out,
+   * once (its task itself is made up to CLAUDE_LEAD_HOURS ahead). Never while its campaign is stopped. Its look must still be in the catalogue then; once the brief is out,
    * it keeps that look.
    */
   private offerBrief(t: CampaignTask, c: TaskChoices) {

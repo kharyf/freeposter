@@ -11,8 +11,10 @@ import { foreignLinks, hasLink, type Script } from "./script.ts";
 import type { CampaignStore, CampaignTask } from "./store.ts";
 import type { TaskChoices } from "./worker.ts";
 
-/** An Agent row's film is asked for this long before the video is due (a Create row's Lemo film is asked for at once). */
+/** An Agent row's film is asked for this long before the video is due. */
 export const BRIEF_LEAD_HOURS = 6;
+/** A Create row's Lemo film is made (and briefed at once) this long before its slot, so Claude has time to film it. */
+export const CLAUDE_LEAD_HOURS = 48;
 export const LEASE_MINUTES = 120;
 /** The time kept between an Agent row's delivery and its post time for the review. */
 export const REVIEW_BUFFER_MINUTES = 30;
