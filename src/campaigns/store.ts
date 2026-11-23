@@ -239,7 +239,7 @@ export function campaignTaskFor(store: Store, kind: "production" | "edit", id: n
 }
 
 /** The lowercased Drive names a compiled schedule's "post" lines mention. */
-const postNames = (c: Campaign): string[] =>
+export const postNames = (c: Campaign): string[] =>
   c.compiled ? Object.values(c.compiled.days).flatMap((lines) => (lines ?? []).flatMap((ins) => (ins.kind === "post" ? [ins.name.toLowerCase()] : []))) : [];
 
 /**

@@ -42,7 +42,7 @@ import { BRIEF_LEAD_HOURS, CLAUDE_LEAD_HOURS, LAUNCH_PREF, MAX_BRIEF_OFFERS, REV
 import { lookByKey, type Look } from "./looks.ts";
 import { buildGeneratedProduction, writeScript, type Script } from "./script.ts";
 import { DAYS, type MakeInstruction, type Pick as ValuePick, type PostInstruction } from "./spec.ts";
-import { CampaignStore, campaignTaskFor, driveFileTaken, mayPostUnseen, type Campaign, type CampaignTask, type LibraryEntry, type LibraryKind, type TaskState } from "./store.ts";
+import { CampaignStore, campaignTaskFor, driveFileTaken, mayPostUnseen, postNames, type Campaign, type CampaignTask, type LibraryEntry, type LibraryKind, type TaskState } from "./store.ts";
 
 /** What the worker needs of the production worker (a stand-in in tests). */
 export interface Productions {
@@ -118,9 +118,6 @@ const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 /** States a task is still being worked on in. */
 const ACTIVE: TaskState[] = ["queued", "awaiting_agent", "scripting", "rendering", "editing", "reviewing", "scheduled"];
 const PENDING_JOBS = ["queued", "running", "retry", "waiting_quota"];
-/** Whether a job's upload has begun: it tried, it isn't waiting any more, or it carries an upload checkpoint. */
-const uploadBegun = (j: { state: string; attempts: number; progress: Record<string, unknown> }) =>
-  j.attempts > 0 || !["queued", "retry", "waiting_quota"].includes(j.state) || Object.keys(j.progress).some((k) => k !== "heldFrom");
 /** Campaign reviews wait for the user well past their post time (approved a later day, it takes a later time). */
 const REVIEW_HOURS = 24 * 7;
 /** How far ahead a post is placed before giving up (a cap of 0, say). */
@@ -1255,8 +1252,13 @@ export class CampaignWorker {
    * slot. Its held Drive file goes to the remade task (remake), or says why nothing was posted.
    */
   private retire(t: CampaignTask, remake: boolean): boolean {
-    // A post whose upload has begun on any platform goes out as it is.
-    if (t.state === "scheduled" && t.postId !== null && this.store.jobsForPost(t.postId).some(uploadBegun)) return false;
+    const r = t.reviewId === null ? undefined : this.reviews.reviews.get(t.reviewId);
+    // An approval not placed yet (still reviewing) has a held post too: it must never go out on its own.
+    const postId = t.postId ?? r?.postId ?? null;
+    const post = postId === null ? undefined : this.store.post(postId);
+    const held = post !== undefined && this.store.jobsForPost(post.id).some((j) => typeof j.progress.heldFrom === "number");
+    // A post let go to post is cancelled only whole, when none of its uploads has tried; otherwise it goes out as it is.
+    if (post && !held && !this.store.postNeverTried(post.id)) return false;
     try {
       this.onRetire(t.id);
     } catch (err) {
@@ -1270,19 +1272,17 @@ export class CampaignWorker {
       const e = this.store.edit(t.editId);
       if (e && e.state !== "superseded" && e.state !== "rejected") this.store.closeEdit(t.editId, "superseded");
     }
-    const r = t.reviewId === null ? undefined : this.reviews.reviews.get(t.reviewId);
     if (r && (r.state === "preparing" || r.state === "pending")) {
       this.reviews.reviews.close(r.id, "superseded");
       this.reviews.reviews.markDirty(r.id);
     }
-    // An approval not placed yet (still reviewing) has a held post too: it must never go out on its own. A placed
-    // post never tried is cancelled the same way (cancelPost keeps only jobs that tried, and there are none).
-    const postId = t.postId ?? r?.postId ?? null;
+    // A held post always stops (an upload that had tried is failed, with where to look for a leftover draft); a
+    // released one never tried is cancelled whole, and should any of it survive, the task stays to follow it.
     let started = "";
-    if (postId !== null) {
-      const held = this.store.jobsForPost(postId).some((j) => typeof j.progress.heldFrom === "number");
-      if (held) started = this.cancelHeld(postId);
-      else if (this.store.post(postId)) this.store.cancelPost(postId);
+    if (post && held) started = this.cancelHeld(post.id);
+    else if (post) {
+      this.store.cancelPost(post.id);
+      if (this.store.post(post.id)) return false;
     }
     if (!this.campaigns.retireTask(t.id)) return false;
     const c = t.choices as unknown as TaskChoices;
@@ -1297,15 +1297,17 @@ export class CampaignWorker {
   }
 
   /**
-   * A replaced task's Drive file, not posted: held again for the remade task to take, or (its row no longer wants
-   * it) finished with a note saying why nothing was posted, as a failed task's is.
+   * A replaced task's Drive file, not posted: held again for the remade task to take while the campaign's rows still
+   * name it, or (no row does now) finished with a note saying why nothing was posted, as a failed task's is, so it's
+   * never let go to post by its filename.
    */
   private releaseDriveFile(t: CampaignTask, driveId: string, remake: boolean) {
     const f = this.store.driveFile(driveId);
     if (!f || f.postId !== null || (f.state !== "held" && f.state !== "cancelled")) return;
-    if (remake) {
-      const name = this.campaigns.campaign(t.campaignId)?.name ?? (t.choices as unknown as TaskChoices).campaignName;
-      this.store.upsertDriveFile(driveId, { state: "held", postId: null, note: `held by campaign ${name}` });
+    const campaign = this.campaigns.campaign(t.campaignId);
+    const named = campaign !== undefined && postNames(campaign).includes((f.choice?.name ?? "").toLowerCase());
+    if (remake && named) {
+      this.store.upsertDriveFile(driveId, { state: "held", postId: null, note: `held by campaign ${campaign.name}` });
     } else {
       this.store.upsertDriveFile(driveId, {
         state: "failed",

@@ -1926,3 +1926,98 @@ test("a row changed inside a caller's transaction retires its videos without ope
   assert.equal(s.cs.task(t.id)!.state, "replaced");
   assert.equal(remadeEvents(s)[0].summary, 'Campaign "Table": 1 video of row 0000001 was removed');
 });
+
+// ---- a changed row never leaves its old post or Drive file to go out ----
+
+/** A table row's video approved and placed: its task scheduled, its post released. */
+async function placedVideo() {
+  const s = setup();
+  const id = tableCampaign(s, [tableRow(s, { time: "18:00" })]);
+  s.worker.materialize();
+  const [t] = s.cs.tasksOn(id, "2026-11-17");
+  await s.toReview(t.id);
+  await s.approve(t.id);
+  await s.tick();
+  const placed = s.cs.task(t.id)!;
+  assert.equal(placed.state, "scheduled", placed.error ?? "");
+  return { ...s, id, task: placed, postId: placed.postId! };
+}
+
+test("a released post waiting for quota that never tried is left alone, never replaced with its post surviving", async () => {
+  const s = await placedVideo();
+  // The daily cap deferred its first try: the attempt was refunded, nothing was sent.
+  s.store.db.prepare("UPDATE jobs SET state = 'waiting_quota', attempts = 0, progress = '{}' WHERE post_id = ?").run(s.postId);
+  s.worker.campaigns.setRows(s.id, [tableRow(s, { time: "18:00", text: "a new direction" })]);
+  const t = s.cs.task(s.task.id)!;
+  assert.equal(t.state, "scheduled");
+  assert.equal(t.copy, 0);
+  assert.ok(s.store.post(s.postId), "its post stays");
+  assert.equal(s.store.jobsForPost(s.postId).length, 1);
+  assert.equal(s.worker.materialize(), 0, "nothing is made again for its slot");
+});
+
+test("a two-platform post where one upload tried and one didn't is left alone", async () => {
+  const s = await placedVideo();
+  const yt = s.store.upsertAccount(account("youtube"));
+  s.store.db.prepare("INSERT INTO jobs (post_id, account_id, platform, state, attempts, next_run_at, progress, error, updated_at) VALUES (?, ?, 'youtube', 'retry', 1, ?, '{}', 'timed out', ?)")
+    .run(s.postId, yt.id, s.clock.now + 60_000, s.clock.now);
+  s.worker.campaigns.setRows(s.id, [tableRow(s, { time: "18:00", text: "a new direction" })]);
+  assert.equal(s.cs.task(s.task.id)!.state, "scheduled");
+  assert.ok(s.store.post(s.postId), "its post stays");
+  assert.equal(s.store.jobsForPost(s.postId).length, 2, "neither upload is deleted");
+});
+
+test("a held post whose upload had tried is still replaced, the upload failed with the leftover-draft note", async () => {
+  const s = await placedVideo();
+  assert.equal(s.worker.stopCampaign(s.id), 1);
+  s.store.db.prepare("UPDATE jobs SET attempts = 1 WHERE post_id = ?").run(s.postId);
+  s.worker.campaigns.setRows(s.id, [tableRow(s, { time: "18:00", text: "a new direction" })]);
+  assert.equal(s.cs.task(s.task.id)!.state, "replaced");
+  const [job] = s.store.jobsForPost(s.postId);
+  assert.equal(job.state, "failed");
+  assert.match(job.error ?? "", /leftover draft/);
+  assert.equal(job.progress.heldFrom, undefined, "no longer held");
+});
+
+test("a Drive row whose file name changes while its file is reviewing: the old file is failed with the note, never let go", async () => {
+  const s = await driveReviewing();
+  s.worker.campaigns.setRows(s.id, [tableRow(s, { origin: "drive", text: "Other", time: "20:00" })]);
+  assert.equal(s.cs.task(s.task.id)!.state, "replaced");
+  const f = s.store.driveFile("f1")!;
+  assert.equal(f.state, "failed");
+  assert.match(f.note ?? "", /row was changed or removed/);
+  assert.deepEqual(filesHeldBy(s.store, s.id), []);
+});
+
+test("a post line's placed kept video goes back to kept when its row changes, and the remade line takes it", async () => {
+  const s = setup();
+  const keeper = s.campaign({ tue: [s.make(1, null)] });
+  s.worker.materialize();
+  const [made] = s.cs.tasksOn(keeper, "2026-11-17");
+  await s.toReview(made.id);
+  await s.approve(made.id);
+  await s.tick();
+  assert.equal(s.cs.task(made.id)!.state, "kept", s.cs.task(made.id)!.error ?? "");
+  const name = (s.cs.task(made.id)!.choices as any).libraryName as string;
+  const id = tableCampaign(s, [tableRow(s, { origin: "drive", text: name, time: "20:00" })]);
+  s.worker.materialize();
+  const [line] = s.cs.tasksOn(id, "2026-11-17");
+  await s.tick(); // takes the kept video
+  await s.tick(); // asks for its review
+  await s.approve(line.id);
+  await s.tick();
+  const placed = s.cs.task(line.id)!;
+  assert.equal(placed.state, "scheduled", placed.error ?? "");
+  assert.equal(s.cs.task(made.id)!.state, "posted");
+  const promo = s.cs.addType({ name: "Promo", color: "#f00" });
+  s.worker.campaigns.setRows(id, [tableRow(s, { origin: "drive", text: name, time: "20:00", type: promo })]);
+  assert.equal(s.cs.task(line.id)!.state, "replaced");
+  assert.equal(s.store.post(placed.postId!), undefined);
+  const source = s.cs.task(made.id)!;
+  assert.equal(source.state, "kept");
+  assert.equal(source.postId, null);
+  assert.equal(s.worker.materialize(), 1);
+  await s.tick();
+  const fresh = s.cs.tasksOn(id, "2026-11-17").find((x) => x.id !== line.id)!;
+  assert.equal((s.cs.task(fresh.id)!.choices as any).sourceTaskId, made.id, s.cs.task(fresh.id)!.error ?? "");
+});
