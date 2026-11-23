@@ -1,17 +1,17 @@
 // Layout model for the docked workspace: pure functions, no DOM. Every function returns a new object.
 (function () {
   var AREAS = ["top", "left", "bottom", "right"];
-  var TAB_IDS = ["reviews", "analytics", "campaigns", "calendar", "styles", "accounts", "agents", "newpost", "drive", "upcoming", "posts", "ai", "setup"];
+  var TAB_IDS = ["reviews", "analytics", "campaigns", "calendar", "styles", "accounts", "agents", "newpost", "drive", "upcoming", "posts", "console", "ai", "setup"];
   var TAB_LABELS = {
     reviews: "Waiting for your review", analytics: "Analytics", campaigns: "Campaigns", calendar: "Calendar",
     styles: "Editing Styles", accounts: "Accounts", agents: "AI Agents", newpost: "New Post", drive: "From Drive",
-    upcoming: "Upcoming", posts: "Posts", ai: "AI Providers", setup: "Setup",
+    upcoming: "Upcoming", posts: "Posts", console: "Console", ai: "AI Providers", setup: "Setup",
   };
   var DEFAULT_TABS = {
     top: ["reviews", "analytics", "campaigns", "calendar", "styles"],
     left: ["accounts", "agents", "newpost"],
     bottom: ["drive", "upcoming", "posts"],
-    right: ["ai", "setup"],
+    right: ["console", "ai", "setup"],
   };
   var DEFAULT_SIZE = { top: 0, left: 340, bottom: 280, right: 380 };
   var DEFAULT_AREA = {};
@@ -30,7 +30,7 @@
       var tabs = DEFAULT_TABS[a].slice();
       areas[a] = { tabs: tabs, active: tabs[0], size: DEFAULT_SIZE[a], collapsed: false };
     });
-    return { areas: areas };
+    return { areas: areas, closed: [] };
   }
 
   function normalizeLayout(raw) {
@@ -49,7 +49,16 @@
       var size = typeof s.size === "number" && isFinite(s.size) && s.size > 0 ? s.size : DEFAULT_SIZE[a];
       areas[a] = { tabs: tabs, active: s.active, size: a === "top" ? 0 : size, collapsed: a !== "top" && s.collapsed === true };
     });
-    TAB_IDS.forEach(function (id) { if (!seen[id]) areas[DEFAULT_AREA[id]].tabs.push(id); });
+    var closed = [];
+    (raw && Array.isArray(raw.closed) ? raw.closed : []).forEach(function (id) {
+      if (TAB_IDS.indexOf(id) < 0 || seen[id] || closed.indexOf(id) >= 0) return;
+      closed.push(id);
+    });
+    TAB_IDS.forEach(function (id) {
+      if (seen[id] || closed.indexOf(id) >= 0) return;
+      var tabs = areas[DEFAULT_AREA[id]].tabs;
+      tabs.splice(clamp(DEFAULT_TABS[DEFAULT_AREA[id]].indexOf(id), 0, tabs.length), 0, id);
+    });
     if (!areas.top.tabs.length) return defaultLayout();
     AREAS.forEach(function (a) {
       var ar = areas[a];
@@ -57,7 +66,7 @@
       if (a === "top") ar.collapsed = false;
       else if (!ar.tabs.length) ar.collapsed = true;
     });
-    return { areas: areas };
+    return { areas: areas, closed: closed };
   }
 
   function areaOf(layout, id) {
@@ -66,24 +75,37 @@
   }
 
   function activateTab(layout, id) {
+    if (isClosed(layout, id)) return addTab(layout, id, DEFAULT_AREA[id]);
     var out = clone(layout);
     var a = areaOf(out, id);
     if (out.areas[a].tabs.indexOf(id) >= 0) out.areas[a].active = id;
     return out;
   }
 
-  function moveTab(layout, id, toArea, index) {
-    if (TAB_IDS.indexOf(id) < 0 || AREAS.indexOf(toArea) < 0) return clone(layout);
-    var out = clone(layout);
+  function isClosed(layout, id) { return !!layout.closed && layout.closed.indexOf(id) >= 0; }
+
+  // Takes id out of the area that holds it. With fix, picks the next active tab and collapses an emptied side area.
+  function removeFromArea(out, id, fix) {
     var from = areaOf(out, id);
     var src = out.areas[from];
     var at = src.tabs.indexOf(id);
     src.tabs.splice(at, 1);
-    if (from === "top" && toArea !== "top" && !src.tabs.length) return null;
-    if (from !== toArea && src.active === id) {
-      src.active = src.tabs.length ? (src.tabs[at] !== undefined ? src.tabs[at] : src.tabs[src.tabs.length - 1]) : null;
+    if (fix) {
+      if (src.active === id) {
+        src.active = src.tabs.length ? (src.tabs[at] !== undefined ? src.tabs[at] : src.tabs[src.tabs.length - 1]) : null;
+      }
+      if (!src.tabs.length) src.collapsed = true;
     }
-    if (from !== toArea && !src.tabs.length) src.collapsed = true;
+    return { from: from, at: at };
+  }
+
+  function moveTab(layout, id, toArea, index) {
+    if (TAB_IDS.indexOf(id) < 0 || AREAS.indexOf(toArea) < 0) return clone(layout);
+    var out = clone(layout);
+    if (isClosed(out, id)) return clone(layout);
+    var rm = removeFromArea(out, id, areaOf(out, id) !== toArea);
+    var from = rm.from, at = rm.at;
+    if (from === "top" && toArea !== "top" && !out.areas.top.tabs.length) return null;
     var dst = out.areas[toArea];
     var i = typeof index === "number" && isFinite(index) ? clamp(Math.floor(index), 0, dst.tabs.length) : dst.tabs.length;
     dst.tabs.splice(i, 0, id);
@@ -91,6 +113,41 @@
     dst.active = id;
     if (toArea !== "top") dst.collapsed = false;
     return out;
+  }
+
+  function canCloseTab(layout, id) {
+    if (isClosed(layout, id) || TAB_IDS.indexOf(id) < 0) return true;
+    return !(areaOf(layout, id) === "top" && layout.areas.top.tabs.length === 1);
+  }
+
+  function closeTab(layout, id) {
+    var out = clone(layout);
+    if (TAB_IDS.indexOf(id) < 0 || isClosed(out, id)) return out;
+    if (!canCloseTab(out, id)) return null;
+    removeFromArea(out, id, true);
+    out.closed = (out.closed || []).concat([id]);
+    return out;
+  }
+
+  function addTab(layout, id, area) {
+    if (TAB_IDS.indexOf(id) < 0 || AREAS.indexOf(area) < 0) return clone(layout);
+    if (!isClosed(layout, id)) {
+      return areaOf(layout, id) === area ? activateTab(layout, id) : moveTab(layout, id, area);
+    }
+    var out = clone(layout);
+    out.closed = out.closed.filter(function (c) { return c !== id; });
+    out.areas[area].tabs.push(id);
+    out.areas[area].active = id;
+    if (area !== "top") out.areas[area].collapsed = false;
+    return out;
+  }
+
+  function addTabChoices(layout, area) {
+    var topOnly = layout.areas.top.tabs.length === 1 ? layout.areas.top.tabs[0] : null;
+    return TAB_IDS.map(function (id) {
+      var here = !isClosed(layout, id) && areaOf(layout, id) === area;
+      return { id: id, label: TAB_LABELS[id], disabled: here || (id === topOnly && area !== "top") };
+    });
   }
 
   function setCollapsed(layout, area, collapsed) {
@@ -142,7 +199,7 @@
   globalThis.FreePosterLayout = {
     AREAS: AREAS, TAB_IDS: TAB_IDS, TAB_LABELS: TAB_LABELS, DEFAULT_AREA: DEFAULT_AREA,
     MIN_AREA_PX: MIN_AREA_PX, COLLAPSE_PX: COLLAPSE_PX,
-    defaultLayout: defaultLayout, normalizeLayout: normalizeLayout, moveTab: moveTab, activateTab: activateTab,
+    defaultLayout: defaultLayout, normalizeLayout: normalizeLayout, moveTab: moveTab, activateTab: activateTab, closeTab: closeTab, addTab: addTab, canCloseTab: canCloseTab, addTabChoices: addTabChoices,
     areaOf: areaOf, setCollapsed: setCollapsed, resizeArea: resizeArea, clampSizes: clampSizes,
   };
 })();
