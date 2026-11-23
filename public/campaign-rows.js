@@ -154,8 +154,18 @@
     return out;
   }
 
+  /** A row for the + button: a Create row with no time or day yet, and a stand-in id below every id in the table (the server gives the real one on save). */
+  function newRow(rows, last, defaultStyle) {
+    return {
+      id: Math.min.apply(null, [0].concat(rows.map(function (r) { return r.id; }))) - 1,
+      quantity: 1, hook: { pick: "random" }, angle: { pick: "random" }, cta: { pick: "random" },
+      style: last && last.style !== undefined ? last.style : defaultStyle, type: null, time: null, days: [], sec: 30, origin: "create",
+      model: last && last.model !== undefined ? last.model : null, text: "",
+    };
+  }
+
   root.FreePosterRows = {
-    hexId: hexId, saveProblems: saveProblems,
+    newRow: newRow,    hexId: hexId, saveProblems: saveProblems,
     isLemo: isLemo, isClaudeModel: isClaudeModel, showModelColumn: showModelColumn,
     styleGroups: styleGroups, modelOptions: modelOptions, applyChange: applyChange, rowIssues: rowIssues, sameRows: sameRows,
   };

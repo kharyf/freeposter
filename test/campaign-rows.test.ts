@@ -286,3 +286,24 @@ test("saveProblems names each row missing a time or a day, as the server does", 
   assert.deepEqual(server.ok ? [] : server.problems, expected);
   assert.deepEqual(j(R.saveProblems([row(), row({ id: 0, days: [] })])), ["row 2: needs at least one day"]);
 });
+
+test("newRow: a whole Create row with a stand-in id, which the server accepts once it has a time and a day", () => {
+  const vocab: Vocabulary = { styles: [{ id: "bold", token: "bold" }], types: [], hooks: [], angles: [], ctas: [], looks: [], models: [] };
+  const saved = row({ id: 5, days: ["mon"] });
+  const fresh = j(R.newRow([saved], saved, "calm"));
+  const ok = parseRows([{ ...saved, id: null }], vocab);
+  assert.equal(ok.ok, true);
+  assert.deepEqual(Object.keys(fresh).sort(), Object.keys(ok.ok ? ok.value[0] : {}).sort(), "every Row field");
+  assert.equal(fresh.quantity, 1); assert.deepEqual(fresh.hook, { pick: "random" }); assert.deepEqual(fresh.cta, { pick: "random" });
+  assert.equal(fresh.style, "bold"); assert.equal(j(R.newRow([], undefined, "calm")).style, "calm");
+  assert.equal(j(R.newRow([], undefined, "calm")).model, null);
+  // ids: negative, and unique among the table's rows through adds and deletions
+  const rows: any[] = [saved];
+  for (let i = 0; i < 3; i++) rows.push(j(R.newRow(rows, rows[rows.length - 1], "calm")));
+  rows.splice(2, 1);
+  rows.push(j(R.newRow(rows, undefined, "calm")));
+  const ids = rows.map((r) => r.id);
+  assert.equal(new Set(ids).size, ids.length); assert.ok(ids.slice(1).every((i: number) => i < 0));
+  const withTime = { ...fresh, id: -1, style: "bold", time: "09:00", days: ["mon"] };
+  assert.equal(parseRows([withTime], vocab).ok, true);
+});

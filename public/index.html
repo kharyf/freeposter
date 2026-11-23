@@ -3597,7 +3597,8 @@ function cpSaveRows(id) {
         // Rows added before this save now have their real ids; the edits made meanwhile must send those, not the stand-ins.
         sent.forEach((s, i) => {
           const saved = r.body.rows?.[i];
-          if (s.id <= 0 && saved) { const mine = cpRows[id].find((x) => x.id === s.id); if (mine) mine.id = saved.id; }
+          // Relies on the server returning rows in the order and count sent.
+          if (s.id <= 0 && saved) { const mine = cpRows[id]?.find((x) => x.id === s.id); if (mine) mine.id = saved.id; }
         });
       }
       cpNotes[id] = { kind: "ok", text: "Changes saved." };
@@ -3739,10 +3740,7 @@ $("cpList").addEventListener("click", async (e) => {
     const id = Number(add.dataset.cpAddrow);
     const rows = cpEditRows(id);
     const last = rows[rows.length - 1];
-    const fresh = {
-      id: Math.min(0, ...rows.map((r) => r.id)) - 1, // unsaved: the server gives it its real id quantity: 1, hook: { pick: "random" }, angle: { pick: "random" }, cta: { pick: "random" },
-      style: last?.style ?? cpDefaultStyle(), type: null, time: null, days: [], sec: 30, origin: "create", model: last?.model ?? null, text: "",
-    };
+    const fresh = FreePosterRows.newRow(rows, last, cpDefaultStyle());
     // Made a Create row by the same rule as switching one to Create: a Lemo style copied with no model gets the default Claude.
     rows.push(FreePosterRows.applyChange(fresh, "origin", "create", cpCtx()).row);
     return cpEdited(id);
