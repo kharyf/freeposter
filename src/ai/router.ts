@@ -15,10 +15,16 @@ const KEY_PREF = "ai.openrouter.key";
 const MODEL_PREF = "ai.openrouter.model";
 
 /**
- * Whether Claude is connected under AI Providers. That alone turns on FreePoster starting Claude Code for campaign films:
- * a row can only pick a Lemo style with a Claude model, and only a connected Claude's models are offered.
+ * Whether Claude is connected under AI Providers. With Google AI (below), that alone turns on FreePoster starting a film
+ * agent for campaign films: a row can only pick a Lemo style with a film-agent model, and only connected providers' models are offered.
  */
 export const claudeConnected = (store: Store): boolean => Boolean(store.pref<SavedProviders>(PROVIDERS_PREF)?.claude);
+/** Whether Google AI is connected: FreePoster can then start the Antigravity CLI (Gemini) for campaign films. */
+export const googleConnected = (store: Store): boolean => Boolean(store.pref<SavedProviders>(PROVIDERS_PREF)?.google);
+/** Whether any film agent (Claude Code or the Antigravity CLI) is connected, so FreePoster makes campaign films itself. */
+export const filmAgentConnected = (store: Store): boolean => claudeConnected(store) || googleConnected(store);
+/** The program path the user set for a provider when connecting it, if any. */
+export const providerPath = (store: Store, id: ProviderId): string | undefined => store.pref<SavedProviders>(PROVIDERS_PREF)?.[id]?.path;
 
 /** The question Connect and Test ask: tiny, so it costs next to nothing on any plan. */
 const PROBE: Question = {

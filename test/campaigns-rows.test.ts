@@ -115,14 +115,20 @@ test("issue: an Agent row needs a Lemo style", () => {
   assert.deepEqual(issues(agent({ style: "Fancy" })), ["an Agent row needs a Lemo style"]);
 });
 
-test("issue: an Agent row needs a Claude model", () => {
-  assert.deepEqual(issues(agent({ model: "openrouter:anthropic/claude-opus" })), ["an Agent row needs a Claude model"]);
+test("issue: an Agent row needs a Claude or Gemini model", () => {
+  assert.deepEqual(issues(agent({ model: "openrouter:anthropic/claude-opus" })), ["an Agent row needs a Claude or Gemini model"]);
   assert.deepEqual(issues(agent({ model: "claude:claude-opus-5-5" })), []);
+  assert.deepEqual(issues(agent({ model: "google:default" })), [], "Gemini through the Antigravity CLI makes it too");
+  assert.deepEqual(issues(agent({ model: "openrouter:google/gemini-x" })), ["an Agent row needs a Claude or Gemini model"]);
 });
 
-test("issue: Lemo styles need a Claude model", () => {
-  assert.deepEqual(issues(create({ style: "lemo:ukiyo-e" })), ["Lemo styles need a Claude model"]);
-  assert.deepEqual(issues(create({ style: "lemo:ukiyo-e", model: "chatgpt:default" })), ["Lemo styles need a Claude model"]);
+test("a Create row with a Lemo style runs on a Gemini model", () => {
+  assert.deepEqual(issues(create({ style: "lemo:ukiyo-e", model: "google:default" })), []);
+});
+
+test("issue: Lemo styles need a Claude or Gemini model", () => {
+  assert.deepEqual(issues(create({ style: "lemo:ukiyo-e" })), ["Lemo styles need a Claude or Gemini model"]);
+  assert.deepEqual(issues(create({ style: "lemo:ukiyo-e", model: "chatgpt:default" })), ["Lemo styles need a Claude or Gemini model"]);
 });
 
 test("issue: Drive videos can't use a Lemo style", () => {

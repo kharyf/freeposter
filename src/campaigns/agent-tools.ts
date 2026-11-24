@@ -124,7 +124,7 @@ export function agentTools(opts: {
     {
       name: "claim_brief",
       title: "Claim a brief",
-      description: "Takes on one campaign film: you hold it for a while (lease_until; renew_brief extends it) and get the brief: look, hook, angle, cta, sec (length in seconds, or null), instructions, language, needs_image_gen, deadline and post_at, script (the script FreePoster wrote, to film as written, or null: then you write the treatment), model (the Claude model chosen for it, or null), and a claim_token. Pass the claim_token to renew_brief, submit_brief and give_up_brief; claiming again with your claim_token returns the same brief and lease. A brief someone else holds is refused.",
+      description: "Takes on one campaign film: you hold it for a while (lease_until; renew_brief extends it) and get the brief: look, hook, angle, cta, sec (length in seconds, or null), instructions, language, needs_image_gen, deadline and post_at, script (the script FreePoster wrote, to film as written, or null: then you write the treatment), model (the Claude or Gemini model chosen for it, or null), and a claim_token. Pass the claim_token to renew_brief, submit_brief and give_up_brief; claiming again with your claim_token returns the same brief and lease. A brief someone else holds is refused.",
       inputSchema: { type: "object", properties: { task_id: { type: "integer" }, claim_token: TOKEN }, required: ["task_id"], additionalProperties: false },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       async run(args) {

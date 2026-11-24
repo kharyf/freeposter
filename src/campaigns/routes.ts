@@ -3,6 +3,7 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { accountSets } from "../accounts.ts";
 import { budget, todayUse } from "../ai/budget.ts";
+import { claudeConnected, googleConnected } from "../ai/router.ts";
 import { DEFAULT_CLAUDE_MODEL_ID } from "../claude.ts";
 import type { Store } from "../db.ts";
 import { trustedRequest } from "../mcp.ts";
@@ -106,6 +107,8 @@ function campaignRoutes(app: FastifyInstance, store: Store, worker?: CampaignWor
       models: worker?.ai?.modelChoices() ?? [],
       /** the model a row switches to when it needs Claude */
       defaultClaude: DEFAULT_CLAUDE_MODEL_ID,
+      /** the model a row switches to when it needs a film agent: Claude's default, else Gemini's while only Google AI is connected */
+      defaultFilm: !claudeConnected(store) && googleConnected(store) ? "google:default" : DEFAULT_CLAUDE_MODEL_ID,
       /** the film FreePoster's own Claude is making now: its task, campaign, table row, and how far it says it is */
       making: makingView(),
       /** the looks an Agent row can pick (hidden ones left out) */

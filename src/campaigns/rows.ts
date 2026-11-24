@@ -1,6 +1,6 @@
 // The campaign table: what the Campaigns tab edits (and an Autorun agent sends), one row per kind of video. Rows
 // compile into the day-by-day schedule the worker runs. A row the table can hold but can't run yet (no days ticked,
-// a Drive row with no file name or time, a Create row with no length, a Lemo style with no Claude model to write it) is
+// a Drive row with no file name or time, a Create row with no length, a Lemo style with no Claude or Gemini model to make it) is
 // kept as it is and left out of the schedule.
 import { LOOK_KEY } from "./looks.ts";
 import { DAYS, isModelId, type CompiledCampaign, type Day, type MakeInstruction, type PostInstruction, type Vocabulary } from "./spec.ts";
@@ -56,6 +56,11 @@ const KEYS = ["id", "quantity", "hook", "angle", "cta", "style", "model", "type"
 export const isLemo = (style: string | null): boolean => style !== null && style.startsWith("lemo:");
 /** A Claude model run by the Claude program (an OpenRouter "anthropic/..." model doesn't count). */
 export const isClaudeModel = (model: string | null): boolean => model !== null && model.startsWith("claude:");
+/**
+ * A model a film agent FreePoster starts can run: Claude (Claude Code) or Google AI (the Antigravity CLI). An OpenRouter
+ * "anthropic/..." or "google/..." model doesn't count.
+ */
+export const isFilmModel = (model: string | null): boolean => model !== null && (model.startsWith("claude:") || model.startsWith("google:"));
 
 /**
  * A row as saved before the Lemo style moved into `style`: an Agent row's `look` becomes its style (any FreePoster
@@ -170,9 +175,9 @@ export function rowIssues(r: Row, vocab?: Vocabulary): string[] {
   if (r.origin === "agent") {
     if (r.style === null) out.push("no editing style");
     else if (!lemo) out.push("an Agent row needs a Lemo style");
-    if (r.model !== null && !isClaudeModel(r.model)) out.push("an Agent row needs a Claude model");
+    if (r.model !== null && !isFilmModel(r.model)) out.push("an Agent row needs a Claude or Gemini model");
   }
-  if (r.origin === "create" && lemo && !isClaudeModel(r.model)) out.push("Lemo styles need a Claude model");
+  if (r.origin === "create" && lemo && !isFilmModel(r.model)) out.push("Lemo styles need a Claude or Gemini model");
   if (r.origin === "drive" && lemo) out.push("Drive videos can't use a Lemo style");
   if (lemo && vocab?.looks) {
     // An empty catalogue alone decides (one filled by sync_looks runs without the library on this computer). The

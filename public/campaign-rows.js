@@ -3,19 +3,30 @@
 // changes a row returns a new one. Mirrors rowIssues in src/campaigns/rows.ts (same texts, same order).
 (function (root) {
   var CLAUDE_GROUP = "claude";
+  var GOOGLE_GROUP = "google";
 
   function isLemo(style) { return style !== null && style !== undefined && style.indexOf("lemo:") === 0; }
   function isClaudeModel(model) { return model !== null && model !== undefined && model.indexOf("claude:") === 0; }
+  /** A model a film agent FreePoster starts can run: Claude (Claude Code) or Google AI (the Antigravity CLI). */
+  function isFilmModel(model) { return isClaudeModel(model) || (model !== null && model !== undefined && model.indexOf("google:") === 0); }
 
   /** Whether Claude is connected under AI Providers: the server lists only connected providers' models. */
   function claudeConnected(ctx) {
     return ctx.models.some(function (p) { return p.provider === CLAUDE_GROUP; });
   }
 
-  /** The Origin choices: Agent (a film Claude makes) only while Claude is connected, or when the row already is one. */
+  /** Whether a film agent (Claude, or Google AI's Gemini) is connected under AI Providers. */
+  function filmAgentConnected(ctx) {
+    return ctx.models.some(function (p) { return p.provider === CLAUDE_GROUP || p.provider === GOOGLE_GROUP; });
+  }
+
+  /** The model a row switches to when it needs a film agent. */
+  function defaultFilm(ctx) { return ctx.defaultFilm || ctx.defaultClaude; }
+
+  /** The Origin choices: Agent (a film Claude or Gemini makes) only while one is connected, or when the row already is one. */
   function originOptions(row, ctx) {
     var out = [{ value: "create", label: "Create" }, { value: "drive", label: "Drive" }];
-    if (row.origin === "agent" || claudeConnected(ctx)) out.push({ value: "agent", label: "Agent" });
+    if (row.origin === "agent" || filmAgentConnected(ctx)) out.push({ value: "agent", label: "Agent" });
     return out;
   }
 
@@ -24,7 +35,7 @@
   }
 
   /** The Lemo styles, grouped by category. None at all when the library has none (the row's issues say why). */
-  function lemoGroups(ctx) {
+  function lemoGroups(ctx, row) {
     if (!ctx.lemo.length) return [];
     var cats = {};
     var loose = []; // a style without a category: its own group, after the categorised ones
@@ -32,7 +43,8 @@
       if (l.category === null || l.category === undefined || l.category === "") loose.push(l);
       else (cats[l.category] = cats[l.category] || []).push(l);
     });
-    var prefix = "Lemo-Opuscar films (Claude)";
+    var gemini = row && row.model ? row.model.indexOf("google:") === 0 : !claudeConnected(ctx) && filmAgentConnected(ctx);
+    var prefix = "Lemo-Opuscar films (" + (gemini ? "Gemini" : "Claude") + ")";
     var group = function (label, list) {
       var items = list.slice().sort(function (a, b) { return a.name < b.name ? -1 : a.name > b.name ? 1 : 0; });
       return {
@@ -49,9 +61,9 @@
     var groups = [];
     var freePoster = { label: "FreePoster edits", options: ctx.styles.map(function (s) { return { value: s.id, label: s.name }; }) };
     if (row.origin === "drive") groups.push(freePoster);
-    else if (row.origin === "agent") groups = lemoGroups(ctx);
-    // A Create row offers the Lemo styles only once its model is a Claude model: never shown greyed out, just not there.
-    else groups = [freePoster].concat(isClaudeModel(row.model) ? lemoGroups(ctx) : []);
+    else if (row.origin === "agent") groups = lemoGroups(ctx, row);
+    // A Create row offers the Lemo styles only once its model is a film-agent model: never shown greyed out, just not there.
+    else groups = [freePoster].concat(isFilmModel(row.model) ? lemoGroups(ctx, row) : []);
     var s = row.style;
     if (s !== null && s !== undefined) {
       var listed = groups.some(function (g) { return g.options.some(function (o) { return o.value === s; }); });
@@ -71,9 +83,10 @@
   function modelOptions(row, ctx) {
     if (row.origin === "drive") return [];
     var agent = row.origin === "agent";
-    var groups = [{ label: "", options: [{ value: "", label: agent ? "Default (Claude Code's setting)" : "Use AI settings" }] }];
+    var agentDefault = claudeConnected(ctx) || !filmAgentConnected(ctx) ? "Default (Claude Code's setting)" : "Default (Antigravity's setting)";
+    var groups = [{ label: "", options: [{ value: "", label: agent ? agentDefault : "Use AI settings" }] }];
     ctx.models.forEach(function (p) {
-      if (agent && p.provider !== CLAUDE_GROUP) return;
+      if (agent && p.provider !== CLAUDE_GROUP && p.provider !== GOOGLE_GROUP) return;
       groups.push({ label: p.label, options: p.models.map(function (m) { return { value: m.id, label: m.name }; }) });
     });
     var m = row.model;
@@ -90,20 +103,20 @@
     if (field === "model") next.model = value === "" ? null : value;
     else next[field] = value;
     if (field === "style" && row.origin === "create" && isLemo(value) && next.model === null) {
-      next.model = ctx.defaultClaude;
+      next.model = defaultFilm(ctx);
       flash = "model";
     }
-    if (field === "origin" && value === "agent" && next.model !== null && !isClaudeModel(next.model)) {
-      next.model = ctx.defaultClaude;
+    if (field === "origin" && value === "agent" && next.model !== null && !isFilmModel(next.model)) {
+      next.model = defaultFilm(ctx);
       flash = "model";
     }
-    // A Create row's null model means the AI settings, which can't write a Lemo film: it gets the default Claude model.
+    // A Create row's null model means the AI settings, which can't write a Lemo film: it gets the default film model.
     if (field === "origin" && value === "create" && isLemo(next.style) && next.model === null) {
-      next.model = ctx.defaultClaude;
+      next.model = defaultFilm(ctx);
       flash = "model";
     }
-    // A Create row offers a Lemo style only with a Claude model: switching the model off Claude takes the default edit.
-    if (field === "model" && next.origin === "create" && !isClaudeModel(next.model) && isLemo(next.style) && ctx.defaultStyle) {
+    // A Create row offers a Lemo style only with a film-agent model: switching off one takes the default edit.
+    if (field === "model" && next.origin === "create" && !isFilmModel(next.model) && isLemo(next.style) && ctx.defaultStyle) {
       next.style = ctx.defaultStyle;
       flash = "style";
     }
@@ -121,9 +134,9 @@
     if (r.origin === "agent") {
       if (r.style === null) out.push("no editing style");
       else if (!lemo) out.push("an Agent row needs a Lemo style");
-      if (r.model !== null && !isClaudeModel(r.model)) out.push("an Agent row needs a Claude model");
+      if (r.model !== null && !isFilmModel(r.model)) out.push("an Agent row needs a Claude or Gemini model");
     }
-    if (r.origin === "create" && lemo && !isClaudeModel(r.model)) out.push("Lemo styles need a Claude model");
+    if (r.origin === "create" && lemo && !isFilmModel(r.model)) out.push("Lemo styles need a Claude or Gemini model");
     if (r.origin === "drive" && lemo) out.push("Drive videos can't use a Lemo style");
     if (lemo) {
       // The catalogue alone decides, as on the server; whether the library is installed only picks the wording (the
@@ -193,7 +206,7 @@
   root.FreePosterRows = {
     reviveGone: reviveGone,
     newRow: newRow,    hexId: hexId, saveProblems: saveProblems,
-    isLemo: isLemo, isClaudeModel: isClaudeModel, claudeConnected: claudeConnected, originOptions: originOptions, showModelColumn: showModelColumn,
+    isLemo: isLemo, isClaudeModel: isClaudeModel, isFilmModel: isFilmModel, claudeConnected: claudeConnected, filmAgentConnected: filmAgentConnected, originOptions: originOptions, showModelColumn: showModelColumn,
     styleGroups: styleGroups, modelOptions: modelOptions, applyChange: applyChange, rowIssues: rowIssues, sameRows: sameRows,
   };
 })(typeof globalThis !== "undefined" ? globalThis : this);

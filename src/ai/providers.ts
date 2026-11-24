@@ -165,13 +165,17 @@ export const PROVIDERS: Record<Exclude<ProviderId, "openrouter">, ProviderDef> &
     id: "google",
     label: "Google AI (Gemini)",
     billing: "plan",
-    plans: [{ id: "pro", label: "Google AI Pro", price: "$19.99/month" }, { id: "ultra", label: "Google AI Ultra", price: "$249.99/month" }],
+    plans: [
+      { id: "free", label: "Antigravity Individuals (free)", price: "$0" },
+      { id: "pro", label: "Google AI Pro", price: "$19.99/month" }, { id: "ultra", label: "Google AI Ultra", price: "$249.99/month" },
+    ],
     // Its headless mode takes text only.
     images: false,
     program: "Antigravity CLI",
     setupUrl: "https://antigravity.google/docs/cli/",
-    setup: "Install the Antigravity CLI, then run agy once in a terminal and sign in with the Google account that has your Google AI plan.",
-    find: (override) => override || findProgram(["agy"]),
+    setup: "Install the Antigravity CLI (in PowerShell: irm https://antigravity.google/cli/install.ps1 | iex), then run agy once in a terminal and sign in with your Google account (the free Individuals plan works). It can also make campaign films with Lemo-Opuscar.",
+    // The installer's folder too, since FreePoster may have started before it was added to PATH.
+    find: (override) => override || findProgram(["agy"], localAppData ? [join(localAppData, "agy", "bin")] : []),
     ask<T>(q: Question, ctx: { path: string; run?: ProgramRun }) {
       return runFor<T>("Antigravity", ctx, ["-p", promptText(q), "--output-format", "json", "--json-schema", JSON.stringify(q.schema)], "", q.schema,
         { dropEnv: ["GEMINI_API_KEY", "GOOGLE_API_KEY"] });

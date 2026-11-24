@@ -40,7 +40,7 @@ export interface Brief {
    * Agent row (the agent writes its own treatment). A brief stored before briefs had one has none (read as null).
    */
   script: string | null;
-  /** The Claude model (`claude:<model>`) the row chose to make it; null for the default (and on an older brief). */
+  /** The film model (`claude:<model>` or `google:<model>`) the row chose to make it; null for the default (and on an older brief). */
   model: string | null;
 }
 

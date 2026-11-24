@@ -941,6 +941,16 @@ test("brief events say FreePoster handles them while Claude is connected", async
   assert.match(exp.summary, /FreePoster is starting Claude/);
 });
 
+test("brief events say FreePoster starts Gemini while only Google AI is connected", async () => {
+  const s = agentSetup();
+  s.store.setPref("ai.providers", { google: { plan: "free", connectedAt: 1 } });
+  s.clock.now = at(2026, 11, 17, 12);
+  await s.tick();
+  const req = JSON.parse(s.events("brief.requested")[0].body);
+  assert.equal(req.handled_by, "freeposter");
+  assert.match(req.summary, /FreePoster is starting Gemini/);
+});
+
 /** The task's review is made ready and the user asks for a redo with a note. */
 async function redoReview(s: ReturnType<typeof agentSetup>, note: string) {
   const t = s.cs.task(s.task.id)!;

@@ -1,11 +1,11 @@
 import "./isolated-home.ts";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ProgramRun } from "../src/ai/cli.ts";
 import { LEASE_MINUTES, buildBrief, claimBrief, openBriefs } from "../src/campaigns/briefs.ts";
-import { AgentLauncher, abortOnRetire, abortOnStop } from "../src/campaigns/launcher.ts";
+import { AgentLauncher, abortOnRetire, abortOnStop, agentFor, findLemoSkill } from "../src/campaigns/launcher.ts";
 import type { Look } from "../src/campaigns/looks.ts";
 import { CampaignStore } from "../src/campaigns/store.ts";
 import type { TaskChoices } from "../src/campaigns/worker.ts";
@@ -21,7 +21,7 @@ interface Call { cmd: string; args: string[]; opts?: Parameters<ProgramRun>[3] }
 /** Connects Claude under AI Providers: that alone has FreePoster start Claude Code for open briefs. */
 const connectClaude = (store: { setPref(k: string, v: unknown): void }) => store.setPref("ai.providers", { claude: { plan: null, connectedAt: 1 } });
 
-function setup(opts: { enabled?: boolean; claude?: string } = {}) {
+function setup(opts: { enabled?: boolean; claude?: string; agy?: string; skill?: string; home?: string } = {}) {
   const store = newStore();
   const cs = new CampaignStore(store);
   const campaignId = cs.create({ name: "Films", text: "x", accountSetId: null, defaultPostTimes: [] });
@@ -45,6 +45,7 @@ function setup(opts: { enabled?: boolean; claude?: string } = {}) {
   const launcher = new AgentLauncher({
     store, campaigns: cs, run, borrowGpu, now: () => clock.now, dataDir: dir,
     find: () => opts.claude ?? "C:\\bin\\claude.exe",
+    findAgy: () => opts.agy ?? "C:\\bin\\agy.exe", lemoSkill: () => opts.skill ?? "", home: opts.home ?? tmp(),
   });
   return { store, cs, add, campaignId, launcher, calls, gpu, clock, dir, finish: (r: { code: number | null; stdout: string; stderr: string }) => finish(r) };
 }
@@ -158,7 +159,7 @@ test("does nothing while Claude isn't connected", async () => {
 test("without Claude connected the launcher says so, once", async () => {
   const s = setup({ enabled: false });
   await s.launcher.tick();
-  assert.equal(s.store.pref("agent.launch.status"), "Claude isn't connected under AI Providers");
+  assert.equal(s.store.pref("agent.launch.status"), "Neither Claude nor Google AI is connected under AI Providers");
   let writes = 0;
   const set = s.store.setPref.bind(s.store);
   s.store.setPref = (k, v) => { if (k === "agent.launch.status") writes++; set(k, v); };
@@ -400,4 +401,168 @@ test("the Console says how a run without a film ended", async () => {
     await running;
   });
   assert.ok(b.some((l) => /Claude was stopped after 1 min: its campaign was stopped$/.test(l)), b.join("\n"));
+});
+
+/** Connects Google AI under AI Providers (and Claude too when asked). */
+const connectGoogle = (store: { setPref(k: string, v: unknown): void }, claude = false) =>
+  store.setPref("ai.providers", { google: { plan: "free", connectedAt: 2 }, ...(claude ? { claude: { plan: null, connectedAt: 1 } } : {}) });
+
+/** A lemo-opuscar skill folder, as Claude Code's plugin holds it. */
+function skillDir(root = tmp()): string {
+  const dir = join(root, "lemo-opuscar");
+  mkdirSync(join(dir, "scripts"), { recursive: true });
+  writeFileSync(join(dir, "SKILL.md"), "---\nname: lemo-opuscar\ndescription: films\n---\n");
+  writeFileSync(join(dir, "scripts", "setup.sh"), "echo LIB=x\n");
+  return dir;
+}
+
+/** Gives a task's brief this model. */
+function setModel(s: ReturnType<typeof setup>, id: number, model: string | null) {
+  const t = s.cs.task(id)!;
+  const c = t.choices as unknown as TaskChoices;
+  s.cs.updateTask(id, { choices: { ...t.choices, brief: { ...c.brief!, model } } });
+}
+
+test("agentFor: the brief's model picks the agent, a missing one goes to Claude first", () => {
+  const both = { claude: true, google: true };
+  assert.equal(agentFor("claude:claude-opus-5-5", both), "claude");
+  assert.equal(agentFor("google:default", both), "google");
+  assert.equal(agentFor(null, both), "claude");
+  assert.equal(agentFor(undefined, { claude: false, google: true }), "google");
+  assert.equal(agentFor("claude:claude-opus-5-5", { claude: false, google: true }), null, "a Claude brief waits for Claude");
+  assert.equal(agentFor("google:default", { claude: true, google: false }), null);
+  assert.equal(agentFor(null, { claude: false, google: false }), null);
+});
+
+test("with only Google AI connected, starts the Antigravity CLI with the skill and a workspace MCP config", async () => {
+  const s = setup({ enabled: false, skill: skillDir() });
+  connectGoogle(s.store);
+  const id = s.add(1);
+  const lines = await logged(async () => {
+    const running = s.launcher.tick();
+    await new Promise((r) => setImmediate(r));
+    const { cmd, args, opts } = s.calls[0];
+    assert.equal(cmd, "C:\\bin\\agy.exe");
+    assert.equal(args[0], "-p");
+    assert.ok(args[1].includes(`task ${id}`));
+    assert.deepEqual(args.slice(2), ["--dangerously-skip-permissions"], "no --model for a brief without one, and no Claude Code flags");
+    const films = join(s.dir, "films");
+    assert.equal(opts?.cwd, films);
+    assert.equal(opts?.env?.GEMINI_API_KEY, undefined);
+    assert.equal(opts?.env?.GOOGLE_API_KEY, undefined);
+    const mcpPath = join(films, ".agents", "mcp_config.json");
+    const mcp = JSON.parse(readFileSync(mcpPath, "utf8"));
+    assert.deepEqual(mcp.mcpServers.freeposter, { serverUrl: `http://127.0.0.1:${config.port}/mcp?tools=list_briefs,claim_brief,renew_brief,submit_brief,give_up_brief` });
+    assert.ok(existsSync(join(films, ".agents", "skills", "lemo-opuscar", "SKILL.md")), "the skill is given as a workspace skill");
+    assert.ok(existsSync(join(films, ".agents", "skills", "lemo-opuscar", "scripts", "setup.sh")));
+    assert.ok(!existsSync(join(s.dir, "agent-mcp.json")), "Claude Code's config isn't written");
+    assert.equal(s.store.pref("agent.launch.status"), `working on task ${id}`);
+    s.finish({ code: 0, stdout: "", stderr: "" });
+    await running;
+    assert.ok(!existsSync(mcpPath), "the MCP config is removed after the run");
+  });
+  assert.ok(lines.some((l) => l.startsWith(`[campaign task ${id}] Gemini started making`)), lines.join("\n"));
+  assert.ok(lines.some((l) => l.startsWith(`[campaign task ${id}] Gemini's run ended`)), lines.join("\n"));
+});
+
+test("Antigravity's MCP config carries the app password when one is set", async () => {
+  const s = setup({ enabled: false, skill: skillDir() });
+  connectGoogle(s.store);
+  s.add(1);
+  const before = config.appPassword;
+  config.appPassword = "s3cret";
+  try {
+    const running = s.launcher.tick();
+    await new Promise((r) => setImmediate(r));
+    const mcp = JSON.parse(readFileSync(join(s.dir, "films", ".agents", "mcp_config.json"), "utf8"));
+    assert.equal(mcp.mcpServers.freeposter.headers.Authorization, `Basic ${Buffer.from("freeposter:s3cret").toString("base64")}`);
+    s.finish({ code: 0, stdout: "", stderr: "" });
+    await running;
+  } finally {
+    config.appPassword = before;
+  }
+});
+
+test("a Gemini brief runs on its model; google:default on Antigravity's own", async () => {
+  const s = setup({ enabled: false, skill: skillDir() });
+  connectGoogle(s.store, true);
+  const id = s.add(1);
+  setModel(s, id, "google:gemini-4-hydrogen-high");
+  const running = s.launcher.tick();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(s.calls[0].cmd, "C:\\bin\\agy.exe", "a Gemini model goes to Antigravity even with Claude connected");
+  const args = s.calls[0].args;
+  assert.equal(args[args.indexOf("--model") + 1], "gemini-4-hydrogen-high");
+  s.finish({ code: 0, stdout: "", stderr: "" });
+  await running;
+
+  const d = setup({ enabled: false, skill: skillDir() });
+  connectGoogle(d.store);
+  setModel(d, d.add(1), "google:default");
+  const again = d.launcher.tick();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(d.calls[0].args.includes("--model"), false);
+  d.finish({ code: 0, stdout: "", stderr: "" });
+  await again;
+});
+
+test("a Claude brief isn't given to Gemini; a brief Gemini can make behind it is", async () => {
+  const s = setup({ enabled: false, skill: skillDir() });
+  connectGoogle(s.store);
+  const first = s.add(1);
+  setModel(s, first, "claude:claude-opus-5-5");
+  await s.launcher.tick();
+  assert.equal(s.calls.length, 0);
+  assert.equal(s.store.pref("agent.launch.status"), "idle");
+  const second = s.add(2);
+  const running = s.launcher.tick();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(s.calls.length, 1);
+  assert.ok(s.calls[0].args[1].includes(`task ${second}`));
+  s.finish({ code: 0, stdout: "", stderr: "" });
+  await running;
+});
+
+test("says so when the Antigravity CLI or the lemo-opuscar skill is missing", async () => {
+  const noAgy = setup({ enabled: false, agy: "", skill: skillDir() });
+  connectGoogle(noAgy.store);
+  noAgy.add(1);
+  await noAgy.launcher.tick();
+  assert.equal(noAgy.calls.length, 0);
+  assert.equal(noAgy.store.pref("agent.launch.status"), "Antigravity CLI not found");
+
+  const noSkill = setup({ enabled: false, skill: "" });
+  connectGoogle(noSkill.store);
+  noSkill.add(1);
+  await noSkill.launcher.tick();
+  assert.equal(noSkill.calls.length, 0);
+  assert.match(String(noSkill.store.pref("agent.launch.status")), /^lemo-opuscar skill not found/);
+});
+
+test("a skill already installed for Antigravity isn't copied into the films folder", async () => {
+  const home = tmp();
+  const installed = skillDir(join(home, ".gemini", "config", "skills"));
+  const s = setup({ enabled: false, skill: installed, home });
+  connectGoogle(s.store);
+  s.add(1);
+  const running = s.launcher.tick();
+  await new Promise((r) => setImmediate(r));
+  assert.ok(!existsSync(join(s.dir, "films", ".agents", "skills")));
+  s.finish({ code: 0, stdout: "", stderr: "" });
+  await running;
+});
+
+test("findLemoSkill: Antigravity's own install first, then Claude Code's newest plugin copy", () => {
+  const home = tmp();
+  assert.equal(findLemoSkill(home), "");
+  const market = skillDir(join(home, ".claude", "plugins", "marketplaces", "lemolab", "plugin", "skills"));
+  assert.equal(findLemoSkill(home), market);
+  const cache = join(home, ".claude", "plugins", "cache", "lemolab", "lemo-opuscar");
+  const old = skillDir(join(cache, "aaa", "skills"));
+  const fresh = skillDir(join(cache, "bbb", "skills"));
+  utimesSync(join(old, "SKILL.md"), new Date(2026, 0, 1), new Date(2026, 0, 1));
+  utimesSync(join(fresh, "SKILL.md"), new Date(2026, 10, 1), new Date(2026, 10, 1));
+  assert.equal(findLemoSkill(home), fresh);
+  const own = skillDir(join(home, ".gemini", "config", "skills"));
+  assert.equal(findLemoSkill(home), own);
 });

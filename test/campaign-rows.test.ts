@@ -201,12 +201,12 @@ test("rowIssues: the existing checks", () => {
 
 test("rowIssues: the Lemo and model rules, with the server's texts", () => {
   const c = ctx();
-  assert.deepEqual(j(R.rowIssues(row({ style: "lemo:ukiyo-e" }), c)), ["Lemo styles need a Claude model"]);
+  assert.deepEqual(j(R.rowIssues(row({ style: "lemo:ukiyo-e" }), c)), ["Lemo styles need a Claude or Gemini model"]);
   assert.deepEqual(j(R.rowIssues(row({ style: "lemo:ukiyo-e", model: OPUS }), c)), []);
   assert.deepEqual(j(R.rowIssues(row({ origin: "drive", text: "f", style: "lemo:ukiyo-e" }), c)), ["Drive videos can't use a Lemo style"]);
   assert.deepEqual(j(R.rowIssues(row({ origin: "agent", style: null }), c)), ["no editing style"]);
   assert.deepEqual(j(R.rowIssues(row({ origin: "agent", style: "bold" }), c)), ["an Agent row needs a Lemo style"]);
-  assert.deepEqual(j(R.rowIssues(row({ origin: "agent", style: "lemo:ukiyo-e", model: "openrouter:anthropic/claude-x" }), c)), ["an Agent row needs a Claude model"]);
+  assert.deepEqual(j(R.rowIssues(row({ origin: "agent", style: "lemo:ukiyo-e", model: "openrouter:anthropic/claude-x" }), c)), ["an Agent row needs a Claude or Gemini model"]);
   assert.deepEqual(j(R.rowIssues(row({ origin: "agent", style: "lemo:ukiyo-e", model: OPUS }), c)), []);
 });
 
@@ -260,10 +260,10 @@ test("parity: the server's and the browser's rowIssues agree", () => {
     ["runnable Drive", row({ origin: "drive", text: "clip", model: "claude:gone" })],
     ["no days, no length", row({ days: [], sec: null })],
     ["Drive with nothing", row({ origin: "drive", text: " ", time: null, sec: null })],
-    ["Lemo styles need a Claude model", row({ style: "lemo:ukiyo-e" })],
+    ["Lemo styles need a Claude or Gemini model", row({ style: "lemo:ukiyo-e" })],
     ["Lemo with a non-Claude model", row({ style: "lemo:ukiyo-e", model: "openrouter:anthropic/claude-x" })],
     ["an Agent row needs a Lemo style", row({ origin: "agent", style: "bold" })],
-    ["an Agent row needs a Claude model", row({ origin: "agent", style: "lemo:ukiyo-e", model: "openrouter:anthropic/claude-x" })],
+    ["an Agent row needs a Claude or Gemini model", row({ origin: "agent", style: "lemo:ukiyo-e", model: "openrouter:anthropic/claude-x" })],
     ["Drive videos can't use a Lemo style", row({ origin: "drive", text: "f", style: "lemo:ukiyo-e" })],
     ["model isn't available", row({ model: "claude:gone" })],
     ["no editing style", row({ origin: "agent", style: null })],
@@ -280,7 +280,7 @@ test("parity: the server's and the browser's rowIssues agree", () => {
     assert.deepEqual(j(R.rowIssues(r, bc)), server, name);
     server.forEach((x) => seen.add(x));
   }
-  for (const text of ["Lemo styles need a Claude model", "an Agent row needs a Lemo style", "an Agent row needs a Claude model",
+  for (const text of ["Lemo styles need a Claude or Gemini model", "an Agent row needs a Lemo style", "an Agent row needs a Claude or Gemini model",
     "Drive videos can't use a Lemo style", "claude:gone isn't available; pick another model", "no editing style",
     "lemo:nope is no longer in Lemo-Opuscar", "Lemo-Opuscar isn't installed on this computer"]) assert.ok(seen.has(text), `a case gives "${text}"`);
 });
@@ -353,4 +353,40 @@ test("reviveGone: a positive id the campaign no longer has becomes a fresh stand
   assert.deepEqual(out.rows.map((r: any) => r.id), [5, -2, -1]);
   assert.equal(out.lowest, -2);
   assert.deepEqual(j(R.reviveGone(rows, rows.slice(0, 2), 0)).rows.map((r: any) => r.id), [5, 6, -1]);
+});
+
+const GEMINI = "google:default";
+const google = { provider: "google", label: "Google AI (Gemini)", models: [{ id: GEMINI, name: "Google AI (Gemini) default" }] };
+const geminiOnly = (over: any = {}) => ctx({ models: [google], defaultFilm: GEMINI, ...over });
+
+test("isFilmModel: Claude and Google AI models, never OpenRouter's", () => {
+  assert.equal(R.isFilmModel(OPUS), true);
+  assert.equal(R.isFilmModel(GEMINI), true);
+  assert.equal(R.isFilmModel("openrouter:google/gemini-x"), false);
+  assert.equal(R.isFilmModel(null), false);
+});
+
+test("with only Google AI connected, Agent rows are offered, with Gemini's models and Lemo styles", () => {
+  const c = geminiOnly();
+  assert.equal(R.filmAgentConnected(c), true);
+  assert.equal(R.claudeConnected(c), false);
+  assert.ok(j(R.originOptions(row(), c)).some((o: any) => o.value === "agent"));
+  const m = j(R.modelOptions(row({ origin: "agent", model: null }), c));
+  assert.deepEqual(m[0].options, [{ value: "", label: "Default (Antigravity's setting)" }]);
+  assert.deepEqual(m.slice(1).map((x: any) => x.label), ["Google AI (Gemini)"]);
+  const styles = j(R.styleGroups(row({ origin: "agent", style: null, model: GEMINI }), c));
+  assert.deepEqual(styles.map((x: any) => x.label), ["Lemo-Opuscar films (Gemini): Explainer", "Lemo-Opuscar films (Gemini): Painting"]);
+  assert.deepEqual(j(R.rowIssues(row({ origin: "agent", style: "lemo:ukiyo-e", model: GEMINI }), c)), []);
+  assert.deepEqual(j(R.rowIssues(row({ style: "lemo:ukiyo-e", model: GEMINI }), c)), []);
+});
+
+test("picking a Lemo style with Use AI settings switches to Gemini when only Google AI is connected", () => {
+  assert.deepEqual(change(row(), "style", "lemo:ukiyo-e", geminiOnly()), { row: row({ style: "lemo:ukiyo-e", model: GEMINI }), flash: "model" });
+  // Without defaultFilm (an older server), it falls back to the default Claude model.
+  assert.deepEqual(change(row(), "style", "lemo:ukiyo-e"), { row: row({ style: "lemo:ukiyo-e", model: OPUS }), flash: "model" });
+});
+
+test("an Agent row keeps a Gemini model; switching to Agent from OpenRouter takes the default film model", () => {
+  assert.deepEqual(change(row({ model: GEMINI, style: "lemo:ukiyo-e" }), "origin", "agent", geminiOnly()), { row: row({ origin: "agent", model: GEMINI, style: "lemo:ukiyo-e" }) });
+  assert.deepEqual(change(row({ model: "openrouter:anthropic/claude-x" }), "origin", "agent", geminiOnly()), { row: row({ origin: "agent", model: GEMINI }), flash: "model" });
 });

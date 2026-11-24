@@ -23,7 +23,7 @@ import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { defaultSetId, defaultTikTok, setAccounts } from "../accounts.ts";
 import { OverBudget } from "../ai/budget.ts";
-import { claudeConnected, type AiService } from "../ai/router.ts";
+import { claudeConnected, googleConnected, type AiService } from "../ai/router.ts";
 import { compareLabels, scoreVideos } from "../analytics/score.ts";
 import { AnalyticsStore } from "../analytics/store.ts";
 import { dataDir } from "../config.ts";
@@ -39,6 +39,7 @@ import type { ReviewRequest, ReviewService, Subject } from "../review/service.ts
 import { planRetirements, type Retirement } from "./remake.ts";
 import { ROW_INSTRUCTION_BASE, rowIdHex, type Row } from "./rows.ts";
 import { BRIEF_LEAD_HOURS, CLAUDE_LEAD_HOURS, MAX_BRIEF_OFFERS, REVIEW_BUFFER_MINUTES, buildBrief, giveUpBrief, type Brief, type Delivery, type Lease, type Progress } from "./briefs.ts";
+import { AGENT_NAME, agentFor } from "./launcher.ts";
 import { lookByKey, type Look } from "./looks.ts";
 import { buildGeneratedProduction, writeScript, type Script } from "./script.ts";
 import { DAYS, type MakeInstruction, type Pick as ValuePick, type PostInstruction } from "./spec.ts";
@@ -657,9 +658,13 @@ export class CampaignWorker {
     log(t, `brief for a ${key} film, due by ${new Date(brief.deadline).toLocaleString()}`);
   }
 
-  /** Whether FreePoster starts Claude itself for open briefs (Claude is connected), so no other agent should claim them. */
-  private launching(): boolean {
-    return claudeConnected(this.store);
+  /**
+   * The film agent FreePoster starts itself for a brief with this model (Claude, or Gemini through Google AI, when
+   * connected), so no other agent should claim it; null when it's another agent's to take.
+   */
+  private launching(model: string | null | undefined): string | null {
+    const agent = agentFor(model, { claude: claudeConnected(this.store), google: googleConnected(this.store) });
+    return agent ? AGENT_NAME[agent] : null;
   }
 
   /** brief.requested, once per round of the task's brief. */
@@ -669,8 +674,8 @@ export class CampaignWorker {
     const keeping = (t.choices as unknown as TaskChoices).postTime === null;
     const posts = brief.postAt !== null ? `posting ${new Date(brief.postAt).toLocaleString()}`
       : keeping ? "a video to keep" : "posting at the next free time once approved";
-    const launching = this.launching();
-    const next = launching ? "FreePoster is starting Claude on this computer to make it; don't claim it" : `call claim_brief with task_id ${t.id}`;
+    const launching = this.launching(brief.model);
+    const next = launching ? `FreePoster is starting ${launching} on this computer to make it; don't claim it` : `call claim_brief with task_id ${t.id}`;
     queueEvent(this.store, "brief.requested", `brief.requested:${t.id}:${round}`,
       {
         campaign_id: t.campaignId, task_id: t.id, campaign_task_id: t.id, look: brief.look, deadline: new Date(brief.deadline).toISOString(), post_at: brief.postAt === null ? null : new Date(brief.postAt).toISOString(),
@@ -707,9 +712,9 @@ export class CampaignWorker {
     if (!still || still.holder !== judged.holder || still.until !== judged.until || still.token !== judged.token) return;
     const offers = c.offers ?? 0;
     const last = offers >= MAX_BRIEF_OFFERS;
-    const launching = this.launching();
+    const launching = this.launching(c.brief.model);
     const next = last ? "it has no offers left"
-      : launching ? "FreePoster is starting Claude on this computer for it again; don't claim it"
+      : launching ? `FreePoster is starting ${launching} on this computer for it again; don't claim it`
       : `call claim_brief with task_id ${t.id} to take it on`;
     queueEvent(this.store, "brief.expired", `brief.expired:${t.id}:${c.briefRound ?? 1}:${offers}`,
       { campaign_id: t.campaignId, task_id: t.id, campaign_task_id: t.id, look: c.brief.look, holder: c.lease.holder, offers, ...(launching ? { handled_by: "freeposter" } : {}) },
