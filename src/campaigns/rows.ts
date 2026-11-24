@@ -20,7 +20,7 @@ export interface Row {
    * lemo-opuscar skill makes the film in. Null only on an Agent row whose style hasn't been chosen.
    */
   style: string | null;
-  /** the AI model (`provider:model`) that writes it; null means the AI settings' choice (Create) or Claude Code's own setting (Agent) */
+  /** the AI model (`provider:model`) that writes it; every row names one, null only when no model is on offer (a Drive row, or no AI connected) */
   model: string | null;
   /** a video type id, or none */
   type: number | null;
@@ -140,6 +140,9 @@ export function parseRows(raw: unknown, vocab: Vocabulary, known?: Set<number>):
       : vocab.styles.find((s) => s.id.toLowerCase() === (r.style as string).toLowerCase())?.id;
     if (style === undefined) problem(`style must be one of the editing styles (${vocab.styles.map((s) => s.id).join(", ")}) or a Lemo style like "lemo:ukiyo-e"`);
     if (r.model !== null && !isModelId(r.model)) problem('model must be a model id like "claude:claude-opus-5-5", or null');
+    else if (r.model !== null && vocab.disabledModels?.includes(r.model)) problem(`${r.model} is turned off under AI Providers; turn it on there or pick another model`);
+    // Every row names its model (a Drive row makes nothing, so it has none): with models to pick from, no model isn't a choice.
+    else if (r.model === null && r.origin !== "drive" && vocab.models?.length) problem("no model picked");
     // Compacted results drop null and empty fields, so a missing one reads as null (text: "").
     if (r.type !== null && r.type !== undefined && !(typeof r.type === "number" && vocab.types.some((t) => t.id === r.type))) problem(`no video type with id ${String(r.type)}`);
     if (r.time === null || r.time === undefined) problems.push(`${name}: needs a post time`);
@@ -185,6 +188,7 @@ export function rowIssues(r: Row, vocab?: Vocabulary): string[] {
     if (!vocab.looks.length) out.push("Lemo-Opuscar isn't installed on this computer");
     else if (!vocab.looks.some((l) => l.key === r.style)) out.push(`${r.style} is no longer in Lemo-Opuscar`);
   }
+  if (r.origin !== "drive" && r.model === null && vocab?.models?.length) out.push("no model picked");
   if (r.origin !== "drive" && r.model !== null && vocab?.models && !vocab.models.includes(r.model)) out.push(`${r.model} isn't available; pick another model`);
   return out;
 }

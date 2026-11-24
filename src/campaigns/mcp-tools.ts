@@ -3,14 +3,14 @@
 // agent may stop every campaign, none may start them again (only the window's Resume does).
 import type { Store } from "../db.ts";
 import type { ToolDef } from "../produce/mcp-tools.ts";
-import { applyAgentChange, campaignVocabulary, modelIds, REASON_MAX, type AgentChange } from "./autorun.ts";
+import { applyAgentChange, campaignVocabulary, disabledModelIds, modelIds, REASON_MAX, type AgentChange } from "./autorun.ts";
 import { CampaignStore, type Campaign, type LibraryKind } from "./store.ts";
 import { campaignBrief, iso } from "./view.ts";
 import type { CampaignWorker } from "./worker.ts";
 
 type Args = Record<string, unknown>;
 
-export const CAMPAIGN_INSTRUCTIONS = `Campaigns run the user's weekly posting plans by themselves (list_campaigns, get_campaign), and get_analytics / get_video_metrics show how videos did. Each campaign is a table: one row per kind of video, on the days it ticks. Only a campaign the user switched Autorun on for can be changed by you: update_campaign (its whole table of rows) and add_library_entry (new hooks and angles), each with a reason the user sees. Autorun can never change CTAs or use one the campaign doesn't already use, change a type's "post without approval", start or stop a campaign, or turn Autorun or the kill switch on or off. Every change is logged (under the name your MCP client gave, which is advisory) and the user can undo it; hooks and angles you add belong to that campaign. A row has an origin (create, drive or agent), a model (\"provider:model\", or null: the AI settings on a Create row, the film agent's own setting on an Agent row) and a style: an editing style id, or a Lemo style key like \"lemo:ukiyo-e\". Put Lemo styles in style; a row has no separate look field. A Lemo style needs a Claude or Gemini model (the Claude or Google AI provider, \"claude:...\" or \"google:...\"; OpenRouter's models don't count), and a Drive row can't use one. FreePoster never edits a Lemo film afterwards. stop_campaigns stops every campaign at once (the user asked you to, or something is clearly wrong); only the user can resume them.`;
+export const CAMPAIGN_INSTRUCTIONS = `Campaigns run the user's weekly posting plans by themselves (list_campaigns, get_campaign), and get_analytics / get_video_metrics show how videos did. Each campaign is a table: one row per kind of video, on the days it ticks. Only a campaign the user switched Autorun on for can be changed by you: update_campaign (its whole table of rows) and add_library_entry (new hooks and angles), each with a reason the user sees. Autorun can never change CTAs or use one the campaign doesn't already use, change a type's "post without approval", start or stop a campaign, or turn Autorun or the kill switch on or off. Every change is logged (under the name your MCP client gave, which is advisory) and the user can undo it; hooks and angles you add belong to that campaign. A row has an origin (create, drive or agent), a model (\"provider:model\": the model that writes it; every Create and Agent row names one, and get_campaign lists the ones on offer — the models left in use under AI Providers; a Drive row has none) and a style: an editing style id, or a Lemo style key like \"lemo:ukiyo-e\". Put Lemo styles in style; a row has no separate look field. A Lemo style needs a Claude or Gemini model (the Claude or Google AI provider, \"claude:...\" or \"google:...\"; OpenRouter's models don't count), and a Drive row can't use one. FreePoster never edits a Lemo film afterwards. stop_campaigns stops every campaign at once (the user asked you to, or something is clearly wrong); only the user can resume them.`;
 
 export function campaignTools(opts: {
   store: Store;
@@ -42,7 +42,7 @@ export function campaignTools(opts: {
   const apply = async (cid: number, change: AgentChange, reason: string) => {
     const campaigns = cs();
     campaign(cid);
-    const r = await applyAgentChange(campaigns, cid, change, opts.agent(), reason, campaignVocabulary(store, campaigns, modelIds(opts.worker()?.ai)));
+    const r = await applyAgentChange(campaigns, cid, change, opts.agent(), reason, campaignVocabulary(store, campaigns, modelIds(opts.worker()?.ai), disabledModelIds(opts.worker()?.ai)));
     if (!r.ok) throw fail(`refused: ${r.problems.join("; ")}`);
     return r;
   };
@@ -71,11 +71,13 @@ export function campaignTools(opts: {
       annotations: { readOnlyHint: true, openWorldHint: false },
       async run(args) {
         const c = campaign(id(args));
-        const vocab = campaignVocabulary(store, cs());
+        const vocab = campaignVocabulary(store, cs(), modelIds(opts.worker()?.ai));
         return {
           ...brief(c), rows: c.rows, compiled: c.compiled, account_set_id: c.accountSetId,
           excluded: cs().excluded(c.id), killed: cs().killed(),
           styles: vocab.styles.map((s) => s.id), types: vocab.types,
+          /** the models a row may name (`provider:model`): only the ones left in use under AI Providers */
+          models: vocab.models ?? [],
           changes: cs().changes(c.id).map((ch) => ({ id: ch.id, agent: ch.agent, at: iso(ch.at), reason: ch.reason, undone_at: iso(ch.undoneAt) })),
         };
       },
@@ -83,7 +85,7 @@ export function campaignTools(opts: {
     {
       name: "update_campaign",
       title: "Change an Autorun campaign",
-      description: "Changes a campaign the user switched Autorun on for: its whole table, as get_campaign shows its rows (send every row, changed or not; a row left out is removed). Each row: id (keep a row's id when changing it; send null for a new row, and FreePoster gives it one — the Campaigns tab shows ids as 7 hex digits), quantity (1-10 videos), hook / angle / cta ({\"pick\": \"random\"}, {\"pick\": \"best\"} or {\"pick\": \"named\", \"id\": <library id>}), style (an editing style id, or a Lemo style like \"lemo:ukiyo-e\"), model (the AI model that writes it, as \"provider:model\", or null for the default), type (a video type id or null), time (24-hour \"HH:MM\", required), days (at least one of sun, mon, tue, wed, thu, fri, sat), sec (length, 5-300 seconds), origin (\"create\": a generated video; text is extra instructions for its script; or \"drive\": a recorded Drive file; text is the file name, the part of its Drive filename before the first underscore; its hook, angle, cta and sec only label it for analytics) and text. Checked strictly. A changed row's videos that haven't started posting are made again from the new row (a time-only change just moves them), and a deleted row, an unticked day or a lower quantity removes the videos no longer asked for; videos already posting keep going. Undoing a change doesn't touch tasks made in between. It may only use CTAs, and types that post without approval, the campaign already uses, and never another campaign's own hooks or angles. reason is required and the user sees it; they can undo the change. The change is logged under the name your MCP client introduced itself with (advisory: FreePoster can't verify it).",
+      description: "Changes a campaign the user switched Autorun on for: its whole table, as get_campaign shows its rows (send every row, changed or not; a row left out is removed). Each row: id (keep a row's id when changing it; send null for a new row, and FreePoster gives it one — the Campaigns tab shows ids as 7 hex digits), quantity (1-10 videos), hook / angle / cta ({\"pick\": \"random\"}, {\"pick\": \"best\"} or {\"pick\": \"named\", \"id\": <library id>}), style (an editing style id, or a Lemo style like \"lemo:ukiyo-e\"), model (the AI model that writes it, as \"provider:model\"; required on a Create or Agent row, and get_campaign lists the ones on offer), type (a video type id or null), time (24-hour \"HH:MM\", required), days (at least one of sun, mon, tue, wed, thu, fri, sat), sec (length, 5-300 seconds), origin (\"create\": a generated video; text is extra instructions for its script; or \"drive\": a recorded Drive file; text is the file name, the part of its Drive filename before the first underscore; its hook, angle, cta and sec only label it for analytics) and text. Checked strictly. A changed row's videos that haven't started posting are made again from the new row (a time-only change just moves them), and a deleted row, an unticked day or a lower quantity removes the videos no longer asked for; videos already posting keep going. Undoing a change doesn't touch tasks made in between. It may only use CTAs, and types that post without approval, the campaign already uses, and never another campaign's own hooks or angles. reason is required and the user sees it; they can undo the change. The change is logged under the name your MCP client introduced itself with (advisory: FreePoster can't verify it).",
       inputSchema: {
         type: "object",
         properties: {

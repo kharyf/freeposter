@@ -100,15 +100,21 @@ test("an Agent row offers only Lemo styles and only Claude models", () => {
   assert.deepEqual(out.map((x: any) => x.label), ["Lemo-Opuscar films (Claude): Explainer", "Lemo-Opuscar films (Claude): Painting"]);
   assert.equal(out.some((x: any) => x.options.some((o: any) => o.disabled)), false);
   const m = j(R.modelOptions(row({ origin: "agent", model: null }), ctx()));
-  assert.deepEqual(m[0].options, [{ value: "", label: "Default (Claude Code's setting)" }]);
+  assert.deepEqual(m[0].options, [{ value: "", label: "Choose a model" }]);
   assert.deepEqual(m.slice(1).map((x: any) => x.label), ["Claude"]);
 });
 
-test("a Create row's models: Use AI settings, then each connected provider", () => {
+test("a Create row's models: each connected provider, and a row that hasn't picked one says so", () => {
   const m = j(R.modelOptions(row(), ctx()));
-  assert.deepEqual(m[0].options, [{ value: "", label: "Use AI settings" }]);
+  assert.deepEqual(m[0].options, [{ value: "", label: "Choose a model" }]);
   assert.deepEqual(m.slice(1).map((x: any) => x.label), ["Claude", "OpenRouter"]);
   assert.deepEqual(m[1].options[0], { value: OPUS, label: "Opus 5.5" });
+});
+
+test("with no model on offer at all, the only choice says so (the server lets such a row through)", () => {
+  const m = j(R.modelOptions(row(), ctx({ models: [] })));
+  assert.deepEqual(m, [{ label: "", options: [{ value: "", label: "No AI model available" }] }]);
+  assert.deepEqual(j(R.rowIssues(row(), ctx({ models: [] }))), [], "no models to pick from: nothing to pick");
 });
 
 test("a model no longer available stays selected and is flagged", () => {
@@ -132,7 +138,7 @@ test("an empty catalogue offers no Lemo options (the row's issues say why)", () 
   assert.deepEqual(j(R.styleGroups(row({ model: OPUS }), ctx({ lemo: [] }))).map((x: any) => x.label), ["FreePoster edits"]);
 });
 
-test("picking a Lemo style with Use AI settings switches to the default Claude model and flashes it", () => {
+test("picking a Lemo style on a row with no model yet switches to the default Claude model and flashes it", () => {
   const r = change(row(), "style", "lemo:ukiyo-e");
   assert.equal(r.row.style, "lemo:ukiyo-e");
   assert.equal(r.row.model, OPUS);
@@ -194,18 +200,19 @@ test("applyChange returns a new row", () => {
 });
 
 test("rowIssues: the existing checks", () => {
-  assert.deepEqual(j(R.rowIssues(row(), ctx())), []);
-  assert.deepEqual(j(R.rowIssues(row({ days: [], sec: null }), ctx())), ["no days ticked", "no length"]);
+  assert.deepEqual(j(R.rowIssues(row({ model: OPUS }), ctx())), []);
+  assert.deepEqual(j(R.rowIssues(row(), ctx())), ["no model picked"], "a row must name its model");
+  assert.deepEqual(j(R.rowIssues(row({ days: [], sec: null }), ctx())), ["no days ticked", "no length", "no model picked"]);
   assert.deepEqual(j(R.rowIssues(row({ origin: "drive", text: " ", time: null, sec: null }), ctx())), ["no file name", "a Drive video needs a time"]);
 });
 
 test("rowIssues: the Lemo and model rules, with the server's texts", () => {
   const c = ctx();
-  assert.deepEqual(j(R.rowIssues(row({ style: "lemo:ukiyo-e" }), c)), ["Lemo styles need a Claude or Gemini model"]);
+  assert.deepEqual(j(R.rowIssues(row({ style: "lemo:ukiyo-e" }), c)), ["Lemo styles need a Claude or Gemini model", "no model picked"]);
   assert.deepEqual(j(R.rowIssues(row({ style: "lemo:ukiyo-e", model: OPUS }), c)), []);
   assert.deepEqual(j(R.rowIssues(row({ origin: "drive", text: "f", style: "lemo:ukiyo-e" }), c)), ["Drive videos can't use a Lemo style"]);
-  assert.deepEqual(j(R.rowIssues(row({ origin: "agent", style: null }), c)), ["no editing style"]);
-  assert.deepEqual(j(R.rowIssues(row({ origin: "agent", style: "bold" }), c)), ["an Agent row needs a Lemo style"]);
+  assert.deepEqual(j(R.rowIssues(row({ origin: "agent", style: null }), c)), ["no editing style", "no model picked"]);
+  assert.deepEqual(j(R.rowIssues(row({ origin: "agent", style: "bold" }), c)), ["an Agent row needs a Lemo style", "no model picked"]);
   assert.deepEqual(j(R.rowIssues(row({ origin: "agent", style: "lemo:ukiyo-e", model: "openrouter:anthropic/claude-x" }), c)), ["an Agent row needs a Claude or Gemini model"]);
   assert.deepEqual(j(R.rowIssues(row({ origin: "agent", style: "lemo:ukiyo-e", model: OPUS }), c)), []);
 });
@@ -227,7 +234,7 @@ test("rowIssues: an empty catalogue is worded by whether Lemo-Opuscar is install
 
 test("rowIssues: a catalogue filled by sync_looks runs Lemo rows even when the library isn't on this computer", () => {
   assert.deepEqual(j(R.rowIssues(row({ style: "lemo:ukiyo-e", model: OPUS }), ctx({ lemoInstalled: false }))), []);
-  assert.deepEqual(j(R.rowIssues(row({ origin: "agent", style: "lemo:ukiyo-e" }), ctx({ lemoInstalled: false }))), []);
+  assert.deepEqual(j(R.rowIssues(row({ origin: "agent", style: "lemo:ukiyo-e" }), ctx({ lemoInstalled: false }))), ["no model picked"]);
 });
 
 test("switching an Agent row with a Lemo style and the default model to Create picks the default Claude model", () => {
@@ -237,7 +244,7 @@ test("switching an Agent row with a Lemo style and the default model to Create p
   assert.equal(r.flash, "model");
   assert.deepEqual(j(R.rowIssues(r.row, ctx())), []);
   const plain = change(row({ origin: "agent", style: "bold", model: null }), "origin", "create");
-  assert.equal(plain.row.model, null, "a FreePoster style keeps Use AI settings");
+  assert.equal(plain.row.model, null, "a FreePoster style leaves the model to be picked");
   assert.equal(plain.flash, undefined);
   const chosen = change(row({ origin: "agent", style: "lemo:ukiyo-e", model: "claude:claude-sonnet-5-5" }), "origin", "create");
   assert.equal(chosen.row.model, "claude:claude-sonnet-5-5", "a chosen model is kept");
@@ -372,7 +379,7 @@ test("with only Google AI connected, Agent rows are offered, with Gemini's model
   assert.equal(R.claudeConnected(c), false);
   assert.ok(j(R.originOptions(row(), c)).some((o: any) => o.value === "agent"));
   const m = j(R.modelOptions(row({ origin: "agent", model: null }), c));
-  assert.deepEqual(m[0].options, [{ value: "", label: "Default (Antigravity's setting)" }]);
+  assert.deepEqual(m[0].options, [{ value: "", label: "Choose a model" }]);
   assert.deepEqual(m.slice(1).map((x: any) => x.label), ["Google AI (Gemini)"]);
   const styles = j(R.styleGroups(row({ origin: "agent", style: null, model: GEMINI }), c));
   assert.deepEqual(styles.map((x: any) => x.label), ["Lemo-Opuscar films (Gemini): Explainer", "Lemo-Opuscar films (Gemini): Painting"]);
@@ -380,7 +387,7 @@ test("with only Google AI connected, Agent rows are offered, with Gemini's model
   assert.deepEqual(j(R.rowIssues(row({ style: "lemo:ukiyo-e", model: GEMINI }), c)), []);
 });
 
-test("picking a Lemo style with Use AI settings switches to Gemini when only Google AI is connected", () => {
+test("picking a Lemo style on a row with no model yet switches to Gemini when only Google AI is connected", () => {
   assert.deepEqual(change(row(), "style", "lemo:ukiyo-e", geminiOnly()), { row: row({ style: "lemo:ukiyo-e", model: GEMINI }), flash: "model" });
   // Without defaultFilm (an older server), it falls back to the default Claude model.
   assert.deepEqual(change(row(), "style", "lemo:ukiyo-e"), { row: row({ style: "lemo:ukiyo-e", model: OPUS }), flash: "model" });

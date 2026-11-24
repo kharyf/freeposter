@@ -151,8 +151,26 @@ test("issue: a model that isn't available", () => {
   assert.deepEqual(issues(create({ model: "chatgpt:default" }), v), ["chatgpt:default isn't available; pick another model"]);
   assert.deepEqual(issues(agent({ model: "claude:claude-sonnet-5-5" }), v), ["claude:claude-sonnet-5-5 isn't available; pick another model"]);
   assert.deepEqual(issues(create({ model: "claude:claude-opus-5-5" }), v), []);
-  assert.deepEqual(issues(create({ model: null }), v), []);
+  // With models to pick from, a row with none is refused on save and shown as not running yet.
+  const noModel = parseRows([create({ model: null })], { ...vocab, ...v });
+  assert.equal(noModel.ok, false, "no model isn't a choice while there are models");
+  assert.ok(!noModel.ok && noModel.problems.some((p) => p.includes("no model picked")), noModel.ok ? "" : noModel.problems.join("; "));
+  assert.deepEqual(issues(create({ model: null }), { ...vocab, models: [] }), [], "with nothing on offer a model-less row is fine");
   assert.deepEqual(issues(create({ model: "chatgpt:default" })), [], "without models the availability isn't checked");
+});
+
+test("issue: a model the user turned off under AI Providers is refused on save", () => {
+  const on = ["claude:claude-opus-5-5", "claude:claude-sonnet-5-5"];
+  const off = { ...vocab, models: on, disabledModels: ["claude:claude-sonnet-5-5"] };
+  const r = parseRows([create({ model: "claude:claude-sonnet-5-5" })], off);
+  assert.equal(r.ok, false, "a turned-off model can't be saved");
+  assert.ok(!r.ok && r.problems.some((p) => p.includes("turned off under AI Providers")), r.ok ? "" : r.problems.join("; "));
+  // The model still runs when it's on, and turning one off never blocks a Drive row (it has no model).
+  assert.equal(parseRows([create({ model: "claude:claude-sonnet-5-5" })], { ...vocab, models: on }).ok, true);
+  assert.equal(parseRows([drive({ model: null })], off).ok, true, "a Drive row makes nothing, so its model isn't asked for");
+  // Disconnecting a provider doesn't block saving: the model just isn't in `models` any more, and rowIssues says so.
+  assert.deepEqual(issues(create({ model: "claude:claude-sonnet-5-5" }), { ...vocab, models: on.slice(0, 1) }),
+    ["claude:claude-sonnet-5-5 isn't available; pick another model"]);
 });
 
 test("rowIssues for agent rows", () => {

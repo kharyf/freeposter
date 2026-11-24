@@ -82,6 +82,8 @@ export interface Vocabulary {
   looks?: { key: string }[];
   /** the models (`provider:model`) that can be picked right now; absent means they aren't checked */
   models?: string[];
+  /** the models the user turned off under AI Providers: never picked again, whatever provider is connected */
+  disabledModels?: string[];
 }
 
 const MODEL_ID = /^[a-z]+:\S{1,200}$/;

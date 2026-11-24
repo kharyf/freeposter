@@ -4,10 +4,19 @@ import { pkceChallenge } from "../crypto.ts";
 import { schemaProblem } from "./answer.ts";
 import { strictSchema, type Answer, type Question } from "./providers.ts";
 
-const API = "https://openrouter.ai/api/v1";
+const DEFAULT_API = "https://openrouter.ai/api/v1";
 /** Reads images, follows a JSON schema, and costs a fraction of a cent per caption. */
 export const DEFAULT_MODEL = "anthropic/claude-haiku-5.5";
 const HEADERS = { "HTTP-Referer": "https://github.com/kharyf/freeposter", "X-Title": "FreePoster" };
+
+/**
+ * The base URL every call uses. Defaults to OpenRouter's own API; the user can point it at a compatible endpoint
+ * (like FreeLLMAPI) under AI Providers. Only the `/v1` path is used: auth, models, chat/completions, credits, key.
+ */
+let apiBase = DEFAULT_API;
+export const setApiBase = (url: string) => { apiBase = url || DEFAULT_API; };
+export const getApiBase = () => apiBase;
+export { DEFAULT_API };
 
 export type Fetch = typeof fetch;
 
@@ -20,12 +29,14 @@ export function authorizeUrl(callbackUrl: string, state: string, verifier: strin
     state,
     key_label: "FreePoster",
   });
+  // OAuth always goes through OpenRouter itself, even when the API endpoint is a custom proxy.
   return `https://openrouter.ai/auth?${q}`;
 }
 
 /** The callback's one-time code → an API key on the user's account. */
 export async function exchangeCode(code: string, verifier: string, f: Fetch = fetch): Promise<string> {
-  const res = await f(`${API}/auth/keys`, {
+  // Key exchange always goes through OpenRouter itself — a custom proxy doesn't handle OAuth.
+  const res = await f(`${DEFAULT_API}/auth/keys`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ code, code_verifier: verifier, code_challenge_method: "S256" }),
@@ -48,10 +59,13 @@ export interface ModelInfo {
 
 let modelCache: { at: number; models: ModelInfo[] } | undefined;
 
+/** Drops the cached model list so the next call fetches fresh (e.g. after the endpoint changes). */
+export const clearModelCache = () => { modelCache = undefined; };
+
 /** Models that can follow a JSON schema (all FreePoster's questions need one), cheapest first. Cached 6 hours. */
 export async function models(f: Fetch = fetch): Promise<ModelInfo[]> {
   if (modelCache && Date.now() - modelCache.at < 6 * 3600_000) return modelCache.models;
-  const res = await f(`${API}/models`, { headers: HEADERS, signal: AbortSignal.timeout(30_000) });
+  const res = await f(`${apiBase}/models`, { headers: HEADERS, signal: AbortSignal.timeout(30_000) });
   if (!res.ok) throw new Error(`OpenRouter's model list didn't load (HTTP ${res.status})`);
   const { data } = await res.json() as { data: any[] };
   const list: ModelInfo[] = data
@@ -75,7 +89,7 @@ export async function ask<T>(q: Question, key: string, model: string, f: Fetch =
   const content = images.length
     ? [{ type: "text", text: q.prompt }, ...images.map((img) => ({ type: "image_url", image_url: { url: `data:image/jpeg;base64,${img.toString("base64")}` } }))]
     : q.prompt;
-  const res = await f(`${API}/chat/completions`, {
+  const res = await f(`${apiBase}/chat/completions`, {
     method: "POST",
     headers: { ...HEADERS, authorization: `Bearer ${key}`, "content-type": "application/json" },
     body: JSON.stringify({
@@ -128,10 +142,11 @@ export interface Balance {
  */
 export async function balance(key: string, f: Fetch = fetch): Promise<Balance> {
   const get = async (path: string) => {
-    const res = await f(`${API}${path}`, { headers: { ...HEADERS, authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(15_000) });
+    const res = await f(`${DEFAULT_API}${path}`, { headers: { ...HEADERS, authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(15_000) });
     return res.ok ? ((await res.json()) as any).data : null;
   };
   try {
+    // Balance and key info always go through OpenRouter itself — a custom proxy has no account to query.
     const [credits, info] = await Promise.all([get("/credits").catch(() => null), get("/key")]);
     if (!info && !credits) return { credits: null, keyRemaining: null, keyUsage: null, error: "OpenRouter didn't answer" };
     const remaining = info?.effective_budget?.remaining_usd ?? info?.limit_remaining;

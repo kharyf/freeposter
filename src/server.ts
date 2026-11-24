@@ -364,28 +364,46 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   // ---- AI providers ----
 
   const isProvider = (id: string): id is ProviderId => (PROVIDER_IDS as readonly string[]).includes(id);
+
+  /**
+   * Each model some campaign row names, with how many rows pick it. The campaign store is built further down this
+   * function, but this only runs when a request comes in: a model still in use can't be turned off under AI Providers.
+   */
+  function modelsInUse(): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const c of campaignStore.campaigns()) for (const r of c.rows) {
+      if (r.origin === "drive" || !r.model) continue; // a Drive row makes nothing, so its model is never asked for
+      out[r.model] = (out[r.model] ?? 0) + 1;
+    }
+    return out;
+  }
+
   const aiRoute = <B>(fn: (id: ProviderId, body: B) => Promise<unknown> | unknown) =>
     async (req: { params: { id: string }; body?: B }, reply: FastifyReply) => {
       if (!ai) return reply.code(404).send({ error: "AI providers aren't available" });
       if (!isProvider(req.params.id)) return reply.code(404).send({ error: "unknown AI provider" });
       try {
         await fn(req.params.id, (req.body ?? {}) as B);
-        return ai.view();
+        return ai.view(modelsInUse());
       } catch (err) {
         return reply.code(400).send({ error: (err as Error).message });
       }
     };
 
-  app.get("/api/ai", async (_req, reply) => (ai ? ai.view() : reply.code(404).send({ error: "AI providers aren't available" })));
+  app.get("/api/ai", async (_req, reply) => (ai ? ai.view(modelsInUse()) : reply.code(404).send({ error: "AI providers aren't available" })));
   app.post<{ Params: { id: string }; Body: { plan?: unknown; path?: unknown } }>("/api/ai/:id/connect", aiRoute<{ plan?: unknown; path?: unknown }>((id, b) =>
     ai!.connect(id, { plan: typeof b.plan === "string" && b.plan ? b.plan : null, path: typeof b.path === "string" ? b.path : undefined })));
   app.post<{ Params: { id: string } }>("/api/ai/:id/test", aiRoute((id) => ai!.test(id)));
   app.delete<{ Params: { id: string } }>("/api/ai/:id", aiRoute((id) => ai!.disconnect(id)));
-  app.put<{ Params: { id: string }; Body: { plan?: unknown; model?: unknown } }>("/api/ai/:id", aiRoute<{ plan?: unknown; model?: unknown }>(async (id, b) => {
+  app.put<{ Params: { id: string }; Body: { plan?: unknown; model?: unknown; endpoint?: unknown } }>("/api/ai/:id", aiRoute<{ plan?: unknown; model?: unknown; endpoint?: unknown }>(async (id, b) => {
     if ("plan" in b) ai!.setPlan(id, typeof b.plan === "string" && b.plan ? b.plan : null);
     if ("model" in b) {
       if (id !== "openrouter" || typeof b.model !== "string") throw new Error("only OpenRouter has a model to choose");
       await ai!.setModel(b.model);
+    }
+    if ("endpoint" in b) {
+      if (id !== "openrouter") throw new Error("only OpenRouter has a custom endpoint");
+      ai!.setEndpoint(typeof b.endpoint === "string" ? b.endpoint : "");
     }
   }));
   app.put<{ Body: { job?: unknown; order?: unknown } }>("/api/ai-ranking", async (req, reply) => {
@@ -395,7 +413,31 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
       return reply.code(400).send({ error: "give a job and the order of its providers" });
     }
     ai.setRanking(job as AiJob, order as ProviderId[]);
-    return ai.view();
+    return ai.view(modelsInUse());
+  });
+
+  /**
+   * In Use: a provider's model turned on or off. Off takes it out of every list FreePoster offers a model in, and a
+   * save refuses it; a model a campaign row still picks can't be turned off until those rows pick another.
+   */
+  app.put<{ Body: { model?: unknown; enabled?: unknown } }>("/api/ai-models", async (req, reply) => {
+    if (!ai) return reply.code(404).send({ error: "AI providers aren't available" });
+    const { model, enabled } = req.body ?? {};
+    if (typeof model !== "string" || typeof enabled !== "boolean") return reply.code(400).send({ error: "give a model id and whether it is in use" });
+    if (!enabled) {
+      const rows = modelsInUse()[model];
+      if (rows) {
+        return reply.code(400).send({
+          error: `${model} is still picked by ${rows} row${rows === 1 ? "" : "s"} of your campaigns; give those rows another model first`,
+        });
+      }
+    }
+    try {
+      ai.setModelEnabled(model, enabled);
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
+    return ai.view(modelsInUse());
   });
 
   // ---- setup ----

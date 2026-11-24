@@ -8,6 +8,7 @@ import { processTree, runProgram, unwrapCmd, type ProgramRun } from "../src/ai/c
 import * as openrouter from "../src/ai/openrouter.ts";
 import { PROVIDERS, strictSchema, type ProviderId, type Question } from "../src/ai/providers.ts";
 import { AiService } from "../src/ai/router.ts";
+import { CampaignStore } from "../src/campaigns/store.ts";
 import { publishers } from "../src/platforms/index.ts";
 import { Runner } from "../src/runner.ts";
 import { buildServer } from "../src/server.ts";
@@ -377,6 +378,57 @@ test("OpenRouter's panel: balance (or the key's spending when the balance is hid
 });
 
 // ---- the page's routes ----
+
+test("In Use: a model is turned off and on, and one a campaign row still picks stays on", async () => {
+  const store = newStore();
+  const { ai } = service({ claude: {}, chatgpt: {} }, store);
+  await ai.connect("chatgpt");
+  const cs = new CampaignStore(store);
+  const app = buildServer(store, new Runner(store, publishers, tmp()), publishers, {}, undefined, ai);
+  // One campaign row picks Sonnet: that model is in use.
+  const id = cs.create({ name: "Week", text: "", accountSetId: null, defaultPostTimes: [] });
+  cs.setRows(id, [{
+    id: 1, quantity: 1, hook: { pick: "random" }, angle: { pick: "random" }, cta: { pick: "random" }, style: "basic",
+    type: null, time: "09:00", days: ["tue"], sec: 30, origin: "create", model: "claude:claude-sonnet-5-5", text: "",
+  }]);
+
+  // The panel lists each connected provider's models, in use or not, with the rows that pick them.
+  let res = await app.inject("/api/ai");
+  assert.equal(res.statusCode, 200, res.body);
+  const modelsOf = (json: any, pid: string) => json.providers.find((p: any) => p.id === pid).models;
+  assert.deepEqual(modelsOf(res.json(), "claude").map((m: any) => [m.id, m.enabled, m.usedBy]), [
+    ["claude:claude-opus-5-5", true, 0],
+    ["claude:claude-sonnet-5-5", true, 1],
+    ["claude:claude-haiku-5-5", true, 0],
+    ["claude:claude-fable-5-2", true, 0],
+  ]);
+
+  // Turning off a model nobody picks works, and it leaves every list of models to pick from.
+  res = await app.inject({ method: "PUT", url: "/api/ai-models", payload: { model: "claude:claude-opus-5-5", enabled: false } });
+  assert.equal(res.statusCode, 200, res.body);
+  assert.equal(modelsOf(res.json(), "claude").find((m: any) => m.id === "claude:claude-opus-5-5").enabled, false);
+  assert.ok(!ai.modelChoices().some((g) => g.models.some((m) => m.id === "claude:claude-opus-5-5")), "the Campaigns dropdown can't offer it");
+  assert.equal(ai.modelChoices().find((g) => g.provider === "chatgpt")?.models.some((m) => m.id === "chatgpt:default"), true);
+
+  // A model a campaign row still picks can't be turned off: the refusal names what holds it.
+  res = await app.inject({ method: "PUT", url: "/api/ai-models", payload: { model: "claude:claude-sonnet-5-5", enabled: false } });
+  assert.equal(res.statusCode, 400, res.body);
+  assert.match(res.json().error, /still picked by 1 row/);
+  assert.ok(ai.modelChoices().some((g) => g.models.some((m) => m.id === "claude:claude-sonnet-5-5")), "it stays on");
+
+  // Turning a provider's only model off takes the whole provider out of the choices; unknown models are refused.
+  res = await app.inject({ method: "PUT", url: "/api/ai-models", payload: { model: "chatgpt:default", enabled: false } });
+  assert.equal(res.statusCode, 200, res.body);
+  assert.equal(ai.modelChoices().some((g) => g.provider === "chatgpt"), false, "a provider with nothing left in use isn't offered");
+  assert.equal((await app.inject({ method: "PUT", url: "/api/ai-models", payload: { model: "claude:nope", enabled: false } })).statusCode, 400);
+  assert.equal((await app.inject({ method: "PUT", url: "/api/ai-models", payload: { model: "chatgpt:default" } })).statusCode, 400);
+
+  // Turning it back on brings it back.
+  res = await app.inject({ method: "PUT", url: "/api/ai-models", payload: { model: "chatgpt:default", enabled: true } });
+  assert.equal(res.statusCode, 200, res.body);
+  assert.equal(ai.modelChoices().some((g) => g.provider === "chatgpt"), true);
+  await app.close();
+});
 
 test("the AI Providers routes: list, connect, plan, order, disconnect, and OpenRouter's sign-in", async () => {
   const store = newStore();

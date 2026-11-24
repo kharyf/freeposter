@@ -52,11 +52,16 @@ const FORBIDDEN: Record<string, string> = {
 export const modelIds = (ai: AiService | null | undefined): string[] | undefined =>
   ai ? ai.modelChoices().flatMap((g) => g.models.map((m) => m.id)) : undefined;
 
+/** The models the user turned off under AI Providers (`[]` when none are, undefined with no AI service). */
+export const disabledModelIds = (ai: AiService | null | undefined): string[] | undefined =>
+  ai ? [...ai.offModels()] : undefined;
+
 /**
  * What the compiler may name right now: the user's styles, video types, library and Lemo styles, and the models a row
- * may pick (without `models` a row's model isn't checked for being available).
+ * may pick (without `models` a row's model isn't checked for being available; `disabledModels` names the ones the user
+ * turned off, which a row may never pick).
  */
-export function campaignVocabulary(store: Store, cs: CampaignStore, models?: string[]): Vocabulary {
+export function campaignVocabulary(store: Store, cs: CampaignStore, models?: string[], disabledModels?: string[]): Vocabulary {
   return {
     styles: allStyles(store).map((s) => ({ id: s.id, token: styleToken(s) })),
     defaultStyle: defaultStyleId(store),
@@ -66,6 +71,7 @@ export function campaignVocabulary(store: Store, cs: CampaignStore, models?: str
     ctas: cs.entries("cta"),
     looks: allLooks(store).map((l) => ({ key: l.key })),
     ...(models ? { models } : {}),
+    ...(disabledModels ? { disabledModels } : {}),
   };
 }
 

@@ -256,7 +256,24 @@ test("a row sent in the old shape is saved in the new one, with a warning", asyn
 test("the vocabulary carries the models it's given, and none without", () => {
   const s = setup();
   assert.equal("models" in campaignVocabulary(s.store, s.cs), false);
+  assert.equal("disabledModels" in campaignVocabulary(s.store, s.cs), false);
   assert.deepEqual(campaignVocabulary(s.store, s.cs, ["claude:claude-opus-5-5"]).models, ["claude:claude-opus-5-5"]);
+  assert.deepEqual(campaignVocabulary(s.store, s.cs, ["claude:claude-opus-5-5"], ["chatgpt:default"]).disabledModels, ["chatgpt:default"]);
+});
+
+test("an agent's change can't name a model the user turned off, or leave one out while models are on offer", async () => {
+  const s = setup();
+  const models = ["claude:claude-opus-5-5", "claude:claude-sonnet-5-5"];
+  const change = (row: Partial<Row>, disabledModels: string[]) => applyAgentChange(s.cs, s.id, { rows: [s.row(row)] }, "claude-code", "the 9am slot does better",
+    campaignVocabulary(s.store, s.cs, models, disabledModels));
+  const off = await change({ quantity: 3, model: "claude:claude-opus-5-5" }, ["claude:claude-opus-5-5"]);
+  assert.equal(off.ok, false, "a turned-off model is refused");
+  assert.match((off as { problems: string[] }).problems.join(" "), /turned off under AI Providers/);
+  const noModel = await change({ quantity: 3, model: null }, []);
+  assert.equal(noModel.ok, false, "a row must name its model while there are models to pick from");
+  assert.match((noModel as { problems: string[] }).problems.join(" "), /no model picked/);
+  const ok = await change({ quantity: 3, model: "claude:claude-opus-5-5" }, []);
+  assert.equal(ok.ok, true, ok.ok ? "" : (ok as { problems: string[] }).problems.join("; "));
 });
 
 test("a change logged before rows had a model can still be undone, and undo writes rows in today's shape", async () => {

@@ -131,10 +131,26 @@
   .area[data-area="right"] { flex: 0 0 var(--right-w, 380px); }
   .area[data-area="bottom"] { flex: 0 0 var(--bottom-h, 280px); }
   .area[data-collapsed] { display: none; }
-  /* 5px hit area with a 1px visible line */
+  /* 5px hit area with no visible line, grabbable dots */
   .sash { flex: none; position: relative; touch-action: none; z-index: 1; }
-  .sash::after { content: ""; position: absolute; background: var(--line); }
+  .sash::after { content: none; }
+  .sash::before {
+    content: "";
+    position: absolute;
+    left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    display: flex;
+    gap: 4px;
+  }
+  .sash::before > * {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--muted);
+    flex: none;
+  }
   .sash:hover::after, .sash.dragging::after { background: var(--accent); }
+  .sash-v::after { top: 0; bottom: 0; left: 2px; width: 1px; }
+  .sash-h::after { left: 0; right: 0; top: 2px; height: 1px; }
   .sash-v { width: 5px; cursor: col-resize; }
   .sash-v::after { top: 0; bottom: 0; left: 2px; width: 1px; }
   .sash-h { height: 5px; cursor: row-resize; }
@@ -208,6 +224,13 @@
   .ai-row .pricing { font-size: 13px; margin-top: 2px; }
   .ai-row .err { color: var(--bad); font-size: 12px; margin-top: 4px; overflow-wrap: anywhere; }
   .ai-row .ok { color: var(--ok); font-size: 12px; margin-top: 4px; }
+  /* In Use: the provider's models, each one on or off (a long list scrolls inside its box). */
+  .ai-inuse { margin-top: 8px; }
+  .ai-inuse > summary { margin-top: 0; font-size: 13px; }
+  .ai-inuse-list { max-height: 240px; overflow-y: auto; margin-top: 6px; border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
+  .ai-inuse .ai-model { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 3px 0; cursor: pointer; }
+  .ai-inuse .ai-model .muted { margin-left: auto; font-size: 12px; }
+  .ai-inuse .ai-model.off .ai-model-name { color: var(--muted); }
   .ai-costs { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 6px; }
   .ai-costs th, .ai-costs td { text-align: left; padding: 3px 6px 3px 0; border-top: 1px solid var(--line); font-weight: 400; }
   .ai-costs th { color: var(--muted); font-size: 12px; }
@@ -4222,8 +4245,10 @@ function openRouterHtml(o) {
     const actual = c.uses ? `${money(c.last)} last · ${money(c.average)} average of ${c.uses}` : "<span class='muted'>not used yet</span>";
     return `<tr><td>${esc(j.label)}</td><td class="ai-money">${c.estimate === null ? "—" : `≈ ${money(c.estimate)}`}</td><td class="ai-money">${actual}</td></tr>`;
   }).join("");
+  // Only the models left in use under In Use are offered; the one this dropdown is already on stays listed, marked.
+  const offered = o.models.filter((m) => m.enabled !== false || m.id === o.model);
   const models = o.models.length
-    ? `<select data-ai-model aria-label="OpenRouter model">${o.models.map((m) => `<option value="${esc(m.id)}" ${m.id === o.model ? "selected" : ""}>${esc(m.name)} — $${m.promptPerM.toFixed(2)} / $${m.completionPerM.toFixed(2)} per M tokens${m.images ? "" : " (no images)"}</option>`).join("")}</select>`
+    ? `<select data-ai-model aria-label="OpenRouter model">${offered.map((m) => `<option value="${esc(m.id)}" ${m.id === o.model ? "selected" : ""}>${esc(m.name)} — $${m.promptPerM.toFixed(2)} / $${m.completionPerM.toFixed(2)} per M tokens${m.images ? "" : " (no images)"}${m.enabled === false ? " (turned off)" : ""}</option>`).join("")}</select>`
     : `<code>${esc(o.model)}</code>`;
   return `<div class="pricing">Balance: ${balance}${b?.error ? ` <span class="muted">(${esc(b.error)})</span>` : ""}${spent}</div>
     <label style="margin:8px 0 4px">Model</label>${models}
@@ -4232,7 +4257,7 @@ function openRouterHtml(o) {
 
 const EXPERIMENTAL = `<span class="badge" title="Works per its documentation; not yet tried on a real plan">experimental</span>`;
 
-function connectedHtml(p) {
+function connectedHtml(p, openInUse) {
   return `<div class="ai-row">
     <div class="head"><strong>${esc(p.label)}</strong>${p.program ? `<span class="muted">${esc(p.program)}</span>` : ""}
       ${p.experimental ? EXPERIMENTAL : ""}
@@ -4240,8 +4265,27 @@ function connectedHtml(p) {
     <div class="pricing">${p.plans.length ? `Monthly plan: ${planSelect(p)}` : esc(p.pricing)}</div>
     ${p.id === "openrouter" && ai.openrouter ? openRouterHtml(ai.openrouter) : ""}
     ${p.installed === false ? `<div class="err">${esc(p.program)} isn't installed any more. ${esc(p.setup)}</div>` : ""}
+    ${inUseHtml(p, openInUse)}
     ${aiNote(p)}
   </div>`;
+}
+
+/**
+ * In Use: every model this provider offers, each one on or off. Only the ones left on are offered in Campaigns and
+ * anywhere else FreePoster asks for a model; a model a campaign row still picks says so and can't be turned off.
+ */
+function inUseHtml(p, openInUse) {
+  if (!p.models?.length) return "";
+  const on = p.models.filter((m) => m.enabled).length;
+  return `<details class="ai-inuse" data-inuse="${p.id}" ${openInUse?.has(p.id) ? "open" : ""}>
+    <summary>In Use <span class="muted">${on} of ${p.models.length}</span></summary>
+    <div class="ai-inuse-list">${p.models.map((m) => `<label class="ai-model${m.enabled ? "" : " off"}" title="${m.usedBy ? `${m.usedBy} row${m.usedBy === 1 ? "" : "s"} of your campaigns pick it` : ""}">
+      <input type="checkbox" data-ai-inuse="${esc(m.id)}" ${m.enabled ? "checked" : ""}>
+      <span class="ai-model-name">${esc(m.name)}</span>
+      ${m.usedBy ? `<span class="muted">used by ${m.usedBy} row${m.usedBy === 1 ? "" : "s"}</span>` : ""}
+    </label>`).join("")}</div>
+    <p class="muted" style="margin:6px 0 0;font-size:12px">Only the models left on are offered for your videos. A model your campaigns still pick stays on until you give those rows another one.</p>
+  </details>`;
 }
 
 function addHtml(p) {
@@ -4270,9 +4314,11 @@ function renderAi() {
   const off = ai.providers.filter((p) => !p.connected);
   const addOpen = $("aiAdd") ? $("aiAdd").open : !on.length;
   const rankOpen = $("aiRank") ? $("aiRank").open : true;
+  // An open In Use list stays open through the redraw a toggle causes (and the 30-second refresh).
+  const inUseOpen = new Set([...$("aiBody").querySelectorAll("details[data-inuse][open]")].map((d) => d.dataset.inuse));
   $("aiBody").className = "";
   $("aiBody").innerHTML = `
-    ${on.length ? on.map(connectedHtml).join("") : `<p class="muted" style="margin-top:0">No AI provider is connected, so blank captions become <code>#fyp</code>. Connect the one you already pay for below.</p>`}
+    ${on.length ? on.map((p) => connectedHtml(p, inUseOpen)).join("") : `<p class="muted" style="margin-top:0">No AI provider is connected, so blank captions become <code>#fyp</code>. Connect the one you already pay for below.</p>`}
     ${on.length > 1 ? `<details id="aiRank" ${rankOpen ? "open" : ""}><summary>Order for each job</summary>${rankingHtml()}</details>` : ""}
     ${off.length ? `<details class="ai-add" id="aiAdd" ${addOpen ? "open" : ""}><summary>Add a provider</summary>${off.map(addHtml).join("")}</details>` : ""}`;
 }
@@ -4330,9 +4376,18 @@ $("aiBody").addEventListener("click", async (e) => {
 $("aiBody").addEventListener("change", async (e) => {
   const plan = e.target.closest("[data-ai-plan]");
   const model = e.target.closest("[data-ai-model]");
+  const inUse = e.target.closest("[data-ai-inuse]");
   const id = plan?.dataset.aiPlan;
   if (plan && ai.providers.find((p) => p.id === id)?.connected) {
     await aiCall("PUT", `/api/ai/${id}`, { plan: plan.value || null }).catch((err) => banner("err", err.message));
+    renderAi();
+  } else if (inUse) {
+    // A model the server refuses to turn off (a campaign row still picks it) comes back ticked as it was.
+    try {
+      await aiCall("PUT", "/api/ai-models", { model: inUse.dataset.aiInuse, enabled: inUse.checked });
+    } catch (err) {
+      banner("err", err.message);
+    }
     renderAi();
   } else if (model) {
     await aiCall("PUT", "/api/ai/openrouter", { model: model.value }).catch((err) => banner("err", err.message));

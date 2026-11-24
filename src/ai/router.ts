@@ -13,6 +13,10 @@ const PROVIDERS_PREF = "ai.providers";
 const RANKING_PREF = "ai.ranking";
 const KEY_PREF = "ai.openrouter.key";
 const MODEL_PREF = "ai.openrouter.model";
+/** A custom OpenAI-compatible endpoint (like FreeLLMAPI) instead of OpenRouter's own API. */
+const ENDPOINT_PREF = "ai.openrouter.endpoint";
+/** The models the user turned off under AI Providers (`provider:model` ids): nothing offers them any more. */
+const MODELS_OFF_PREF = "ai.models.off";
 
 /**
  * Whether Claude is connected under AI Providers. With Google AI (below), that alone turns on FreePoster starting a film
@@ -54,6 +58,9 @@ export class AiService {
     if (store.pref(PROVIDERS_PREF) === undefined) {
       store.setPref(PROVIDERS_PREF, this.find("claude") ? { claude: { plan: null, connectedAt: Date.now() } } : {});
     }
+    // Apply a saved custom endpoint (like FreeLLMAPI) so the first model fetch already goes through it.
+    const savedEndpoint = store.pref<string>(ENDPOINT_PREF);
+    if (savedEndpoint) openrouter.setApiBase(savedEndpoint);
   }
 
   private saved(): SavedProviders {
@@ -71,6 +78,25 @@ export class AiService {
 
   model(): string {
     return this.store.pref<string>(MODEL_PREF) || openrouter.DEFAULT_MODEL;
+  }
+
+  /**
+   * The custom OpenAI-compatible endpoint for OpenRouter, or "" for OpenRouter's own API. A compatible
+   * proxy like FreeLLMAPI can be pointed at here: models and chat/completions go through it; OAuth, balance
+   * and key info always go through OpenRouter itself.
+   */
+  endpoint(): string {
+    return this.store.pref<string>(ENDPOINT_PREF) || "";
+  }
+
+  /** Points OpenRouter's model and chat calls at a custom endpoint, or back at OpenRouter when empty. */
+  setEndpoint(url: string) {
+    const trimmed = url.trim().replace(/\/+$/, "");
+    if (trimmed && !/^https?:\/\/\S+$/.test(trimmed)) throw new Error("endpoint must be an HTTP or HTTPS URL");
+    this.store.setPref(ENDPOINT_PREF, trimmed || null);
+    openrouter.setApiBase(trimmed);
+    // The model list is different on a new endpoint: drop the cache so it's fetched fresh.
+    openrouter.clearModelCache();
   }
 
   /** Connected providers, in the order they were connected. */
@@ -104,15 +130,39 @@ export class AiService {
     this.store.setPref(RANKING_PREF, all);
   }
 
-  /** The models each connected provider offers, with full `provider:model` ids. */
+  /** The models the user turned off under AI Providers: no list in FreePoster offers them, and a save refuses them. */
+  offModels(): Set<string> {
+    return new Set(this.store.pref<string[]>(MODELS_OFF_PREF) ?? []);
+  }
+
+  /** Every model a provider offers, whether or not the user has it in use, with full `provider:model` ids. */
+  private modelsOf(provider: ProviderId): { id: string; name: string }[] {
+    return provider === "claude" ? CLAUDE_MODELS.map((m) => ({ id: `claude:${m.id}`, name: m.name }))
+      : provider === "openrouter" ? (modelList ?? []).map((m) => ({ id: `openrouter:${m.id}`, name: m.name }))
+      : [{ id: `${provider}:default`, name: `${PROVIDERS[provider].label} default` }];
+  }
+
+  /** The models each connected provider offers that the user left in use, with full `provider:model` ids. */
   modelChoices(): { provider: ProviderId; label: string; models: { id: string; name: string }[] }[] {
-    return this.connected().map((provider) => {
-      const label = PROVIDERS[provider].label;
-      const models = provider === "claude" ? CLAUDE_MODELS.map((m) => ({ id: `claude:${m.id}`, name: m.name }))
-        : provider === "openrouter" ? (modelList ?? []).map((m) => ({ id: `openrouter:${m.id}`, name: m.name }))
-        : [{ id: `${provider}:default`, name: `${label} default` }];
-      return { provider, label, models };
-    });
+    const off = this.offModels();
+    return this.connected()
+      .map((provider) => ({ provider, label: PROVIDERS[provider].label, models: this.modelsOf(provider).filter((m) => !off.has(m.id)) }))
+      .filter((g) => g.models.length); // a provider with nothing left in use isn't offered at all
+  }
+
+  /**
+   * Turns one of a connected provider's models on or off under AI Providers. Off means nothing offers it any more, so
+   * the caller checks first that no campaign row still picks it.
+   */
+  setModelEnabled(model: string, enabled: boolean) {
+    const cut = model.indexOf(":");
+    const provider = model.slice(0, cut) as ProviderId;
+    if (cut < 0 || !(PROVIDER_IDS as readonly string[]).includes(provider) || !this.connected().includes(provider)) throw new Error(`unknown model ${model}`);
+    if (!this.modelsOf(provider).some((m) => m.id === model)) throw new Error(`unknown model ${model}`);
+    const off = this.offModels();
+    if (enabled) off.delete(model);
+    else off.add(model);
+    this.store.setPref(MODELS_OFF_PREF, [...off]);
   }
 
   /** Asks one provider, without falling back. `model` is the provider's own model id; undefined means its default. */
@@ -239,10 +289,16 @@ export class AiService {
     return value;
   }
 
-  /** Everything the AI Providers panel shows. */
-  async view() {
+  /**
+   * Everything the AI Providers panel shows. `inUse` counts the campaign rows that pick each model (`provider:model`),
+   * so a model still in use can be shown as such and refused when the user turns it off.
+   */
+  async view(inUse: Record<string, number> = {}) {
     const saved = this.saved();
     const connected = this.connected();
+    // OpenRouter's models come over the wire: load them before its section and the In Use lists are built.
+    const openrouter = connected.includes("openrouter") ? await this.openRouterView() : null;
+    const off = this.offModels();
     const last = this.store.aiLastUses();
     const lastOf = (id: string, ok: number) => last.find((u) => u.provider === id && u.ok === ok);
     const providers = PROVIDER_IDS.map((id) => {
@@ -267,6 +323,8 @@ export class AiService {
         experimental: Boolean(def.experimental),
         setupUrl: def.setupUrl,
         setup: def.setup,
+        /** Its models, each with whether the user has it in use and how many campaign rows pick it (only when connected) */
+        models: connected.includes(id) ? this.modelsOf(id).map((m) => ({ ...m, enabled: !off.has(m.id), usedBy: inUse[m.id] ?? 0 })) : [],
         lastAnswerAt: good?.created_at ?? null,
         // Only a failure since the last answer is worth showing.
         lastError: bad && (!good || bad.created_at > good.created_at) ? bad.error : null,
@@ -277,12 +335,13 @@ export class AiService {
       label: JOB_LABELS[job],
       order: this.ranking(job).map((id) => ({ id, label: PROVIDERS[id].label, canDo: this.canDo(id, job) })),
     }));
-    return { providers, jobs, openrouter: connected.includes("openrouter") ? await this.openRouterView() : null };
+    return { providers, jobs, openrouter };
   }
 
   private async openRouterView() {
     const [list, balance] = await Promise.all([loadModels(this.opts.fetch).catch(() => modelList ?? []), this.balance()]);
     const model = this.model();
+    const off = this.offModels();
     const info = list.find((m) => m.id === model);
     const costs = Object.fromEntries(AI_JOBS.map((job) => {
       const seen = this.store.aiCosts("openrouter", job);
@@ -298,7 +357,8 @@ export class AiService {
     }));
     return {
       model,
-      models: list.map((m) => ({ id: m.id, name: m.name, images: m.images, promptPerM: m.prompt * 1e6, completionPerM: m.completion * 1e6 })),
+      endpoint: this.endpoint(),
+      models: list.map((m) => ({ id: m.id, name: m.name, images: m.images, promptPerM: m.prompt * 1e6, completionPerM: m.completion * 1e6, enabled: !off.has(`openrouter:${m.id}`) })),
       balance,
       costs,
     };

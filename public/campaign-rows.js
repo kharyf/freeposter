@@ -20,8 +20,19 @@
     return ctx.models.some(function (p) { return p.provider === CLAUDE_GROUP || p.provider === GOOGLE_GROUP; });
   }
 
-  /** The model a row switches to when it needs a film agent. */
-  function defaultFilm(ctx) { return ctx.defaultFilm || ctx.defaultClaude; }
+  /** Whether the server's model lists hold this model (they hold only the models left in use under AI Providers). */
+  function offered(ctx, id) {
+    return !!id && ctx.models.some(function (p) { return p.models.some(function (m) { return m.id === id; }); });
+  }
+
+  /** The model a row switches to when it needs a film agent: the settings' own while it's on offer, else the first one offered. */
+  function defaultFilm(ctx) {
+    var want = ctx.defaultFilm || ctx.defaultClaude;
+    if (isFilmModel(want) && offered(ctx, want)) return want;
+    var film = "";
+    ctx.models.forEach(function (p) { p.models.forEach(function (m) { if (!film && isFilmModel(m.id)) film = m.id; }); });
+    return film || want;
+  }
 
   /** The Origin choices: Agent (a film Claude or Gemini makes) only while one is connected, or when the row already is one. */
   function originOptions(row, ctx) {
@@ -80,17 +91,27 @@
     return groups;
   }
 
+  /**
+   * The Model dropdown's groups: each provider that offers something, and no "Use AI settings" any more — a row names
+   * its model. A row with none says so (with models to pick from it can't be saved like that); with none on offer at
+   * all (no AI connected) it says that, and the server lets a model-less row through.
+   */
   function modelOptions(row, ctx) {
     if (row.origin === "drive") return [];
     var agent = row.origin === "agent";
-    var agentDefault = claudeConnected(ctx) || !filmAgentConnected(ctx) ? "Default (Claude Code's setting)" : "Default (Antigravity's setting)";
-    var groups = [{ label: "", options: [{ value: "", label: agent ? agentDefault : "Use AI settings" }] }];
+    var groups = [];
     ctx.models.forEach(function (p) {
       if (agent && p.provider !== CLAUDE_GROUP && p.provider !== GOOGLE_GROUP) return;
+      if (!p.models.length) return;
       groups.push({ label: p.label, options: p.models.map(function (m) { return { value: m.id, label: m.name }; }) });
     });
+    if (row.model === null || row.model === undefined) {
+      groups.unshift({ label: "", options: [{ value: "", label: groups.length ? "Choose a model" : "No AI model available" }] });
+      return groups;
+    }
     var m = row.model;
-    if (m !== null && m !== undefined && !groups.some(function (g) { return g.options.some(function (o) { return o.value === m; }); })) {
+    if (!groups.some(function (g) { return g.options.some(function (o) { return o.value === m; }); })) {
+      if (!groups.length) groups.push({ label: "", options: [] });
       groups[groups.length - 1].options.push({ value: m, label: m + " (not available)", selected: true });
     }
     return groups;
@@ -143,6 +164,9 @@
       // dropdown's). The server, which can't tell, always says "isn't installed".
       if (!ctx.lemo.length) out.push(ctx.lemoInstalled ? "No Lemo styles found" : "Lemo-Opuscar isn't installed on this computer");
       else if (!ctx.lemo.some(function (l) { return l.key === r.style; })) out.push(r.style + " is no longer in Lemo-Opuscar");
+    }
+    if (r.origin !== "drive" && (r.model === null || r.model === undefined)) {
+      if (ctx.models && ctx.models.some(function (p) { return p.models.length > 0; })) out.push("no model picked");
     }
     if (r.origin !== "drive" && r.model !== null && ctx.models) {
       var known = ctx.models.some(function (p) { return p.models.some(function (m) { return m.id === r.model; }); });
