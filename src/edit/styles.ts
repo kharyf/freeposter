@@ -290,7 +290,7 @@ export function saveThumbnail(id: string, bytes: Buffer) {
 export function thumbnail(style: EditingStyle): { type: string; body: Buffer | string } {
   const uploaded = uploadedThumbnail(style.id);
   if (uploaded) return { type: uploaded.type, body: readFileSync(uploaded.path) };
-  return { type: "image/svg+xml", body: style.builtIn && style.id === "fancy" ? fancyThumbnailSvg() : thumbnailSvg(style.settings) };
+  return { type: "image/svg+xml", body: style.builtIn && style.id === "fancy" ? fancyThumbnailSvg() : style.builtIn && style.id === "slideshow" ? slideshowThumbnailSvg() : thumbnailSvg(style.settings) };
 }
 
 /** The speaker on a style card: a head and shoulders, filled with the card's #skin and #shirt gradients. */
@@ -349,6 +349,30 @@ ${zoomMarks(face, cream)}
 </g>
 <rect y="${seam - 2}" width="${W}" height="4" fill="${gold}"/>
 <text x="${W / 2}" y="${seam + 11}" text-anchor="middle" font-size="31" ${serif} stroke="${ink}" stroke-width="5" stroke-linejoin="round" paint-order="stroke"><tspan fill="${cream}">the one </tspan><tspan fill="${yellow}">SECRET</tspan></text>
+</svg>`;
+}
+
+/** The Slideshow card: a warm teal-and-orange photo slightly zoomed in, the next one fading in, a title and the slide number. */
+export function slideshowThumbnailSvg(): string {
+  const W = 270, H = 480;
+  const { ink } = PALETTE;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="Example frame">
+<defs>
+  <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f08a3c"/><stop offset=".55" stop-color="#f6c27a"/><stop offset="1" stop-color="#2a8c8c"/></linearGradient>
+  <linearGradient id="next" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#1f6f78" stop-opacity="0"/><stop offset="1" stop-color="#1f6f78"/></linearGradient>
+  <clipPath id="frame"><rect width="${W}" height="${H}"/></clipPath>
+</defs>
+<g clip-path="url(#frame)">
+<g transform="translate(${W / 2} ${H / 2}) scale(1.08) translate(${-W / 2} ${-H / 2})">
+<rect width="${W}" height="${H}" fill="url(#sky)"/>
+<circle cx="170" cy="190" r="46" fill="#fff3c9" opacity=".9"/>
+<path d="M0 330 Q70 250 140 320 T270 300 V480 H0 Z" fill="#1d6a6c"/>
+<path d="M0 390 Q90 330 180 390 T270 380 V480 H0 Z" fill="#134f55"/>
+</g>
+<rect x="${W * 0.6}" width="${W * 0.4}" height="${H}" fill="url(#next)" opacity=".4"/>
+</g>
+<text x="${W / 2}" y="372" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="26" font-weight="700" fill="#fff" stroke="${ink}" stroke-width="5" stroke-linejoin="round" paint-order="stroke">3 tips for mornings</text>
+<text x="${W - 14}" y="${H - 24}" text-anchor="end" font-family="Arial, Helvetica, sans-serif" font-size="12" fill="#fff" opacity=".7">2/5</text>
 </svg>`;
 }
 
