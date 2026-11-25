@@ -265,6 +265,30 @@
   .badge.ok { color: var(--ok); border-color: var(--ok); } .badge.warn { color: var(--warn); border-color: var(--warn); } .badge.bad { color: var(--bad); border-color: var(--bad); }
   .badge.default { color: var(--accent); border-color: var(--accent); }
   .name-warn { color: var(--bad); font-size: 12px; margin: 0 0 8px 12px; }
+  .edit-extra { display: grid; gap: 4px; margin-bottom: 10px; }
+  .edit-extra textarea { min-height: 60px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { display: inline-flex; gap: 4px; align-items: center; font-size: 12px; border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; cursor: pointer; background: transparent; color: var(--ink); }
+  .chip[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+  .chip select { font-size: 11px; padding: 0; width: auto; margin: 0; }
+  /* ---- Resources tab ---- */
+  .res-set { margin: 0 0 22px; border: 1px dashed transparent; border-radius: 8px; padding: 4px; }
+  .res-set.dragging { border-color: var(--accent); }
+  .res-set h3 { margin: 0 0 8px; font-size: 17px; }
+  .res-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+  .res-tools input[type=file] { max-width: 260px; }
+  .res-text-form { display: grid; gap: 6px; margin: 0 0 10px; max-width: 520px; }
+  .res-text-form textarea { min-height: 90px; }
+  .res-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
+  .res-card { margin: 0; display: grid; gap: 6px; align-content: start; }
+  .res-card img, .res-card video { width: 100%; max-height: 200px; object-fit: contain; border-radius: 6px; background: var(--line); }
+  .res-card audio { width: 100%; }
+  .res-card pre { margin: 0; max-height: 120px; overflow: auto; white-space: pre-wrap; font-size: 12px; }
+  .res-card .res-name { font-weight: 600; overflow-wrap: anywhere; }
+  .res-card .res-tag { font-family: ui-monospace, monospace; font-size: 12px; width: 100%; }
+  .res-card .res-actions { display: flex; gap: 6px; justify-content: flex-end; }
+  .res-card .res-actions button { padding: 2px 8px; font-size: 12px; }
+  .res-uploading { font-size: 12px; color: var(--muted); }
   /* ---- Editing Styles tab ---- */
   .styles-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; }
   .style-card { margin: 0; }
@@ -572,8 +596,17 @@
         <video id="preview" controls muted playsinline></video>
         <div id="durationNote" class="muted"></div>
 
-        <label class="row" style="font-weight:400"><input type="checkbox" id="doEdit" style="width:auto;margin:0"> Edit this video first</label>
+        <label class="row" style="font-weight:400"><input type="checkbox" id="doEdit" style="width:auto;margin:0"><span id="doEditLabel"> Edit this video first</span></label>
         <div id="editBox" class="edit-box" hidden>
+          <div class="edit-extra">
+            <label for="editLook">Style</label>
+            <select id="editLook"><option value="">Standard</option><option value="fancy">Fancy</option><option value="slideshow">Slideshow</option></select>
+            <label for="editSet">Resources from</label>
+            <select id="editSet"></select>
+            <label for="editInstructions">Instructions <span class="muted">(optional; write @tag to use a resource)</span></label>
+            <textarea id="editInstructions" maxlength="2000" placeholder="Three reasons to visit @beach @city @food with @song"></textarea>
+            <div id="editResources" class="chips" aria-label="Resources to use"></div>
+          </div>
           <div class="opts">
             <label><input type="checkbox" data-edit-opt="tighten" checked> Cut pauses, "um"s and retakes</label>
             <label><input type="checkbox" data-edit-opt="captions" checked> Captions</label>
@@ -678,6 +711,11 @@
     </section>
   </form>
   <div id="stylesBody" class="styles-grid"></div>
+</div>
+
+<div id="resources" class="panel page" data-tab="resources" role="tabpanel" aria-label="Resources" hidden>
+  <p class="muted">Text, audio, images and videos kept for each account set. An edit uses a resource only when you tag it (<code>@tag</code>).</p>
+  <div id="resourcesBody"></div>
 </div>
 
 <div id="calendar" class="panel page" data-tab="calendar" role="tabpanel" aria-label="Calendar" hidden>
@@ -1166,6 +1204,7 @@ function onTabShown(id) {
       void openSetup(resume);
     }
   } else if (id === "styles") renderStyles();
+  else if (id === "resources") void showResources();
   else if (id === "calendar") loadCalendar();
   else if (id === "analytics") showAnalytics();
   else if (id === "campaigns") loadCampaigns();
@@ -2218,7 +2257,43 @@ $("quit").addEventListener("click", async () => {
 // ---- submit & history ----
 
 const editing = () => $("doEdit").checked;
-const editSettings = () => Object.fromEntries([...document.querySelectorAll("[data-edit-opt]")].map((c) => [c.dataset.editOpt, c.checked]));
+const slideshowChosen = () => editing() && $("editLook").value === "slideshow";
+const editSettings = () => {
+  const s = Object.fromEntries([...document.querySelectorAll("[data-edit-opt]")].map((c) => [c.dataset.editOpt, c.checked]));
+  if ($("editLook").value) s.look = $("editLook").value;
+  if ($("editInstructions").value.trim()) s.instructions = $("editInstructions").value.trim();
+  return s;
+};
+
+/** Resources chosen for the edit: tag -> role ("" = the default for its kind). */
+let editRes = {};
+let editSets = [];
+async function loadEditResources() {
+  let fallback;
+  try { const body = await (await fetch("/api/resources")).json(); editSets = body.sets; fallback = String(body.defaultSetId); } catch { editSets = []; }
+  const was = $("editSet").value;
+  $("editSet").innerHTML = editSets.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
+  const pick = was && editSets.some((s) => String(s.id) === was) ? was : fallback;
+  if (pick && editSets.some((s) => String(s.id) === pick)) $("editSet").value = pick;
+  drawEditResources();
+}
+function drawEditResources() {
+  const set = editSets.find((s) => String(s.id) === $("editSet").value);
+  const slide = $("editLook").value === "slideshow";
+  $("editResources").innerHTML = (set?.resources ?? []).map((r) => {
+    const on = r.tag in editRes;
+    const role = r.kind === "image" && on ? `<select data-chip-role="${esc(r.tag)}" aria-label="Role of @${esc(r.tag)}"><option value=""${editRes[r.tag] === "" ? " selected" : ""}>${slide ? "slide" : "overlay"}</option><option value="${slide ? "overlay" : "slide"}"${editRes[r.tag] === (slide ? "overlay" : "slide") ? " selected" : ""}>${slide ? "overlay" : "slide"}</option></select>` : "";
+    return `<span class="chip" data-chip="${esc(r.tag)}" role="button" tabindex="0" aria-pressed="${on}">@${esc(r.tag)} <span class="muted">${esc(r.kind)}</span>${role}</span>`;
+  }).join("") || `<span class="muted">No resources in this set.</span>`;
+}
+const editRefs = () => Object.entries(editRes).map(([tag, as]) => (as ? { tag, as } : { tag }));
+/** The Video field is optional for a slideshow, and the checkbox says what pressing the button does. */
+function syncEditMode() {
+  const noVideo = slideshowChosen() && !$("file").files[0];
+  $("file").required = !slideshowChosen();
+  $("doEditLabel").textContent = noVideo ? " Make a slideshow" : " Edit this video first";
+  drawEditResources();
+}
 
 function resetEdit() {
   clearTimeout(editPoll);
@@ -2234,10 +2309,12 @@ function resetEdit() {
 
 async function makeEdit() {
   const file = $("file").files[0];
-  if (!file) return banner("err", "Choose a video first.");
+  if (!file && !slideshowChosen()) return banner("err", "Choose a video first.");
   const fd = new FormData();
   fd.append("settings", JSON.stringify(editSettings()));
-  fd.append("video", file);
+  if ($("editSet").value) fd.append("setId", $("editSet").value);
+  fd.append("resources", JSON.stringify(editRefs()));
+  if (file) fd.append("video", file); // last, so fields arrive before the large file
   $("submit").disabled = true;
   $("editStatus").textContent = "Uploading…";
   try {
@@ -2271,7 +2348,8 @@ async function pollEdit() {
       $("editPreview").hidden = false;
     }
     $("editActions").hidden = view.approved;
-    if (view.approved) $("editStatus").textContent = `Edit approved (${view.durationSec.toFixed(1)}s, was ${view.sourceDurationSec?.toFixed(1)}s).`;
+    $("useOriginal").hidden = !view.hasSourceVideo;
+    if (view.approved) $("editStatus").textContent = `Edit approved (${view.durationSec.toFixed(1)}s${view.sourceDurationSec ? `, was ${view.sourceDurationSec.toFixed(1)}s` : ""}).`;
     const name = (accountId) => status.accounts.find((a) => a.id === accountId)?.name ?? "";
     const gained = view.eligible.filter((e) => e.edited && !e.original).map((e) => name(e.accountId));
     const still = view.eligible.filter((e) => !e.edited && selectedIds().includes(e.accountId)).map((e) => name(e.accountId));
@@ -2321,7 +2399,7 @@ async function submit(allowDuplicate = false) {
       ? `Scheduled for ${new Date(scheduledAt).toLocaleString()}. It's listed under Upcoming, where you can change the time or cancel it.`
       : "Queued. Each platform's status updates under Posts.") + writing);
     $("form").reset(); $("preview").style.display = "none"; videoDuration = null; checkDuration();
-    $("editBox").hidden = true; resetEdit();
+    $("editBox").hidden = true; editRes = {}; resetEdit(); syncEditMode();
     $("tiktokBox").style.display = "none";
     loadPosts();
   } catch (e) {
@@ -2577,13 +2655,27 @@ $("file").addEventListener("change", () => {
   const f = $("file").files[0];
   const v = $("preview");
   resetEdit();
+  syncEditMode();
   if (!f) return;
   v.src = URL.createObjectURL(f);
   v.style.display = "block";
   v.onloadedmetadata = () => { videoDuration = v.duration; checkDuration(); };
 });
 $("form").addEventListener("submit", (e) => { e.preventDefault(); submit(); });
-$("doEdit").addEventListener("change", () => { $("editBox").hidden = !editing(); if (!editing()) { resetEdit(); videoDuration = $("preview").duration || null; checkDuration(); } syncWhen(); });
+$("doEdit").addEventListener("change", () => { $("editBox").hidden = !editing(); if (editing()) void loadEditResources(); if (!editing()) { resetEdit(); videoDuration = $("preview").duration || null; checkDuration(); } syncEditMode(); syncWhen(); });
+$("editLook").addEventListener("change", () => { resetEdit(); syncEditMode(); });
+$("editSet").addEventListener("change", () => { editRes = {}; resetEdit(); drawEditResources(); });
+$("editInstructions").addEventListener("input", resetEdit);
+$("editResources").addEventListener("click", (e) => {
+  if (e.target.closest("select")) return;
+  const chip = e.target.closest("[data-chip]");
+  if (!chip) return;
+  const tag = chip.dataset.chip;
+  if (tag in editRes) delete editRes[tag]; else editRes[tag] = "";
+  resetEdit(); drawEditResources();
+});
+$("editResources").addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && e.target.matches("[data-chip]")) { e.preventDefault(); e.target.click(); } });
+$("editResources").addEventListener("change", (e) => { const sel = e.target.closest("[data-chip-role]"); if (sel) { editRes[sel.dataset.chipRole] = sel.value; resetEdit(); } });
 for (const c of document.querySelectorAll("[data-edit-opt]")) c.addEventListener("change", resetEdit);
 $("approveEdit").addEventListener("click", async () => {
   const res = await fetch(`/api/edits/${edit.id}/approve`, { method: "PUT" });
@@ -2739,6 +2831,111 @@ function renderStyles() {
       ${s.builtIn ? "" : `<div class="card-actions"><button type="button" data-delete-style="${esc(s.id)}">Delete</button></div>`}
     </section>`).join("");
   showStyleToolNotes();
+}
+
+// ---- Resources tab: files and text kept per account set (GET /api/resources) ----
+const RES_EMPTY = "No resources yet. Files here are only used by an edit when you tag them (@tag).";
+const resBytes = (n) => n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
+const resSecs = (n) => `${Math.floor(n / 60)}:${String(Math.round(n % 60)).padStart(2, "0")}`;
+
+function resourceCard(r) {
+  const preview = r.kind === "image" ? `<img loading="lazy" src="${esc(r.url)}" alt="${esc(r.name)}">`
+    : r.kind === "audio" ? `<audio controls preload="none" src="${esc(r.url)}"></audio>`
+    : r.kind === "video" ? `<video controls preload="metadata" muted playsinline src="${esc(r.url)}"></video>`
+    : `<pre>${esc(r.textPreview ?? "")}</pre>`;
+  const facts = [r.kind, resBytes(r.sizeBytes), r.durationSec ? resSecs(r.durationSec) : "", r.width ? `${r.width}×${r.height}` : ""].filter(Boolean).join(" · ");
+  return `<section class="res-card" data-resource-id="${r.id}">
+    ${preview}
+    <div class="res-name">${esc(r.name)}</div>
+    <input class="res-tag" value="@${esc(r.tag)}" data-orig="${esc(r.tag)}" aria-label="Tag for ${esc(r.name)}" maxlength="33" spellcheck="false">
+    <div class="muted">${esc(facts)}</div>
+    <div class="res-actions"><button type="button" data-res-copy="${esc(r.tag)}">Copy</button><button type="button" data-res-delete="${r.id}" data-tag="${esc(r.tag)}">Delete</button></div>
+  </section>`;
+}
+
+async function showResources() {
+  let sets;
+  try { ({ sets } = await (await fetch("/api/resources")).json()); } catch { return; }
+  $("resourcesBody").innerHTML = sets.map((s) => `
+    <section class="res-set" data-set-id="${s.id}">
+      <h3>${esc(s.name)}</h3>
+      <div class="res-tools">
+        <input type="file" multiple accept="text/plain,.md,audio/*,image/png,image/jpeg,image/webp,video/*" data-res-upload="${s.id}" aria-label="Upload to ${esc(s.name)}">
+        <button type="button" data-res-addtext="${s.id}">Add text</button>
+        <span class="res-uploading" data-res-status="${s.id}"></span>
+      </div>
+      <form class="res-text-form" data-res-textform="${s.id}" hidden>
+        <input type="text" name="name" placeholder="Name" maxlength="80" aria-label="Text name">
+        <textarea name="text" placeholder="Text the AI can use as context" aria-label="Text"></textarea>
+        <div><button type="submit" class="primary">Save</button></div>
+      </form>
+      ${s.resources.length ? `<div class="res-grid">${s.resources.map(resourceCard).join("")}</div>` : `<div class="muted">${esc(RES_EMPTY)}</div>`}
+    </section>`).join("");
+}
+
+async function uploadResources(setId, files) {
+  const note = document.querySelector(`[data-res-status="${setId}"]`);
+  for (const f of files) {
+    if (note) note.textContent = `Uploading ${f.name}…`;
+    const body = new FormData();
+    body.append("setId", String(setId));
+    body.append("file", f);
+    try {
+      const res = await fetch("/api/resources", { method: "POST", body });
+      if (!res.ok) banner("err", `${f.name}: ${(await res.json()).error}`);
+    } catch (err) { banner("err", `${f.name}: ${err.message}`); }
+  }
+  await showResources();
+}
+
+$("resourcesBody").addEventListener("change", (e) => {
+  const input = e.target.closest("[data-res-upload]");
+  if (input && input.files.length) { const files = [...input.files]; input.value = ""; void uploadResources(Number(input.dataset.resUpload), files); }
+});
+$("resourcesBody").addEventListener("click", async (e) => {
+  const add = e.target.closest("[data-res-addtext]");
+  if (add) { const f = document.querySelector(`[data-res-textform="${add.dataset.resAddtext}"]`); f.hidden = !f.hidden; return; }
+  const copy = e.target.closest("[data-res-copy]");
+  if (copy) { try { await navigator.clipboard.writeText(`@${copy.dataset.resCopy}`); banner("ok", `Copied @${copy.dataset.resCopy}`, { hideAfter: 2000 }); } catch {} return; }
+  const del = e.target.closest("[data-res-delete]");
+  if (del) {
+    if (!confirm(`Delete @${del.dataset.tag}? Edits already made keep it.`)) return;
+    const res = await fetch(`/api/resources/${del.dataset.resDelete}`, { method: "DELETE" });
+    if (!res.ok) banner("err", (await res.json()).error);
+    await showResources();
+  }
+});
+$("resourcesBody").addEventListener("submit", async (e) => {
+  const form = e.target.closest("[data-res-textform]");
+  if (!form) return;
+  e.preventDefault();
+  const res = await fetch("/api/resources/text", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ setId: Number(form.dataset.resTextform), name: form.name.value, text: form.text.value }) });
+  if (!res.ok) { banner("err", (await res.json()).error); return; }
+  await showResources();
+});
+$("resourcesBody").addEventListener("keydown", async (e) => {
+  const input = e.target.closest(".res-tag");
+  if (!input) return;
+  if (e.key === "Escape") { input.value = `@${input.dataset.orig}`; input.blur(); }
+  else if (e.key === "Enter") {
+    e.preventDefault();
+    const tag = input.value.trim().replace(/^@/, "");
+    const id = input.closest("[data-resource-id]").dataset.resourceId;
+    const res = await fetch(`/api/resources/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ tag }) });
+    if (!res.ok) { banner("err", (await res.json()).error); input.value = `@${input.dataset.orig}`; return; }
+    await showResources();
+  }
+});
+for (const ev of ["dragover", "dragleave", "drop"]) {
+  $("resourcesBody").addEventListener(ev, (e) => {
+    const set = e.target.closest(".res-set");
+    if (!set) return;
+    if (ev === "dragleave") { set.classList.remove("dragging"); return; }
+    if (![...(e.dataTransfer?.types ?? [])].includes("Files")) return;
+    e.preventDefault();
+    if (ev === "dragover") set.classList.add("dragging");
+    else { set.classList.remove("dragging"); void uploadResources(Number(set.dataset.setId), [...e.dataTransfer.files]); }
+  });
 }
 
 /** Fancy's note on which graphics will fall back, filled in once the graphics tools have been checked. */

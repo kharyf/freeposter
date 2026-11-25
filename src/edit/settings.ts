@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { ResourceKind } from "../resources/store.ts";
 
 /** A stretch of the source video, in seconds. */
 export interface Range {
@@ -25,11 +26,29 @@ export interface EditSettings {
   /** source ranges always cut ("drop the cough at 0:31") */
   drop?: Range[];
   captionFixes?: CaptionFix[];
-  /** a whole different look to the edit; only the Fancy built-in style sets it */
-  look?: "fancy";
+  /** a whole different look to the edit; only the Fancy and Slideshow built-in styles set it */
+  look?: "fancy" | "slideshow";
+  /** what the user asked for in words; resources are also tagged in it as @tag */
+  instructions?: string;
+  /** the account set whose resources this edit may use (not part of its key) */
+  setId?: number;
+  /** the resources this edit uses, fixed when it was made so a later change or delete can't alter it */
+  resources?: ResourceUse[];
 }
 
+/** What a resource does in an edit: kinds allow some roles (text: context, audio: music, image: slide or overlay, video: clip). */
+export type ResourceRole = "music" | "overlay" | "slide" | "clip" | "context";
+export interface ResourceUse { id: number; tag: string; kind: ResourceKind; path: string; sha256: string; as: ResourceRole }
+
 export const isFancy = (s: EditSettings): boolean => s.look === "fancy";
+export const isSlideshow = (s: EditSettings): boolean => s.look === "slideshow";
+export const MAX_INSTRUCTIONS = 2000;
+
+/** The settings as the page and agents see them: resources by id, tag, kind and role, never a path or hash. */
+export function publicSettings(s: EditSettings): Omit<EditSettings, "resources"> & { resources?: Pick<ResourceUse, "id" | "tag" | "kind" | "as">[] } {
+  const { resources, ...rest } = s;
+  return resources?.length ? { ...rest, resources: resources.map((r) => ({ id: r.id, tag: r.tag, kind: r.kind, as: r.as })) } : rest;
+}
 
 export const DEFAULT_EDIT: EditSettings = { tighten: true, captions: true, reframe: true, audio: true, punchIn: true };
 
@@ -73,8 +92,15 @@ export function parseEditSettings(raw: unknown, base: EditSettings = DEFAULT_EDI
     } else if (k === "captionFixes") {
       out.captionFixes = fixes(v);
     } else if (k === "look") {
-      if (v !== "fancy") throw new Error('edit setting look must be "fancy"');
+      if (v !== "fancy" && v !== "slideshow") throw new Error('edit setting look must be "fancy" or "slideshow"');
       out.look = v;
+    } else if (k === "instructions") {
+      if (typeof v !== "string") throw new Error("edit setting instructions must be text");
+      if (v.length > MAX_INSTRUCTIONS) throw new Error(`edit setting instructions takes at most ${MAX_INSTRUCTIONS} characters`);
+      if (v.trim()) out.instructions = v.trim();
+      else delete out.instructions;
+    } else if (k === "resources" || k === "setId") {
+      throw new Error("resources are chosen by tag beside the settings, not inside them");
     } else {
       throw new Error(`${k} is not an edit setting`);
     }
@@ -95,6 +121,9 @@ export function editKey(sourceSha: string, s: EditSettings): string {
   // Only when used, so every edit made before these existed keeps its key (and its cached file).
   for (const k of ["captionFixes", "drop", "keep"] as const) if (s[k]?.length) entries.push([k, s[k]]);
   if (s.look) entries.push(["look", s.look]);
+  if (s.instructions) entries.push(["instructions", s.instructions]);
+  // The file's hash, not its path or id: the same file under another tag is the same edit.
+  if (s.resources?.length) entries.push(["resources", s.resources.map((r) => [r.id, r.sha256, r.as])]);
   const canonical = JSON.stringify([EDIT_VERSION, ...entries]);
   return `${sourceSha}-${createHash("sha256").update(canonical).digest("hex").slice(0, 16)}`;
 }

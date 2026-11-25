@@ -1,14 +1,14 @@
 // Layout model for the docked workspace: pure functions, no DOM. Every function returns a new object.
 (function () {
   var AREAS = ["top", "left", "bottom", "right"];
-  var TAB_IDS = ["reviews", "analytics", "campaigns", "calendar", "styles", "accounts", "agents", "newpost", "drive", "upcoming", "posts", "console", "ai", "setup"];
+  var TAB_IDS = ["reviews", "analytics", "campaigns", "calendar", "styles", "resources", "accounts", "agents", "newpost", "drive", "upcoming", "posts", "console", "ai", "setup"];
   var TAB_LABELS = {
     reviews: "Waiting for your review", analytics: "Analytics", campaigns: "Campaigns", calendar: "Calendar",
-    styles: "Editing Styles", accounts: "Accounts", agents: "AI Agents", newpost: "New Post", drive: "From Drive",
+    styles: "Editing Styles", resources: "Resources", accounts: "Accounts", agents: "AI Agents", newpost: "New Post", drive: "From Drive",
     upcoming: "Upcoming", posts: "Posts", console: "Console", ai: "AI Providers", setup: "Setup",
   };
   var DEFAULT_TABS = {
-    top: ["reviews", "analytics", "campaigns", "calendar", "styles"],
+    top: ["reviews", "analytics", "campaigns", "calendar", "styles", "resources"],
     left: ["accounts", "agents", "newpost"],
     bottom: ["drive", "upcoming", "posts"],
     right: ["console", "ai", "setup"],

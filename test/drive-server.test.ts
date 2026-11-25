@@ -55,7 +55,7 @@ test("the default set, the default style and their TikTok options are FreePoster
   let s = await status();
   assert.deepEqual(s.accountSets.map((set: any) => [set.id, set.isDefault]), [[1, true]], "the oldest set");
   assert.deepEqual(s.accounts.filter((a: any) => a.isDefault).map((a: any) => a.id).sort(), [x.id, tiktok.id].sort(), "its accounts");
-  assert.deepEqual(s.editingStyles.map((st: any) => [st.id, st.name, st.token, st.isDefault]), [["basic", "Basic", "Basic", true], ["fancy", "Fancy", "Fancy", false]]);
+  assert.deepEqual(s.editingStyles.map((st: any) => [st.id, st.name, st.token, st.isDefault]), [["basic", "Basic", "Basic", true], ["fancy", "Fancy", "Fancy", false], ["slideshow", "Slideshow", "Slideshow", false]]);
   const other = (await app.inject({ method: "POST", url: "/api/account-sets", payload: { name: "Client A" } })).json();
   assert.equal((await putDefaults({ set: other.id, style: "basic", tiktok: { allowComment: false, allowDuet: true, allowStitch: true } })).statusCode, 200);
   s = await status();

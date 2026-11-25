@@ -15,6 +15,9 @@ import { consoleBuffer } from "./console-buffer.ts";
 import { codeDir, config, dataDir, DEFAULT_PORT, edition, envFile, isConfigured, isLocalUrl, needsRedirectPage, redirectUri, saveSettings, setting, SETTINGS, type SettingKey } from "./config.ts";
 import { randomToken } from "./crypto.ts";
 import type { SignIn, Store } from "./db.ts";
+import { sendFile } from "./send-file.ts";
+import { registerResourceRoutes, setIdFrom } from "./resources/routes.ts";
+import { ResourceStore } from "./resources/store.ts";
 import { mcpTools, registerMcp, trustedRequest } from "./mcp.ts";
 import { registerAgentApi } from "./api/routes.ts";
 import { registerAnalyticsRoutes } from "./analytics/routes.ts";
@@ -33,7 +36,9 @@ import type { Publisher } from "./platforms/base.ts";
 import { creatorInfo } from "./platforms/tiktok.ts";
 import { driveAuthorizeUrl, driveRedirectUri, exchangeDriveCode, folderIdFrom } from "./drive/client.ts";
 import type { Intake } from "./drive/intake.ts";
-import { parseEditSettings } from "./edit/settings.ts";
+import { createEditFor, isManifestSource } from "./edit/create.ts";
+import { isSlideshow, parseEditSettings } from "./edit/settings.ts";
+import { parseRefs } from "./resources/use.ts";
 import { whisperHealth } from "./edit/transcribe.ts";
 import { captionTopicFor, checkDraft, coverOf, DuplicateError, editView, parseSchedule, postView, saveUpload, type Draft } from "./posts.ts";
 import { hermesDetected, hermesPluginStatus, installHermesPlugin } from "./integrations/hermes.ts";
@@ -109,6 +114,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
       window: "the FreePoster window always shows reviews waiting",
     };
   };
+  const resources = new ResourceStore(store);
   app.register(multipart, { limits: { fileSize: 4 * 1024 ** 3, files: 1, fields: 20 } });
 
   // Read per request, so a password saved from the setup screen applies at once.
@@ -329,7 +335,9 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   });
 
   app.delete<{ Params: { id: string } }>("/api/account-sets/:id", async (req, reply) => {
-    const error = deleteAccountSet(store, Number(req.params.id));
+    const id = Number(req.params.id);
+    if (resources.list(id).length) return reply.code(400).send({ error: "delete this set's resources first" });
+    const error = deleteAccountSet(store, id);
     return error ? reply.code(400).send({ error }) : { ok: true };
   });
 
@@ -735,6 +743,8 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
         sourcePath: source.path,
         sha256: source.sha256,
         editId: edit?.id ?? null,
+        // A video-less slideshow has nothing to fall back on but its edit.
+        requireEdit: edit ? isManifestSource(edit.sourcePath) : false,
         cover: coverOf(edit),
         accountIds: JSON.parse(fields.accounts || "[]").map(Number),
         tiktok: fields.tiktok ? JSON.parse(fields.tiktok) : null,
@@ -781,12 +791,15 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
           fields[part.fieldname] = String(part.value);
         }
       }
-      if (!saved) throw new Error("attach a video file");
       const settings = parseEditSettings(fields.settings ? JSON.parse(fields.settings) : undefined);
-      const edit = store.createEdit(saved.path, saved.sha256, settings);
+      if (!saved && !isSlideshow(settings)) throw new Error("attach a video file");
+      const setId = setIdFrom(store, fields.setId);
+      if (typeof setId === "string") throw new Error(setId);
+      const made = createEditFor(store, resources, { source: saved ?? null, settings, setId, refs: parseRefs(fields.resources ? JSON.parse(fields.resources) : undefined) });
+      if (typeof made === "string") throw new Error(made);
       // The same file and settings were edited before: keep that edit and drop this copy.
-      if (edit.sourcePath !== saved.path) try { unlinkSync(saved.path); } catch {}
-      return { editId: edit.id };
+      if (saved && made.sourcePath !== saved.path) try { unlinkSync(saved.path); } catch {}
+      return { editId: made.id };
     } catch (err) {
       if (saved) try { unlinkSync(saved.path); } catch {}
       return reply.code(400).send({ error: (err as Error).message });
@@ -799,21 +812,9 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     return editView(store, publishers, edit);
   });
 
-  /** Sends a video file, honouring Range requests (preview players seek with them). */
-  const sendVideo = (req: FastifyRequest, reply: FastifyReply, path: string) => {
-    const size = statSync(path).size;
-    reply.type("video/mp4").header("accept-ranges", "bytes");
-    const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range ?? "");
-    if (range && (range[1] || range[2])) {
-      const start = range[1] ? Number(range[1]) : Math.max(size - Number(range[2]), 0);
-      const end = range[1] && range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
-      if (start > end || start >= size) return reply.code(416).header("content-range", `bytes */${size}`).send();
-      reply.code(206).header("content-range", `bytes ${start}-${end}/${size}`).header("content-length", end - start + 1);
-      return reply.send(createReadStream(path, { start, end }));
-    }
-    reply.header("content-length", size);
-    return reply.send(createReadStream(path));
-  };
+  const sendVideo = (req: FastifyRequest, reply: FastifyReply, path: string) => sendFile(req, reply, path, "video/mp4");
+
+  registerResourceRoutes(app, store, resources);
 
   // ---- editing styles: the built-in ones and the ones the user adds, each with a thumbnail ----
 
