@@ -53,7 +53,7 @@ export const BUILT_IN_STYLES: readonly EditingStyle[] = [
     id: "slideshow",
     name: "Slideshow",
     description:
-      "A photo slideshow presentation with smooth crossfade transitions, gentle Ken Burns-style pan-and-zoom motion on each image, a warm color grade (teal & orange), and minimal text overlays showing slide numbers.",
+      "Turns your instructions, tagged images and clips, or a video's narration into a 9:16 slideshow: gentle Ken Burns motion on each slide, crossfades between them, a warm teal-and-orange grade and a small slide number in the corner.",
     settings: { ...DEFAULT_EDIT, look: "slideshow" },
     builtIn: true,
   },
