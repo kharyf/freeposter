@@ -15,6 +15,9 @@ import { consoleBuffer } from "./console-buffer.ts";
 import { codeDir, config, dataDir, DEFAULT_PORT, edition, envFile, isConfigured, isLocalUrl, needsRedirectPage, redirectUri, saveSettings, setting, SETTINGS, type SettingKey } from "./config.ts";
 import { randomToken } from "./crypto.ts";
 import type { SignIn, Store } from "./db.ts";
+import { sendFile } from "./send-file.ts";
+import { registerResourceRoutes } from "./resources/routes.ts";
+import { ResourceStore } from "./resources/store.ts";
 import { mcpTools, registerMcp, trustedRequest } from "./mcp.ts";
 import { registerAgentApi } from "./api/routes.ts";
 import { registerAnalyticsRoutes } from "./analytics/routes.ts";
@@ -109,6 +112,7 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
       window: "the FreePoster window always shows reviews waiting",
     };
   };
+  const resources = new ResourceStore(store);
   app.register(multipart, { limits: { fileSize: 4 * 1024 ** 3, files: 1, fields: 20 } });
 
   // Read per request, so a password saved from the setup screen applies at once.
@@ -329,7 +333,9 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   });
 
   app.delete<{ Params: { id: string } }>("/api/account-sets/:id", async (req, reply) => {
-    const error = deleteAccountSet(store, Number(req.params.id));
+    const id = Number(req.params.id);
+    if (resources.list(id).length) return reply.code(400).send({ error: "delete this set's resources first" });
+    const error = deleteAccountSet(store, id);
     return error ? reply.code(400).send({ error }) : { ok: true };
   });
 
@@ -799,21 +805,9 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
     return editView(store, publishers, edit);
   });
 
-  /** Sends a video file, honouring Range requests (preview players seek with them). */
-  const sendVideo = (req: FastifyRequest, reply: FastifyReply, path: string) => {
-    const size = statSync(path).size;
-    reply.type("video/mp4").header("accept-ranges", "bytes");
-    const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range ?? "");
-    if (range && (range[1] || range[2])) {
-      const start = range[1] ? Number(range[1]) : Math.max(size - Number(range[2]), 0);
-      const end = range[1] && range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
-      if (start > end || start >= size) return reply.code(416).header("content-range", `bytes */${size}`).send();
-      reply.code(206).header("content-range", `bytes ${start}-${end}/${size}`).header("content-length", end - start + 1);
-      return reply.send(createReadStream(path, { start, end }));
-    }
-    reply.header("content-length", size);
-    return reply.send(createReadStream(path));
-  };
+  const sendVideo = (req: FastifyRequest, reply: FastifyReply, path: string) => sendFile(req, reply, path, "video/mp4");
+
+  registerResourceRoutes(app, store, resources);
 
   // ---- editing styles: the built-in ones and the ones the user adds, each with a thumbnail ----
 

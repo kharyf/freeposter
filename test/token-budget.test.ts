@@ -27,11 +27,11 @@ test("default MCP fits 4,000 chars of instructions + tools", async () => {
   assert.ok(total <= 4000, `${total}`);
 });
 
-test("API index <= 5,000 chars; every op doc <= 4,000", () => {
+test("API index <= 5,500 chars; every op doc <= 4,000", () => {
   const { tools } = allTools();
   assert.ok(tools.some((t) => t.name === "start_production"), "production ops are covered");
   const index = indexText(tools);
-  assert.ok(index.length <= 5000, `index is ${index.length}`);
+  assert.ok(index.length <= 5500, `index is ${index.length}`);
   for (const t of tools) {
     const doc = opDoc(tools, t.name);
     assert.ok(doc.length <= 4000, `${t.name} doc is ${doc.length}`);

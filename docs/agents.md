@@ -59,7 +59,7 @@ The other sizes, measured the same way and held by `test/token-budget.test.ts`:
 
 | What | Size | Budget |
 |---|---|---|
-| `GET /agent/v1` (every op, one line each) | 4,943 chars | 5,000 |
+| `GET /agent/v1` (every op, one line each) | about 5,200 chars | 5,500 |
 | `POST /agent/v1/list_accounts` with one account | 335 chars | 400 |
 | any one op's doc (`GET /agent/v1/<op>`) | at most 4,000 chars | 4,000 |
 
@@ -176,3 +176,16 @@ A Create row's Lemo film is offered 48 hours before its slot (at once, if it's s
 If it can't make the film, the agent calls `give_up_brief` with a reason: the task fails and you get a Telegram message saying the agent gave up and why.
 
 If you tap Redo on an agent film, FreePoster gives the agent a new round of the brief, with your note added to its instructions, for the same slot (the `review.redo` event says `handled_by: "freeposter"`).
+
+## 7. Resources
+
+Resources are text, audio, image and video files the user keeps for each account set (the Resources tab, `list_resources`, `add_resource`). **An edit uses only the resources it names**: tag them in `resources: [{ "tag": "logo", "as": "overlay" }]` or write `@tag` in its `instructions`. Nothing is used automatically, and an unknown tag is an error. A tag is 1 to 32 lowercase letters, digits or dashes, unique within its set.
+
+| Kind | Roles (`as`) | What it does |
+|---|---|---|
+| text | `context` | Its text goes to the AI that plans a Fancy edit or a Slideshow. |
+| audio | `music` | Plays under the edit, ducked under speech, with a 1 s fade-out. |
+| image | `slide` (Slideshow, the default there) or `overlay` | A slide with Ken Burns motion, or a logo top-right on every frame. |
+| video | `clip` | An end clip after the edit, or a muted slide in a Slideshow. |
+
+Deleting a resource keeps its file, so an edit that was already queued still renders.

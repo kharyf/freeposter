@@ -26,6 +26,8 @@ import { EVENT_TYPES, eventView, nextEvent } from "./notify.ts";
 import type { ReviewService, ReviewRequest } from "./review/service.ts";
 import { REVIEW_STATES, type ReviewState } from "./review/store.ts";
 import { captionTopicFor, checkDraft, DuplicateError, editView, parseSchedule, postView, saveUpload, type Draft } from "./posts.ts";
+import { resourceTools } from "./resources/mcp-tools.ts";
+import { ResourceStore } from "./resources/store.ts";
 import { productionTools } from "./produce/mcp-tools.ts";
 import { analyticsTools } from "./analytics/mcp-tools.ts";
 import { agentTools } from "./campaigns/agent-tools.ts";
@@ -628,6 +630,7 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
     fail: (message) => new ToolError(message),
   }));
   tools.push(
+    ...resourceTools(store, new ResourceStore(store)),
     ...analyticsTools({ store, fail: (message) => new ToolError(message) }),
     ...campaignTools({ store, worker: () => campaigns, agent, fail: (message) => new ToolError(message) }),
     ...agentTools({ store, worker: () => campaigns, agent, fail: (message) => new ToolError(message) }),
