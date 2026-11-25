@@ -56,12 +56,16 @@ export const modelIds = (ai: AiService | null | undefined): string[] | undefined
 export const disabledModelIds = (ai: AiService | null | undefined): string[] | undefined =>
   ai ? [...ai.offModels()] : undefined;
 
+/** The WanGP video models a row can be made with right now (`wangp:<model>`), or undefined with no AI service to ask. */
+export const videoModelIds = (ai: AiService | null | undefined): string[] | undefined =>
+  ai ? ai.videoChoices().models.map((m) => m.id) : undefined;
+
 /**
  * What the compiler may name right now: the user's styles, video types, library and Lemo styles, and the models a row
  * may pick (without `models` a row's model isn't checked for being available; `disabledModels` names the ones the user
- * turned off, which a row may never pick).
+ * turned off, which a row may never pick; `videoModels`, the WanGP models it may be made with).
  */
-export function campaignVocabulary(store: Store, cs: CampaignStore, models?: string[], disabledModels?: string[]): Vocabulary {
+export function campaignVocabulary(store: Store, cs: CampaignStore, models?: string[], disabledModels?: string[], videoModels?: string[]): Vocabulary {
   return {
     styles: allStyles(store).map((s) => ({ id: s.id, token: styleToken(s) })),
     defaultStyle: defaultStyleId(store),
@@ -72,6 +76,7 @@ export function campaignVocabulary(store: Store, cs: CampaignStore, models?: str
     looks: allLooks(store).map((l) => ({ key: l.key })),
     ...(models ? { models } : {}),
     ...(disabledModels ? { disabledModels } : {}),
+    ...(videoModels ? { videoModels } : {}),
   };
 }
 

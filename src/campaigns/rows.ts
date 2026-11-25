@@ -22,6 +22,11 @@ export interface Row {
   style: string | null;
   /** the AI model (`provider:model`) that writes it; every row names one, null only when no model is on offer (a Drive row, or no AI connected) */
   model: string | null;
+  /**
+   * The WanGP model (`wangp:<model>`) a Create row's video is made with; null uses the WanGP model set in Setup. Only a
+   * Create row with a FreePoster editing style is made by WanGP, so any other row's is ignored.
+   */
+  videoModel: string | null;
   /** a video type id, or none */
   type: number | null;
   /** 24-hour "HH:MM" it posts at (a saved row always has one) */
@@ -50,7 +55,11 @@ export const rowIdHex = (id: number): string => (id <= 0 ? "new" : id.toString(1
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
-const KEYS = ["id", "quantity", "hook", "angle", "cta", "style", "model", "type", "time", "days", "sec", "origin", "text"];
+const KEYS = ["id", "quantity", "hook", "angle", "cta", "style", "model", "videoModel", "type", "time", "days", "sec", "origin", "text"];
+/** A WanGP video model id, `wangp:<model>`. */
+export const isVideoModelId = (v: unknown): v is string => typeof v === "string" && /^wangp:\S{1,200}$/.test(v);
+/** Whether a row's video is made by WanGP, so its video model is used: a Create row with a FreePoster editing style. */
+export const usesVideoModel = (r: Pick<Row, "origin" | "style">): boolean => r.origin === "create" && !isLemo(r.style);
 
 /** A Lemo style (a looks catalogue key), not a FreePoster editing style id (which never contains ":"). */
 export const isLemo = (style: string | null): boolean => style !== null && style.startsWith("lemo:");
@@ -64,12 +73,13 @@ export const isFilmModel = (model: string | null): boolean => model !== null && 
 
 /**
  * A row as saved before the Lemo style moved into `style`: an Agent row's `look` becomes its style (any FreePoster
- * style it had is dropped), `look` goes, and a missing `model` is null. A row already in today's shape is unchanged.
+ * style it had is dropped), `look` goes, and a missing `model` or `videoModel` is null. A row already in today's shape is unchanged.
  */
 export function migrateRow(raw: Record<string, unknown>): Record<string, unknown> {
   const { look, ...out } = raw;
   if (raw.origin === "agent" && look !== undefined && look !== null) out.style = look;
   if (out.model === undefined) out.model = null;
+  if (out.videoModel === undefined) out.videoModel = null;
   return out;
 }
 
@@ -143,6 +153,9 @@ export function parseRows(raw: unknown, vocab: Vocabulary, known?: Set<number>):
     else if (r.model !== null && vocab.disabledModels?.includes(r.model)) problem(`${r.model} is turned off under AI Providers; turn it on there or pick another model`);
     // Every row names its model (a Drive row makes nothing, so it has none): with models to pick from, no model isn't a choice.
     else if (r.model === null && r.origin !== "drive" && vocab.models?.length) problem("no model picked");
+    else if (r.model !== null && r.model.startsWith("wangp:")) problem("model is the AI that writes the video; a WanGP model goes in videoModel");
+    if (r.videoModel !== null && !isVideoModelId(r.videoModel)) problem('videoModel must be a WanGP model id like "wangp:t2v_2_2", or null for the one set in Setup');
+    else if (r.videoModel !== null && vocab.disabledModels?.includes(r.videoModel)) problem(`${r.videoModel} is turned off under AI Providers; turn it on there or pick another video model`);
     // Compacted results drop null and empty fields, so a missing one reads as null (text: "").
     if (r.type !== null && r.type !== undefined && !(typeof r.type === "number" && vocab.types.some((t) => t.id === r.type))) problem(`no video type with id ${String(r.type)}`);
     if (r.time === null || r.time === undefined) problems.push(`${name}: needs a post time`);
@@ -160,7 +173,7 @@ export function parseRows(raw: unknown, vocab: Vocabulary, known?: Set<number>):
     if (r.origin === "drive" && text.includes("_")) problem("a Drive file name is the part before the first underscore, so it can't contain one");
     value.push({
       id, quantity: r.quantity as number, hook, angle, cta, style: style === undefined ? String(r.style) : style, model: r.model as string | null,
-      type: (r.type as number | null) ?? null, time: (r.time as string | null) ?? null, days, sec: (r.sec as number | null) ?? null, origin: r.origin as Row["origin"], text,
+      videoModel: r.videoModel as string | null, type: (r.type as number | null) ?? null, time: (r.time as string | null) ?? null, days, sec: (r.sec as number | null) ?? null, origin: r.origin as Row["origin"], text,
     });
   });
   return problems.length ? { ok: false, problems } : { ok: true, value, warnings };
@@ -190,6 +203,7 @@ export function rowIssues(r: Row, vocab?: Vocabulary): string[] {
   }
   if (r.origin !== "drive" && r.model === null && vocab?.models?.length) out.push("no model picked");
   if (r.origin !== "drive" && r.model !== null && vocab?.models && !vocab.models.includes(r.model)) out.push(`${r.model} isn't available; pick another model`);
+  if (usesVideoModel(r) && r.videoModel !== null && vocab?.videoModels && !vocab.videoModels.includes(r.videoModel)) out.push(`${r.videoModel} isn't available; pick another video model`);
   return out;
 }
 
@@ -206,6 +220,7 @@ export function compileRows(rows: Row[], vocab?: Vocabulary): CompiledCampaign {
       ? {
         kind: "make", count: r.quantity, ...(isLemo(r.style) ? { style: null, look: r.style! } : { style: r.style }),
         ...(isLemo(r.style) && r.origin === "create" ? { scripted: true as const } : {}), ...(r.model !== null ? { model: r.model } : {}),
+        ...(usesVideoModel(r) && r.videoModel !== null ? { videoModel: r.videoModel } : {}),
         sec: r.sec, hook: { ...r.hook }, angle: { ...r.angle }, cta: { ...r.cta }, types,
         post: r.time === null ? null : { at: r.time }, source, row: r.id, ...(r.text.trim() ? { instructions: r.text.trim() } : {}),
       }

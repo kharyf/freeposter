@@ -3,8 +3,10 @@ import { checkBudget } from "./budget.ts";
 import { askClaude, CLAUDE_MODELS } from "../claude.ts";
 import type { Store } from "../db.ts";
 import type { ProgramRun } from "./cli.ts";
+import * as lmstudio from "./lmstudio.ts";
 import * as openrouter from "./openrouter.ts";
-import { AI_JOBS, JOB_LABELS, PROVIDER_IDS, PROVIDERS, type AiJob, type Answer, type ProviderId, type Question } from "./providers.ts";
+import { AI_JOBS, answersQuestions, JOB_LABELS, PROVIDER_IDS, PROVIDERS, type AiJob, type Answer, type ProviderId, type Question } from "./providers.ts";
+import { wangpDir, wangpModel, wangpModels } from "../produce/tools.ts";
 
 interface Saved { plan: string | null; path?: string; connectedAt: number }
 type SavedProviders = Partial<Record<ProviderId, Saved>>;
@@ -44,12 +46,22 @@ export interface AiOptions {
   fetch?: openrouter.Fetch;
   /** finds a provider's program (a stand-in in tests) */
   find?: (id: ProviderId, override?: string) => string;
+  /** LM Studio's HTTP (a stand-in in tests) */
+  lmFetch?: lmstudio.Fetch;
+  /** the WanGP install: its folder ("" when not found), the video models in it, and the one Setup uses (a stand-in in tests) */
+  wangp?: { dir(): string; video(dir: string): string[]; current(): string };
 }
+
+/** How long LM Studio's model list is trusted before it's asked again (models get downloaded and deleted). */
+const LM_LIST_MS = 60_000;
 
 export class AiService {
   store: Store;
   opts: AiOptions;
   private balanceCache?: { at: number; value: openrouter.Balance };
+  /** LM Studio's chat models as last listed, and when; `error` is why the last listing failed */
+  private lm: { at: number; models: lmstudio.LmModel[]; error?: string } = { at: 0, models: [] };
+  private lmLoading?: Promise<void>;
 
   constructor(store: Store, opts: AiOptions = {}) {
     this.store = store;
@@ -61,6 +73,52 @@ export class AiService {
     // Apply a saved custom endpoint (like FreeLLMAPI) so the first model fetch already goes through it.
     const savedEndpoint = store.pref<string>(ENDPOINT_PREF);
     if (savedEndpoint) openrouter.setApiBase(savedEndpoint);
+    // LM Studio's models are listed in the background, so the Campaigns tab has them the first time it asks.
+    if (this.saved().lmstudio) void this.refreshLm();
+  }
+
+  private wangp() {
+    return this.opts.wangp ?? { dir: wangpDir, video: (dir: string) => wangpModels(dir).video, current: wangpModel };
+  }
+
+  /** The LM Studio server FreePoster asks: the address given when connecting, else LM Studio's default. */
+  private lmServer(): string {
+    return lmstudio.serverOf(this.saved().lmstudio?.path);
+  }
+
+  /** Lists LM Studio's models again (one listing at a time); a failure keeps the last list and says why. */
+  private refreshLm(): Promise<void> {
+    this.lmLoading ??= lmstudio.models(this.lmServer(), this.opts.lmFetch)
+      .then((models) => { this.lm = { at: Date.now(), models }; })
+      .catch((err) => { this.lm = { ...this.lm, at: Date.now(), error: (err as Error).message }; })
+      .finally(() => { this.lmLoading = undefined; });
+    return this.lmLoading;
+  }
+
+  /** LM Studio's models, listing them again first when the list is old. */
+  private async lmModels(): Promise<lmstudio.LmModel[]> {
+    if (Date.now() - this.lm.at > LM_LIST_MS) await this.refreshLm();
+    return this.lm.models;
+  }
+
+  /** LM Studio's models as last listed, without waiting (lists them again in the background when the list is old). */
+  private lmList(): lmstudio.LmModel[] {
+    if (Date.now() - this.lm.at > LM_LIST_MS) void this.refreshLm();
+    return this.lm.models;
+  }
+
+  /** The LM Studio model a question goes to when none is named: one already loaded, else the first downloaded. */
+  private async lmDefault(): Promise<string> {
+    const list = await this.lmModels();
+    if (!list.length) throw new Error(this.lm.error ?? "LM Studio has no chat model downloaded");
+    return list[0].id;
+  }
+
+  /** The video models the WanGP install has (none when it isn't found). */
+  private wangpList(): string[] {
+    const w = this.wangp();
+    const dir = w.dir();
+    return dir ? w.video(dir) : [];
   }
 
   private saved(): SavedProviders {
@@ -68,7 +126,8 @@ export class AiService {
   }
 
   private find(id: ProviderId, override?: string): string {
-    if (id === "openrouter") return "";
+    if (id === "openrouter" || id === "lmstudio") return "";
+    if (id === "wangp") return this.wangp().dir();
     return this.opts.find ? this.opts.find(id, override) : PROVIDERS[id].find!(override);
   }
 
@@ -106,10 +165,12 @@ export class AiService {
       .sort((a, b) => saved[a]!.connectedAt - saved[b]!.connectedAt);
   }
 
-  /** Whether a provider can do the job: only some can look at the still frames. */
+  /** Whether a provider can do the job: WanGP does none (it makes video), and only some can look at the still frames. */
   canDo(id: ProviderId, job: AiJob): boolean {
+    if (!answersQuestions(id)) return false;
     if (job !== "frames") return true;
     if (id === "openrouter") return this.modelInfo()?.images ?? true;
+    if (id === "lmstudio") return this.lm.models[0]?.vision ?? false;
     return PROVIDERS[id].images;
   }
 
@@ -117,9 +178,9 @@ export class AiService {
     return modelList?.find((m) => m.id === this.model());
   }
 
-  /** The job's connected providers, in the user's order; ones connected since go last. */
+  /** The job's connected providers, in the user's order; ones connected since go last. WanGP is never in it. */
   ranking(job: AiJob): ProviderId[] {
-    const connected = this.connected();
+    const connected = this.connected().filter(answersQuestions);
     const saved = (this.store.pref<Record<string, ProviderId[]>>(RANKING_PREF) ?? {})[job] ?? [];
     return [...saved.filter((id) => connected.includes(id)), ...connected.filter((id) => !saved.includes(id))];
   }
@@ -139,13 +200,26 @@ export class AiService {
   private modelsOf(provider: ProviderId): { id: string; name: string }[] {
     return provider === "claude" ? CLAUDE_MODELS.map((m) => ({ id: `claude:${m.id}`, name: m.name }))
       : provider === "openrouter" ? (modelList ?? []).map((m) => ({ id: `openrouter:${m.id}`, name: m.name }))
+      : provider === "lmstudio" ? this.lmList().map((m) => ({ id: `lmstudio:${m.id}`, name: m.id }))
+      : provider === "wangp" ? this.wangpList().map((id) => ({ id: `wangp:${id}`, name: id }))
       : [{ id: `${provider}:default`, name: `${PROVIDERS[provider].label} default` }];
   }
 
-  /** The models each connected provider offers that the user left in use, with full `provider:model` ids. */
+  /**
+   * The video models a generated campaign row can be made with (WanGP's, left in use, while it's connected), and the one
+   * a row without its own uses: the WanGP model set in Setup (or last used in WanGP), "" when there's none.
+   */
+  videoChoices(): { models: { id: string; name: string }[]; fallback: string } {
+    const off = this.offModels();
+    const models = this.connected().includes("wangp") ? this.modelsOf("wangp").filter((m) => !off.has(m.id)) : [];
+    return { models, fallback: this.wangp().current() };
+  }
+
+  /** The models that can write a campaign row (each connected provider that answers questions), left in use, with full `provider:model` ids. */
   modelChoices(): { provider: ProviderId; label: string; models: { id: string; name: string }[] }[] {
     const off = this.offModels();
     return this.connected()
+      .filter(answersQuestions)
       .map((provider) => ({ provider, label: PROVIDERS[provider].label, models: this.modelsOf(provider).filter((m) => !off.has(m.id)) }))
       .filter((g) => g.models.length); // a provider with nothing left in use isn't offered at all
   }
@@ -172,6 +246,8 @@ export class AiService {
       if (!key) throw new Error("OpenRouter isn't connected");
       return openrouter.ask<T>(q, key, model || this.model(), this.opts.fetch);
     }
+    if (id === "lmstudio") return lmstudio.ask<T>(q, this.lmServer(), model || (await this.lmDefault()), this.opts.lmFetch);
+    if (!answersQuestions(id)) throw new Error(`${PROVIDERS[id].label} makes video; it can't write`);
     const def = PROVIDERS[id];
     const path = this.find(id, this.saved()[id]?.path);
     if (!path) throw new Error(`${def.program} isn't installed`);
@@ -221,10 +297,30 @@ export class AiService {
     }
   }
 
-  /** Connects a plan provider: its program must be installed and answer a tiny question. */
+  /**
+   * Connects a provider: a plan provider's program must be installed and answer a tiny question; LM Studio's server
+   * (at `path`, its address, blank for the default) must list a model that answers it; WanGP must be installed.
+   */
   async connect(id: ProviderId, opts: { plan?: string | null; path?: string } = {}) {
     if (id === "openrouter") throw new Error("OpenRouter connects through its sign-in page");
     const def = PROVIDERS[id];
+    if (id === "lmstudio") {
+      const server = lmstudio.serverOf(opts.path);
+      const list = await lmstudio.models(server, this.opts.lmFetch);
+      if (!list.length) throw new Error(`LM Studio has no chat model downloaded. ${def.setup}`);
+      try {
+        await lmstudio.ask(PROBE, server, list[0].id, this.opts.lmFetch);
+      } catch (err) {
+        throw new Error(`${list[0].id} didn't answer: ${(err as Error).message}`);
+      }
+      this.lm = { at: Date.now(), models: list };
+      return this.save(id, null, server === lmstudio.DEFAULT_SERVER ? undefined : server);
+    }
+    if (id === "wangp") {
+      if (!this.find(id)) throw new Error(`WanGP wasn't found on this computer. ${def.setup}`);
+      if (!this.wangpList().length) throw new Error("WanGP has no video models; open WanGP once so it writes its model list");
+      return this.save(id, null);
+    }
     const path = this.find(id, opts.path?.trim() || undefined);
     if (!path) throw new Error(`${def.program} isn't installed on this computer. ${def.setup}`);
     try {
@@ -232,15 +328,23 @@ export class AiService {
     } catch (err) {
       throw new Error(`${def.program} didn't answer: ${(err as Error).message}. ${def.setup}`);
     }
+    this.save(id, opts.plan ?? null, opts.path?.trim() || undefined);
+  }
+
+  /** Saves a provider as connected (keeping when it was first connected, and its plan when none is given). */
+  private save(id: ProviderId, plan: string | null, path?: string) {
     const saved = this.saved();
-    saved[id] = { plan: opts.plan ?? saved[id]?.plan ?? null, ...(opts.path?.trim() ? { path: opts.path.trim() } : {}), connectedAt: saved[id]?.connectedAt ?? Date.now() };
+    saved[id] = { plan: plan ?? saved[id]?.plan ?? null, ...(path ? { path } : {}), connectedAt: saved[id]?.connectedAt ?? Date.now() };
     this.store.setPref(PROVIDERS_PREF, saved);
   }
 
-  /** Asks the tiny question again, through the same path a real job takes. */
+  /** Asks the tiny question again, through the same path a real job takes (WanGP, which answers none, is looked for). */
   async test(id: ProviderId) {
     try {
-      await this.askOne(id, PROBE);
+      if (id === "wangp") {
+        if (!this.find(id)) throw new Error(`WanGP wasn't found on this computer. ${PROVIDERS.wangp.setup}`);
+        if (!this.wangpList().length) throw new Error("WanGP has no video models");
+      } else await this.askOne(id, PROBE);
       this.store.recordAiUse({ provider: id, job: "test", ok: true });
     } catch (err) {
       this.store.recordAiUse({ provider: id, job: "test", ok: false, error: (err as Error).message.slice(0, 500) });
@@ -298,6 +402,7 @@ export class AiService {
     const connected = this.connected();
     // OpenRouter's models come over the wire: load them before its section and the In Use lists are built.
     const openrouter = connected.includes("openrouter") ? await this.openRouterView() : null;
+    if (connected.includes("lmstudio")) await this.lmModels();
     const off = this.offModels();
     const last = this.store.aiLastUses();
     const lastOf = (id: string, ok: number) => last.find((u) => u.provider === id && u.ok === ok);
@@ -311,15 +416,19 @@ export class AiService {
         label: def.label,
         program: def.program ?? null,
         billing: def.billing,
-        pricing: def.billing === "credits"
-          ? "Pay per use, from your OpenRouter credits"
+        pricing: def.billing === "credits" ? "Pay per use, from your OpenRouter credits"
+          : def.billing === "local" ? "Free: runs on this computer"
           : `Monthly plan${plan ? `: ${plan.label}${plan.price ? ` (${plan.price})` : ""}` : ""}`,
         plans: def.plans,
         plan: plan?.id ?? null,
         connected: connected.includes(id),
-        installed: id === "openrouter" ? null : Boolean(this.find(id, saved[id]?.path)),
+        installed: id === "openrouter" || id === "lmstudio" ? null : Boolean(this.find(id, saved[id]?.path)),
         path: saved[id]?.path ?? "",
-        images: id === "openrouter" ? this.canDo(id, "frames") : def.images,
+        images: id === "openrouter" || id === "lmstudio" ? this.canDo(id, "frames") : def.images,
+        /** answers FreePoster's questions (WanGP doesn't: it makes the video) */
+        writes: answersQuestions(id),
+        /** why LM Studio's model list couldn't be read, while there's no list to show */
+        listError: id === "lmstudio" && connected.includes(id) && !this.lm.models.length ? this.lm.error ?? null : null,
         experimental: Boolean(def.experimental),
         setupUrl: def.setupUrl,
         setup: def.setup,

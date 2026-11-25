@@ -19,6 +19,7 @@ import { mcpTools, registerMcp, trustedRequest } from "./mcp.ts";
 import { registerAgentApi } from "./api/routes.ts";
 import { registerAnalyticsRoutes } from "./analytics/routes.ts";
 import { registerCampaignRoutes } from "./campaigns/routes.ts";
+import { usesVideoModel } from "./campaigns/rows.ts";
 import { CampaignStore } from "./campaigns/store.ts";
 import type { CampaignWorker } from "./campaigns/worker.ts";
 import { postSigned } from "./notify.ts";
@@ -372,8 +373,9 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
   function modelsInUse(): Record<string, number> {
     const out: Record<string, number> = {};
     for (const c of campaignStore.campaigns()) for (const r of c.rows) {
-      if (r.origin === "drive" || !r.model) continue; // a Drive row makes nothing, so its model is never asked for
-      out[r.model] = (out[r.model] ?? 0) + 1;
+      if (r.origin === "drive") continue; // a Drive row makes nothing, so its models are never asked for
+      if (r.model) out[r.model] = (out[r.model] ?? 0) + 1;
+      if (r.videoModel && usesVideoModel(r)) out[r.videoModel] = (out[r.videoModel] ?? 0) + 1;
     }
     return out;
   }

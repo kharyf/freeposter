@@ -45,6 +45,31 @@
     return rows.some(function (r) { return r.origin === "create" || r.origin === "agent"; });
   }
 
+  /** Whether a row's video is made by WanGP, so its video model is used: a Create row with a FreePoster editing style. */
+  function usesVideoModel(row) { return row.origin === "create" && !isLemo(row.style); }
+
+  /** The Video Model column: while WanGP's models are on offer, or a row still names one. */
+  function showVideoModelColumn(rows, ctx) {
+    var offer = ctx.videoModels && ctx.videoModels.models.length > 0;
+    return rows.some(function (r) { return usesVideoModel(r) && (offer || (r.videoModel !== null && r.videoModel !== undefined)); });
+  }
+
+  /**
+   * The Video Model dropdown: Setup's WanGP model first (a row that picks none uses it), then each WanGP model left in
+   * use. One the row names that's no longer on offer stays listed, marked.
+   */
+  function videoModelOptions(row, ctx) {
+    if (!usesVideoModel(row)) return [];
+    var v = ctx.videoModels || { models: [], fallback: "" };
+    var groups = [{ label: "", options: [{ value: "", label: v.fallback ? "Setup's model (" + v.fallback + ")" : "Setup's model (none set)" }] }];
+    if (v.models.length) groups.push({ label: "WanGP", options: v.models.map(function (m) { return { value: m.id, label: m.name }; }) });
+    var m = row.videoModel;
+    if (m !== null && m !== undefined && !v.models.some(function (x) { return x.id === m; })) {
+      groups[groups.length - 1].options.push({ value: m, label: m.replace(/^wangp:/, "") + " (not available)", selected: true });
+    }
+    return groups;
+  }
+
   /** The Lemo styles, grouped by category. None at all when the library has none (the row's issues say why). */
   function lemoGroups(ctx, row) {
     if (!ctx.lemo.length) return [];
@@ -121,7 +146,7 @@
   function applyChange(row, field, value, ctx) {
     var next = structuredClone(row);
     var flash;
-    if (field === "model") next.model = value === "" ? null : value;
+    if (field === "model" || field === "videoModel") next[field] = value === "" ? null : value;
     else next[field] = value;
     if (field === "style" && row.origin === "create" && isLemo(value) && next.model === null) {
       next.model = defaultFilm(ctx);
@@ -172,6 +197,9 @@
       var known = ctx.models.some(function (p) { return p.models.some(function (m) { return m.id === r.model; }); });
       if (!known) out.push(r.model + " isn't available; pick another model");
     }
+    if (usesVideoModel(r) && r.videoModel !== null && r.videoModel !== undefined && ctx.videoModels) {
+      if (!ctx.videoModels.models.some(function (m) { return m.id === r.videoModel; })) out.push(r.videoModel + " isn't available; pick another video model");
+    }
     return out;
   }
 
@@ -207,7 +235,8 @@
       id: Math.min.apply(null, [0, lowest || 0].concat(rows.map(function (r) { return r.id; }))) - 1,
       quantity: 1, hook: { pick: "random" }, angle: { pick: "random" }, cta: { pick: "random" },
       style: last && last.style != null ? last.style : defaultStyle, type: null, time: null, days: [], sec: 30, origin: "create",
-      model: last && last.model !== undefined ? last.model : null, text: "",
+      model: last && last.model !== undefined ? last.model : null,
+      videoModel: last && last.videoModel !== undefined ? last.videoModel : null, text: "",
     };
   }
 
@@ -231,6 +260,7 @@
     reviveGone: reviveGone,
     newRow: newRow,    hexId: hexId, saveProblems: saveProblems,
     isLemo: isLemo, isClaudeModel: isClaudeModel, isFilmModel: isFilmModel, claudeConnected: claudeConnected, filmAgentConnected: filmAgentConnected, originOptions: originOptions, showModelColumn: showModelColumn,
+    usesVideoModel: usesVideoModel, showVideoModelColumn: showVideoModelColumn, videoModelOptions: videoModelOptions,
     styleGroups: styleGroups, modelOptions: modelOptions, applyChange: applyChange, rowIssues: rowIssues, sameRows: sameRows,
   };
 })(typeof globalThis !== "undefined" ? globalThis : this);

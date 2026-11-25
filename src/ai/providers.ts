@@ -1,5 +1,6 @@
-// Every AI provider FreePoster can use, and how to ask each one a question. All but OpenRouter run the program
-// that comes with the user's own monthly plan (signed in on this computer), so nothing is billed per use.
+// Every AI provider FreePoster can use, and how to ask each one a question. The plan providers run the program that
+// comes with the user's own monthly plan (signed in on this computer), so nothing is billed per use; OpenRouter is paid
+// per use; LM Studio and WanGP run on this computer for free (WanGP makes video, so it answers no questions).
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,8 +21,14 @@ export const JOB_LABELS: Record<AiJob, string> = {
   label: "Spotting the angle of your recorded videos",
 };
 
-export const PROVIDER_IDS = ["claude", "chatgpt", "google", "copilot", "cursor", "grok", "muse", "openrouter"] as const;
+// Lowercase letters only: a model id is written "provider:model" and campaign rows check it as such.
+export const PROVIDER_IDS = ["claude", "chatgpt", "google", "copilot", "cursor", "grok", "muse", "openrouter", "lmstudio", "wangp"] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
+/** The providers that run on this computer, reached without a program of their own to find. */
+export const LOCAL_PROVIDERS = ["lmstudio", "wangp"] as const satisfies readonly ProviderId[];
+/** The providers asked no questions: WanGP makes video, so its models are a campaign row's video model, not its writer. */
+export const VIDEO_PROVIDERS = ["wangp"] as const satisfies readonly ProviderId[];
+export const answersQuestions = (id: ProviderId): boolean => !(VIDEO_PROVIDERS as readonly ProviderId[]).includes(id);
 
 /** One question with no tools, answered as JSON matching `schema`. `images` are JPEGs shown with the prompt. */
 export interface Question {
@@ -46,8 +53,8 @@ export interface Plan { id: string; label: string; price?: string }
 export interface ProviderDef {
   id: ProviderId;
   label: string;
-  /** "plan": the user's monthly plan through its program; "credits": prepaid, charged per use */
-  billing: "plan" | "credits";
+  /** "plan": the user's monthly plan through its program; "credits": prepaid, charged per use; "local": free, on this computer */
+  billing: "plan" | "credits" | "local";
   plans: Plan[];
   /** can look at the still frames of a video with no speech */
   images: boolean;
@@ -125,7 +132,7 @@ export function strictSchema(schema: any): any {
 
 const localAppData = process.env.LOCALAPPDATA ?? "";
 
-export const PROVIDERS: Record<Exclude<ProviderId, "openrouter">, ProviderDef> & { openrouter: ProviderDef } = {
+export const PROVIDERS: Record<ProviderId, ProviderDef> = {
   claude: {
     id: "claude",
     label: "Claude",
@@ -256,5 +263,26 @@ export const PROVIDERS: Record<Exclude<ProviderId, "openrouter">, ProviderDef> &
     images: true,
     setupUrl: "https://openrouter.ai",
     setup: "Sign in with your OpenRouter account. Each answer is paid from your OpenRouter credits.",
+  },
+  lmstudio: {
+    id: "lmstudio",
+    label: "LM Studio",
+    billing: "local",
+    plans: [],
+    // Per model: only its vision models can (the router asks the model in use).
+    images: false,
+    program: "LM Studio",
+    setupUrl: "https://lmstudio.ai/docs/developer/core/server",
+    setup: "Install LM Studio, download a model that can use tools or structured output, then go to Developer and start the server (it listens on http://localhost:1234). Answers are written on this computer, for free.",
+  },
+  wangp: {
+    id: "wangp",
+    label: "WanGP",
+    billing: "local",
+    plans: [],
+    images: false,
+    program: "WanGP",
+    setupUrl: "https://github.com/deepbeepmeep/Wan2GP",
+    setup: "Install WanGP and set its folder in Setup. Its video models can then be chosen for each generated campaign video; it doesn't write captions or scripts.",
   },
 };

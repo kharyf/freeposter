@@ -162,7 +162,7 @@ test("opening the store migrates old Agent rows once and logs the removed edit",
 });
 
 const newRow = (over: Partial<Row> = {}): Row => ({
-  id: -1, quantity: 1, hook: { pick: "random" }, angle: { pick: "random" }, cta: { pick: "random" }, style: "basic", model: null, type: null,
+  id: -1, quantity: 1, hook: { pick: "random" }, angle: { pick: "random" }, cta: { pick: "random" }, style: "basic", model: null, videoModel: null, type: null,
   time: "18:00", days: ["tue"], sec: 30, origin: "create", text: "", ...over,
 });
 

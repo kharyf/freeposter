@@ -16,7 +16,7 @@ export interface Retirement {
  * Every Row field except the ones that only move a video (time, days) or count them (quantity), and the id. Checked against
  * Row at compile time: a new Row field fails typecheck until it is listed here or among the excluded ones.
  */
-const CONTENT_FIELDS = ["hook", "angle", "cta", "style", "model", "type", "sec", "origin", "text"] as const satisfies readonly (keyof Omit<Row, "id" | "time" | "days" | "quantity">)[];
+const CONTENT_FIELDS = ["hook", "angle", "cta", "style", "model", "videoModel", "type", "sec", "origin", "text"] as const satisfies readonly (keyof Omit<Row, "id" | "time" | "days" | "quantity">)[];
 type Missing = Exclude<keyof Omit<Row, "id" | "time" | "days" | "quantity">, (typeof CONTENT_FIELDS)[number]>;
 const _allClassified: [Missing] extends [never] ? true : never = true;
 void _allClassified;

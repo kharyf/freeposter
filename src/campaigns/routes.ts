@@ -7,7 +7,7 @@ import { claudeConnected, googleConnected } from "../ai/router.ts";
 import { DEFAULT_CLAUDE_MODEL_ID } from "../claude.ts";
 import type { Store } from "../db.ts";
 import { trustedRequest } from "../mcp.ts";
-import { campaignVocabulary, disabledModelIds, modelIds, undoChange } from "./autorun.ts";
+import { campaignVocabulary, disabledModelIds, modelIds, undoChange, videoModelIds } from "./autorun.ts";
 import { lemoIsInstalled, lemoSyncedAt, syncLemoLibrary } from "./lemo-library.ts";
 import { allLooks } from "./looks.ts";
 import { parseRows, ROW_INSTRUCTION_BASE } from "./rows.ts";
@@ -105,6 +105,8 @@ function campaignRoutes(app: FastifyInstance, store: Store, worker?: CampaignWor
       lemoInstalled: lemoIsInstalled(),
       /** the models a Create or Agent row can choose, by connected provider (none without AI) */
       models: worker?.ai?.modelChoices() ?? [],
+      /** the WanGP models a Create row's video can be made with, and the one Setup uses for a row that picks none */
+      videoModels: worker?.ai?.videoChoices() ?? { models: [], fallback: "" },
       /** the model a row switches to when it needs Claude */
       defaultClaude: DEFAULT_CLAUDE_MODEL_ID,
       /** the model a row switches to when it needs a film agent: Claude's default, else Gemini's while only Google AI is connected */
@@ -135,7 +137,7 @@ function campaignRoutes(app: FastifyInstance, store: Store, worker?: CampaignWor
   app.put("/api/campaigns/:id/rows", async (req, reply) => {
     const c = campaignOf(req.params, reply);
     if (!c) return;
-    const r = parseRows(bodyOf(req).rows, campaignVocabulary(store, cs, modelIds(worker?.ai), disabledModelIds(worker?.ai)), new Set(c.rows.map((x) => x.id)));
+    const r = parseRows(bodyOf(req).rows, campaignVocabulary(store, cs, modelIds(worker?.ai), disabledModelIds(worker?.ai), videoModelIds(worker?.ai)), new Set(c.rows.map((x) => x.id)));
     if (!r.ok) return bad(reply, "the table couldn't be saved", r.problems);
     cs.setRows(c.id, r.value);
     try {

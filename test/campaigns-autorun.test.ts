@@ -17,7 +17,7 @@ function setup(opts: { autorun?: boolean } = {}) {
   const type = cs.addType({ name: "Clip", color: "#f00" });
   const row = (extra: Partial<Row> = {}): Row => ({
     id: 1, quantity: 2, hook: { pick: "named", id: hook }, angle: { pick: "random" }, cta: { pick: "named", id: cta }, style: "basic",
-    type: null, time: "09:00", days: ["tue"], sec: 30, origin: "create", model: null, text: "", ...extra,
+    type: null, time: "09:00", days: ["tue"], sec: 30, origin: "create", model: null, videoModel: null, text: "", ...extra,
   });
   const id = cs.create({ name: "Weekday Growth", text: "", accountSetId: null, defaultPostTimes: [], dailyPostCap: 100 });
   cs.setRows(id, [row()]);

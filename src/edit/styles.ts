@@ -49,6 +49,14 @@ export const BUILT_IN_STYLES: readonly EditingStyle[] = [
     settings: { ...DEFAULT_EDIT, look: "fancy" },
     builtIn: true,
   },
+  {
+    id: "slideshow",
+    name: "Slideshow",
+    description:
+      "A photo slideshow presentation with smooth crossfade transitions, gentle Ken Burns-style pan-and-zoom motion on each image, a warm color grade (teal & orange), and minimal text overlays showing slide numbers.",
+    settings: { ...DEFAULT_EDIT, look: "slideshow" },
+    builtIn: true,
+  },
 ];
 
 /** The steps a style turns on or off, in the order they're shown, with what each does. */

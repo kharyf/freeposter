@@ -5,7 +5,7 @@ import type { Row } from "../src/campaigns/rows.ts";
 
 const r = (over: Partial<Row> = {}): Row => ({
   id: 1, quantity: 1, hook: { pick: "random" }, angle: { pick: "random" }, cta: { pick: "random" }, style: "basic",
-  model: null, type: null, time: "09:00", days: ["tue"], sec: 9, origin: "create", text: "", ...over,
+  model: null, videoModel: null, type: null, time: "09:00", days: ["tue"], sec: 9, origin: "create", text: "", ...over,
 });
 
 test("a time-only change retires nothing", () => assert.deepEqual(planRetirements([r({ time: "09:00" })], [r({ time: "11:00" })]), []));

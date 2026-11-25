@@ -14,7 +14,7 @@ const DAY = 86_400_000;
 const dayFromNow = (n: number) => { const d = new Date(Date.now() + n * DAY); return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(); };
 
 const row = (over: Partial<Row> = {}): Row => ({
-  id: 1, quantity: 1, hook: { pick: "random" }, angle: { pick: "random" }, cta: { pick: "random" }, style: "basic", model: null,
+  id: 1, quantity: 1, hook: { pick: "random" }, angle: { pick: "random" }, cta: { pick: "random" }, style: "basic", model: null, videoModel: null,
   type: null, time: "09:00", days: [...DAYS], sec: 30, origin: "create", text: "Show the new feature", ...over,
 });
 

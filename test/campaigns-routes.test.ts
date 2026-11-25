@@ -50,7 +50,7 @@ function setup(opts: { ai?: (store: ReturnType<typeof newStore>) => AiService } 
   });
   const row = (extra: Partial<Row> = {}): Row => ({
     id: 1, quantity: 1, hook: { pick: "named", id: hook }, angle: { pick: "random" }, cta: { pick: "named", id: cta }, style: "basic",
-    type: null, time: "09:00", days: ["tue"], sec: 30, origin: "create", model: null, text: "", ...extra,
+    type: null, time: "09:00", days: ["tue"], sec: 30, origin: "create", model: null, videoModel: null, text: "", ...extra,
   });
   const send = (method: string, url: string, payload?: unknown) => app.inject({ method: method as "GET", url, headers: OWN, ...(payload === undefined ? {} : { payload: payload as object }) });
   return { store, cs, app, calls, hook, cta, campaignId, compiled, row, send };

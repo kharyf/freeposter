@@ -586,7 +586,8 @@ export class CampaignWorker {
     }
     if (this.replaced(id)) return;
     const audio = this.choices(id);
-    const p = await this.productions.createStaged(buildGeneratedProduction(script, { voiceover: audio.voiceover!, music: audio.music! }, true));
+    const videoModel = audio.instruction.kind === "make" ? audio.instruction.videoModel : undefined;
+    const p = await this.productions.createStaged(buildGeneratedProduction(script, { voiceover: audio.voiceover!, music: audio.music! }, true, videoModel));
     if (this.replaced(id)) {
       this.productions.cancel?.(p.id); // its row changed while the production was being staged
       return;

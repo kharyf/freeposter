@@ -17,6 +17,8 @@ export interface MakeInstruction {
   look?: string;
   /** the AI model (`provider:model`) that writes it; absent means the AI settings' choice (Create) or the default (Agent) */
   model?: string;
+  /** the WanGP model (`wangp:<model>`) its shots are made with; absent means the one set in Setup */
+  videoModel?: string;
   /** a Create row's Lemo film: FreePoster's script writer writes the script the Lemo film is made from */
   scripted?: true;
   /** target length in seconds ("30 second ads"), or null/absent to let the script decide */
@@ -84,6 +86,8 @@ export interface Vocabulary {
   models?: string[];
   /** the models the user turned off under AI Providers: never picked again, whatever provider is connected */
   disabledModels?: string[];
+  /** the WanGP video models (`wangp:<model>`) a row can be made with right now; absent means they aren't checked */
+  videoModels?: string[];
 }
 
 const MODEL_ID = /^[a-z]+:\S{1,200}$/;
@@ -167,7 +171,7 @@ export function parseCompiled(raw: unknown, vocab: Vocabulary): { ok: true; valu
   const instruction = (o: unknown, where: string): MakeInstruction | PostInstruction | null => {
     if (!isObj(o)) { problem(`${where} must be an object`); return null; }
     if (o.kind === "make") {
-      only(o, ["kind", "count", "style", "look", "model", "scripted", "sec", "hook", "angle", "cta", "types", "post", "source", "instructions", "row"], where);
+      only(o, ["kind", "count", "style", "look", "model", "videoModel", "scripted", "sec", "hook", "angle", "cta", "types", "post", "source", "instructions", "row"], where);
       if (!intIn(o.count, 1, 20)) problem(`${where}.count must be a whole number from 1 to 20`);
       let post: { at: string } | null = null;
       if (o.post !== null) {
@@ -191,6 +195,10 @@ export function parseCompiled(raw: unknown, vocab: Vocabulary): { ok: true; valu
       if (o.model !== undefined) {
         if (!isModelId(o.model)) problem(`${where}.model must be a model id like "claude:claude-opus-5-5"`);
         else out.model = o.model;
+      }
+      if (o.videoModel !== undefined) {
+        if (typeof o.videoModel !== "string" || !/^wangp:\S{1,200}$/.test(o.videoModel)) problem(`${where}.videoModel must be a WanGP model id like "wangp:t2v_2_2"`);
+        else out.videoModel = o.videoModel;
       }
       if (o.scripted !== undefined) {
         if (o.scripted !== true) problem(`${where}.scripted must be true, or left out`);

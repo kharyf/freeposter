@@ -3662,6 +3662,7 @@ const cpCtx = () => ({
   lemo: cp?.looks ?? [],
   lemoInstalled: cp?.lemoInstalled ?? false,
   models: cp?.models ?? [],
+  videoModels: cp?.videoModels ?? { models: [], fallback: "" },
   defaultClaude: cp?.defaultClaude ?? "",
   defaultFilm: cp?.defaultFilm ?? cp?.defaultClaude ?? "",
   defaultStyle: cpDefaultStyle(),
@@ -3697,7 +3698,7 @@ function cpPickSelect(c, r, kind) {
     `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(label)}</option>`).join("")}</select>`;
 }
 
-function cpRowHtml(c, r, withModel) {
+function cpRowHtml(c, r, withModel, withVideo) {
   const f = (field) => `id="cpR${c.id}_${r.id}_${field}" data-cp-row="${c.id}:${r.id}" data-cp-field="${field}"`;
   const ctx = cpCtx();
   const agent = r.origin === "agent";
@@ -3709,6 +3710,10 @@ function cpRowHtml(c, r, withModel) {
   const styleCell = `<select ${f("style")}${flash === "style" ? ` class="cp-flash"` : ""} aria-label="Editing style">${styleOpts}</select>${lemo?.needsImageGen ? `<div class="muted" style="font-size:12px">needs your image generator</div>` : ""}`;
   const modelCell = drive ? `<span class="muted" title="Drive videos are already made">–</span>`
     : `<select ${f("model")}${flash === "model" ? ` class="cp-flash"` : ""} aria-label="Model">${cpGroupOptions(FreePosterRows.modelOptions(r, ctx), r.model ?? "")}</select>`;
+  // Only a Create row with a FreePoster edit is made by WanGP; a Lemo film, an Agent film and a Drive video aren't.
+  const videoCell = FreePosterRows.usesVideoModel(r)
+    ? `<select ${f("videoModel")} aria-label="Video model">${cpGroupOptions(FreePosterRows.videoModelOptions(r, ctx), r.videoModel ?? "")}</select>`
+    : `<span class="muted" title="${drive ? "Drive videos are already made" : "Not made by WanGP"}">–</span>`;
   const typeOpts = [`<option value="" ${r.type === null ? "selected" : ""}>None</option>`]
     .concat(cpLib.types.map((t) => `<option value="${t.id}" ${t.id === r.type ? "selected" : ""}>${esc(t.name)}</option>`));
   const tp = cpTimeParts(r.time);
@@ -3725,6 +3730,7 @@ function cpRowHtml(c, r, withModel) {
     <td class="cp-id" title="This video's id">${FreePosterRows.hexId(r.id)}</td>
     <td><select ${f("origin")} aria-label="Origin">${cpGroupOptions([{ label: "", options: FreePosterRows.originOptions(r, ctx) }], r.origin)}</select></td>
     ${withModel ? `<td>${modelCell}</td>` : ""}
+    ${withVideo ? `<td>${videoCell}</td>` : ""}
     <td><input type="number" ${f("quantity")} min="${CP_QTY[0]}" max="${CP_QTY[1]}" step="1" value="${esc(r.quantity)}" aria-label="Quantity"
       ${drive ? `title="A Drive file posts once; quantity is ignored for it"` : ""}></td>
     <td>${cpPickSelect(c, r, "hook")}</td>
@@ -3747,9 +3753,11 @@ function cpTableHtml(c) {
   const rows = cpRowsOf(c);
   const idle = rows.map((r, i) => [i, cpRowIssues(r)]).filter(([, x]) => x.length);
   const withModel = FreePosterRows.showModelColumn(rows); // every row Drive: nothing is made, so no model to choose
+  const withVideo = FreePosterRows.showVideoModelColumn(rows, cpCtx()); // WanGP connected, or a row still naming one of its models
+  const cols = 13 + (withModel ? 1 : 0) + (withVideo ? 1 : 0);
   return `<div class="cp-table-wrap" data-cp-table="${c.id}"><table class="cp-table"><thead><tr>
-      <th>ID</th><th>Origin</th>${withModel ? "<th>Model</th>" : ""}<th>Quantity</th><th>Hook</th><th>Angle</th><th>CTA</th><th>Editing Style</th><th>Type</th><th>Time</th><th>Days</th><th>Length (s)</th><th>File Name / Instructions</th><th></th>
-    </tr></thead><tbody>${rows.length ? rows.map((r) => cpRowHtml(c, r, withModel)).join("") : `<tr><td colspan="${withModel ? 14 : 13}" class="muted">No videos yet: press + to add one.</td></tr>`}</tbody></table></div>
+      <th>ID</th><th>Origin</th>${withModel ? "<th>Model</th>" : ""}${withVideo ? `<th title="The WanGP model the video is made with">Video Model</th>` : ""}<th>Quantity</th><th>Hook</th><th>Angle</th><th>CTA</th><th>Editing Style</th><th>Type</th><th>Time</th><th>Days</th><th>Length (s/#)</th><th>File Name / Instructions</th><th></th>
+    </tr></thead><tbody>${rows.length ? rows.map((r) => cpRowHtml(c, r, withModel, withVideo)).join("") : `<tr><td colspan="${cols}" class="muted">No videos yet: press + to add one.</td></tr>`}</tbody></table></div>
     <div class="cp-add-row"><button type="button" data-cp-addrow="${c.id}" id="cpAdd${c.id}" title="Add Video" aria-label="Add Video">+</button></div>
     ${idle.length ? `<div class="cp-idle">Not running yet:<ul>${idle.map(([i, x]) => `<li>Row ${i + 1}: ${esc(x.join(", "))}</li>`).join("")}</ul></div>` : ""}`;
 }
@@ -3954,7 +3962,7 @@ function cpSetField(row, field, el, key) {
   else if (field === "hook" || field === "angle" || field === "cta") value = v.startsWith("n:") ? { pick: "named", id: Number(v.slice(2)) } : { pick: v };
   else if (field === "style") value = v === "" ? null : v;
   else if (field === "type") value = v === "" ? null : Number(v);
-  else if (field === "origin" || field === "model" || field === "text") value = v;
+  else if (field === "origin" || field === "model" || field === "videoModel" || field === "text") value = v;
   else if (field === "hour" || field === "minute" || field === "ampm") {
     const box = el.closest(".cp-time");
     const h = box.querySelector('[data-cp-field="hour"]').value;
@@ -4224,7 +4232,7 @@ function planSelect(p) {
 
 function aiNote(p) {
   const n = aiNotes[p.id];
-  if (aiBusy.has(p.id)) return `<div class="muted" style="font-size:12px;margin-top:4px">Asking ${esc(p.program || p.label)} a test question… this can take a minute.</div>`;
+  if (aiBusy.has(p.id)) return `<div class="muted" style="font-size:12px;margin-top:4px">${p.writes ? `Asking ${esc(p.program || p.label)} a test question… this can take a minute.` : `Looking for ${esc(p.label)} and its models…`}</div>`;
   if (n?.err) return `<div class="err">${esc(n.err)}</div>`;
   if (n?.ok) return `<div class="ok">${esc(n.ok)}</div>`;
   if (!p.connected) return "";
@@ -4265,6 +4273,8 @@ function connectedHtml(p, openInUse) {
     <div class="pricing">${p.plans.length ? `Monthly plan: ${planSelect(p)}` : esc(p.pricing)}</div>
     ${p.id === "openrouter" && ai.openrouter ? openRouterHtml(ai.openrouter) : ""}
     ${p.installed === false ? `<div class="err">${esc(p.program)} isn't installed any more. ${esc(p.setup)}</div>` : ""}
+    ${p.listError ? `<div class="err">${esc(p.listError)}</div>` : ""}
+    ${p.writes ? "" : `<div class="muted" style="font-size:13px">Its models are offered in each Create row's Video Model column on the Campaigns tab.</div>`}
     ${inUseHtml(p, openInUse)}
     ${aiNote(p)}
   </div>`;
@@ -4296,7 +4306,8 @@ function addHtml(p) {
     <div class="head"><strong>${esc(p.label)}</strong>${p.program ? `<span class="muted">${esc(p.program)}${p.installed ? " · installed" : ""}</span>` : ""}
       ${p.experimental ? EXPERIMENTAL : ""}
       <span class="acts">${planSelect(p)}${action}</span></div>
-    <div class="muted" style="font-size:13px">${p.billing === "credits" ? "Pay per use, from your OpenRouter credits." : "Monthly plan."} ${esc(p.setup)}${p.images ? "" : " It can't look at images, so it's skipped for videos nobody speaks in."} <a class="link" href="${esc(p.setupUrl)}" target="_blank" rel="noopener">${p.billing === "credits" ? "openrouter.ai" : "How to install"}</a></div>
+    <div class="muted" style="font-size:13px">${p.billing === "credits" ? "Pay per use, from your OpenRouter credits." : p.billing === "local" ? "Free: runs on this computer." : "Monthly plan."} ${esc(p.setup)}${p.images || !p.writes ? "" : " It can't look at images, so it's skipped for videos nobody speaks in."} <a class="link" href="${esc(p.setupUrl)}" target="_blank" rel="noopener">${p.billing === "credits" ? "openrouter.ai" : "How to install"}</a></div>
+    ${p.id === "lmstudio" ? `<div class="path"><input type="text" data-ai-path="${p.id}" placeholder="LM Studio's server, if not http://localhost:1234" value="${esc(p.path)}"></div>` : ""}
     ${p.installed === false ? `<div class="path"><input type="text" data-ai-path="${p.id}" placeholder="Installed somewhere else? Its full path" value="${esc(p.path)}"></div>` : ""}
     ${aiNote(p)}
   </div>`;
@@ -4346,10 +4357,10 @@ $("aiBody").addEventListener("click", async (e) => {
         const plan = document.querySelector(`[data-ai-plan="${id}"]`)?.value || null;
         const path = document.querySelector(`[data-ai-path="${id}"]`)?.value || undefined;
         await aiCall("POST", `/api/ai/${id}/connect`, { plan, path });
-        aiNotes[id] = { ok: "Connected: it answered a test question." };
+        aiNotes[id] = { ok: id === "wangp" ? "Connected: its video models are ready to pick." : "Connected: it answered a test question." };
       } else {
         await aiCall("POST", `/api/ai/${id}/test`);
-        aiNotes[id] = { ok: "It answered the test question." };
+        aiNotes[id] = { ok: id === "wangp" ? "WanGP and its video models are there." : "It answered the test question." };
       }
     } catch (err) {
       aiNotes[id] = { err: err.message };
@@ -4358,7 +4369,7 @@ $("aiBody").addEventListener("click", async (e) => {
     renderAi();
   } else if (remove) {
     const p = ai.providers.find((x) => x.id === remove.dataset.aiRemove);
-    if (!confirm(`Disconnect ${p.label}? FreePoster stops asking it to write captions.${p.id === "openrouter" ? " FreePoster forgets its OpenRouter key; you can also delete the key on openrouter.ai." : ""}`)) return;
+    if (!confirm(`Disconnect ${p.label}? ${p.writes ? "FreePoster stops asking it to write captions." : "Its models stop being offered for campaign videos, and rows that pick one stop running until you choose another."}${p.id === "openrouter" ? " FreePoster forgets its OpenRouter key; you can also delete the key on openrouter.ai." : ""}`)) return;
     delete aiNotes[p.id];
     await aiCall("DELETE", `/api/ai/${p.id}`).catch((err) => banner("err", err.message));
     renderAi();

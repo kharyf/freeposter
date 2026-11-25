@@ -174,12 +174,18 @@ export async function writeScript(deps: { ai: AiService }, choice: ScriptChoice,
   throw new Error(`the script writer failed twice; problems:\n- ${problems.join("\n- ")}`);
 }
 
-/** The production spec for a script: one WanGP shot per script shot, the voiceover and music as files. Built by FreePoster, so it goes to `stage`, never parseSpec. */
-export function buildGeneratedProduction(s: Script, audio: { voiceover: string; music: string }, presenter: boolean): ProductionSpec {
+/**
+ * The production spec for a script: one WanGP shot per script shot, the voiceover and music as files. Built by FreePoster,
+ * so it goes to `stage`, never parseSpec. `videoModel` (`wangp:<model>`, the row's) makes every shot but the presenter's;
+ * without it they use the WanGP model set in Setup.
+ */
+export function buildGeneratedProduction(s: Script, audio: { voiceover: string; music: string }, presenter: boolean, videoModel?: string): ProductionSpec {
   const model = config.produce.wangpPresenterModel;
+  const video = videoModel?.startsWith("wangp:") ? videoModel.slice("wangp:".length) : undefined;
   const shots: WanShot[] = s.shots.map((sh, i) => {
     const shot: WanShot = { id: `shot-${i + 1}`, kind: "wan", duration_sec: sh.sec, prompt: sh.prompt, negative_prompt: "", image: null, seed: 1000 + i };
     if (presenter && model && i === 0) { shot.model = model; shot.audio_guide = audio.voiceover; }
+    else if (video) shot.model = video;
     return shot;
   });
   return {

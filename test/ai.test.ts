@@ -389,7 +389,7 @@ test("In Use: a model is turned off and on, and one a campaign row still picks s
   const id = cs.create({ name: "Week", text: "", accountSetId: null, defaultPostTimes: [] });
   cs.setRows(id, [{
     id: 1, quantity: 1, hook: { pick: "random" }, angle: { pick: "random" }, cta: { pick: "random" }, style: "basic",
-    type: null, time: "09:00", days: ["tue"], sec: 30, origin: "create", model: "claude:claude-sonnet-5-5", text: "",
+    type: null, time: "09:00", days: ["tue"], sec: 30, origin: "create", model: "claude:claude-sonnet-5-5", videoModel: null, text: "",
   }]);
 
   // The panel lists each connected provider's models, in use or not, with the rows that pick them.
