@@ -16,7 +16,7 @@ import { codeDir, config, dataDir, DEFAULT_PORT, edition, envFile, isConfigured,
 import { randomToken } from "./crypto.ts";
 import type { SignIn, Store } from "./db.ts";
 import { sendFile } from "./send-file.ts";
-import { registerResourceRoutes } from "./resources/routes.ts";
+import { registerResourceRoutes, setIdFrom } from "./resources/routes.ts";
 import { ResourceStore } from "./resources/store.ts";
 import { mcpTools, registerMcp, trustedRequest } from "./mcp.ts";
 import { registerAgentApi } from "./api/routes.ts";
@@ -36,7 +36,9 @@ import type { Publisher } from "./platforms/base.ts";
 import { creatorInfo } from "./platforms/tiktok.ts";
 import { driveAuthorizeUrl, driveRedirectUri, exchangeDriveCode, folderIdFrom } from "./drive/client.ts";
 import type { Intake } from "./drive/intake.ts";
-import { parseEditSettings } from "./edit/settings.ts";
+import { createEditFor, isManifestSource } from "./edit/create.ts";
+import { isSlideshow, parseEditSettings } from "./edit/settings.ts";
+import { parseRefs } from "./resources/use.ts";
 import { whisperHealth } from "./edit/transcribe.ts";
 import { captionTopicFor, checkDraft, coverOf, DuplicateError, editView, parseSchedule, postView, saveUpload, type Draft } from "./posts.ts";
 import { hermesDetected, hermesPluginStatus, installHermesPlugin } from "./integrations/hermes.ts";
@@ -741,6 +743,8 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
         sourcePath: source.path,
         sha256: source.sha256,
         editId: edit?.id ?? null,
+        // A video-less slideshow has nothing to fall back on but its edit.
+        requireEdit: edit ? isManifestSource(edit.sourcePath) : false,
         cover: coverOf(edit),
         accountIds: JSON.parse(fields.accounts || "[]").map(Number),
         tiktok: fields.tiktok ? JSON.parse(fields.tiktok) : null,
@@ -787,12 +791,15 @@ export function buildServer(store: Store, runner: Runner, publishers: Record<Pla
           fields[part.fieldname] = String(part.value);
         }
       }
-      if (!saved) throw new Error("attach a video file");
       const settings = parseEditSettings(fields.settings ? JSON.parse(fields.settings) : undefined);
-      const edit = store.createEdit(saved.path, saved.sha256, settings);
+      if (!saved && !isSlideshow(settings)) throw new Error("attach a video file");
+      const setId = setIdFrom(store, fields.setId);
+      if (typeof setId === "string") throw new Error(setId);
+      const made = createEditFor(store, resources, { source: saved ?? null, settings, setId, refs: parseRefs(fields.resources ? JSON.parse(fields.resources) : undefined) });
+      if (typeof made === "string") throw new Error(made);
       // The same file and settings were edited before: keep that edit and drop this copy.
-      if (edit.sourcePath !== saved.path) try { unlinkSync(saved.path); } catch {}
-      return { editId: edit.id };
+      if (saved && made.sourcePath !== saved.path) try { unlinkSync(saved.path); } catch {}
+      return { editId: made.id };
     } catch (err) {
       if (saved) try { unlinkSync(saved.path); } catch {}
       return reply.code(400).send({ error: (err as Error).message });

@@ -265,6 +265,12 @@
   .badge.ok { color: var(--ok); border-color: var(--ok); } .badge.warn { color: var(--warn); border-color: var(--warn); } .badge.bad { color: var(--bad); border-color: var(--bad); }
   .badge.default { color: var(--accent); border-color: var(--accent); }
   .name-warn { color: var(--bad); font-size: 12px; margin: 0 0 8px 12px; }
+  .edit-extra { display: grid; gap: 4px; margin-bottom: 10px; }
+  .edit-extra textarea { min-height: 60px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { display: inline-flex; gap: 4px; align-items: center; font-size: 12px; border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; cursor: pointer; background: transparent; color: var(--ink); }
+  .chip[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+  .chip select { font-size: 11px; padding: 0; width: auto; margin: 0; }
   /* ---- Resources tab ---- */
   .res-set { margin: 0 0 22px; border: 1px dashed transparent; border-radius: 8px; padding: 4px; }
   .res-set.dragging { border-color: var(--accent); }
@@ -590,8 +596,17 @@
         <video id="preview" controls muted playsinline></video>
         <div id="durationNote" class="muted"></div>
 
-        <label class="row" style="font-weight:400"><input type="checkbox" id="doEdit" style="width:auto;margin:0"> Edit this video first</label>
+        <label class="row" style="font-weight:400"><input type="checkbox" id="doEdit" style="width:auto;margin:0"><span id="doEditLabel"> Edit this video first</span></label>
         <div id="editBox" class="edit-box" hidden>
+          <div class="edit-extra">
+            <label for="editLook">Style</label>
+            <select id="editLook"><option value="">Standard</option><option value="fancy">Fancy</option><option value="slideshow">Slideshow</option></select>
+            <label for="editSet">Resources from</label>
+            <select id="editSet"></select>
+            <label for="editInstructions">Instructions <span class="muted">(optional; write @tag to use a resource)</span></label>
+            <textarea id="editInstructions" maxlength="2000" placeholder="Three reasons to visit @beach @city @food with @song"></textarea>
+            <div id="editResources" class="chips" aria-label="Resources to use"></div>
+          </div>
           <div class="opts">
             <label><input type="checkbox" data-edit-opt="tighten" checked> Cut pauses, "um"s and retakes</label>
             <label><input type="checkbox" data-edit-opt="captions" checked> Captions</label>
@@ -2242,7 +2257,41 @@ $("quit").addEventListener("click", async () => {
 // ---- submit & history ----
 
 const editing = () => $("doEdit").checked;
-const editSettings = () => Object.fromEntries([...document.querySelectorAll("[data-edit-opt]")].map((c) => [c.dataset.editOpt, c.checked]));
+const slideshowChosen = () => editing() && $("editLook").value === "slideshow";
+const editSettings = () => {
+  const s = Object.fromEntries([...document.querySelectorAll("[data-edit-opt]")].map((c) => [c.dataset.editOpt, c.checked]));
+  if ($("editLook").value) s.look = $("editLook").value;
+  if ($("editInstructions").value.trim()) s.instructions = $("editInstructions").value.trim();
+  return s;
+};
+
+/** Resources chosen for the edit: tag -> role ("" = the default for its kind). */
+let editRes = {};
+let editSets = [];
+async function loadEditResources() {
+  try { editSets = (await (await fetch("/api/resources")).json()).sets; } catch { editSets = []; }
+  const was = $("editSet").value;
+  $("editSet").innerHTML = editSets.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
+  if (was && editSets.some((s) => String(s.id) === was)) $("editSet").value = was;
+  drawEditResources();
+}
+function drawEditResources() {
+  const set = editSets.find((s) => String(s.id) === $("editSet").value);
+  const slide = $("editLook").value === "slideshow";
+  $("editResources").innerHTML = (set?.resources ?? []).map((r) => {
+    const on = r.tag in editRes;
+    const role = r.kind === "image" && on ? `<select data-chip-role="${esc(r.tag)}" aria-label="Role of @${esc(r.tag)}"><option value=""${editRes[r.tag] === "" ? " selected" : ""}>${slide ? "slide" : "overlay"}</option><option value="${slide ? "overlay" : "slide"}"${editRes[r.tag] === (slide ? "overlay" : "slide") ? " selected" : ""}>${slide ? "overlay" : "slide"}</option></select>` : "";
+    return `<span class="chip" data-chip="${esc(r.tag)}" role="button" tabindex="0" aria-pressed="${on}">@${esc(r.tag)} <span class="muted">${esc(r.kind)}</span>${role}</span>`;
+  }).join("") || `<span class="muted">No resources in this set.</span>`;
+}
+const editRefs = () => Object.entries(editRes).map(([tag, as]) => (as ? { tag, as } : { tag }));
+/** The Video field is optional for a slideshow, and the checkbox says what pressing the button does. */
+function syncEditMode() {
+  const noVideo = slideshowChosen() && !$("file").files[0];
+  $("file").required = !slideshowChosen();
+  $("doEditLabel").textContent = noVideo ? " Make a slideshow" : " Edit this video first";
+  drawEditResources();
+}
 
 function resetEdit() {
   clearTimeout(editPoll);
@@ -2258,10 +2307,12 @@ function resetEdit() {
 
 async function makeEdit() {
   const file = $("file").files[0];
-  if (!file) return banner("err", "Choose a video first.");
+  if (!file && !slideshowChosen()) return banner("err", "Choose a video first.");
   const fd = new FormData();
   fd.append("settings", JSON.stringify(editSettings()));
-  fd.append("video", file);
+  if ($("editSet").value) fd.append("setId", $("editSet").value);
+  fd.append("resources", JSON.stringify(editRefs()));
+  if (file) fd.append("video", file); // last, so fields arrive before the large file
   $("submit").disabled = true;
   $("editStatus").textContent = "Uploading…";
   try {
@@ -2295,7 +2346,8 @@ async function pollEdit() {
       $("editPreview").hidden = false;
     }
     $("editActions").hidden = view.approved;
-    if (view.approved) $("editStatus").textContent = `Edit approved (${view.durationSec.toFixed(1)}s, was ${view.sourceDurationSec?.toFixed(1)}s).`;
+    $("useOriginal").hidden = !view.hasSourceVideo;
+    if (view.approved) $("editStatus").textContent = `Edit approved (${view.durationSec.toFixed(1)}s${view.sourceDurationSec ? `, was ${view.sourceDurationSec.toFixed(1)}s` : ""}).`;
     const name = (accountId) => status.accounts.find((a) => a.id === accountId)?.name ?? "";
     const gained = view.eligible.filter((e) => e.edited && !e.original).map((e) => name(e.accountId));
     const still = view.eligible.filter((e) => !e.edited && selectedIds().includes(e.accountId)).map((e) => name(e.accountId));
@@ -2345,7 +2397,7 @@ async function submit(allowDuplicate = false) {
       ? `Scheduled for ${new Date(scheduledAt).toLocaleString()}. It's listed under Upcoming, where you can change the time or cancel it.`
       : "Queued. Each platform's status updates under Posts.") + writing);
     $("form").reset(); $("preview").style.display = "none"; videoDuration = null; checkDuration();
-    $("editBox").hidden = true; resetEdit();
+    $("editBox").hidden = true; editRes = {}; resetEdit(); syncEditMode();
     $("tiktokBox").style.display = "none";
     loadPosts();
   } catch (e) {
@@ -2601,13 +2653,27 @@ $("file").addEventListener("change", () => {
   const f = $("file").files[0];
   const v = $("preview");
   resetEdit();
+  syncEditMode();
   if (!f) return;
   v.src = URL.createObjectURL(f);
   v.style.display = "block";
   v.onloadedmetadata = () => { videoDuration = v.duration; checkDuration(); };
 });
 $("form").addEventListener("submit", (e) => { e.preventDefault(); submit(); });
-$("doEdit").addEventListener("change", () => { $("editBox").hidden = !editing(); if (!editing()) { resetEdit(); videoDuration = $("preview").duration || null; checkDuration(); } syncWhen(); });
+$("doEdit").addEventListener("change", () => { $("editBox").hidden = !editing(); if (editing()) void loadEditResources(); if (!editing()) { resetEdit(); videoDuration = $("preview").duration || null; checkDuration(); } syncEditMode(); syncWhen(); });
+$("editLook").addEventListener("change", () => { resetEdit(); syncEditMode(); });
+$("editSet").addEventListener("change", () => { editRes = {}; resetEdit(); drawEditResources(); });
+$("editInstructions").addEventListener("input", resetEdit);
+$("editResources").addEventListener("click", (e) => {
+  if (e.target.closest("select")) return;
+  const chip = e.target.closest("[data-chip]");
+  if (!chip) return;
+  const tag = chip.dataset.chip;
+  if (tag in editRes) delete editRes[tag]; else editRes[tag] = "";
+  resetEdit(); drawEditResources();
+});
+$("editResources").addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && e.target.matches("[data-chip]")) { e.preventDefault(); e.target.click(); } });
+$("editResources").addEventListener("change", (e) => { const sel = e.target.closest("[data-chip-role]"); if (sel) { editRes[sel.dataset.chipRole] = sel.value; resetEdit(); } });
 for (const c of document.querySelectorAll("[data-edit-opt]")) c.addEventListener("change", resetEdit);
 $("approveEdit").addEventListener("click", async () => {
   const res = await fetch(`/api/edits/${edit.id}/approve`, { method: "PUT" });

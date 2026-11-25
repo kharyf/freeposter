@@ -1,4 +1,6 @@
 // Creating and showing posts: shared by the web page's upload route and the MCP endpoint.
+import { isManifestSource } from "./edit/create.ts";
+import { publicSettings } from "./edit/settings.ts";
 import { createHash } from "node:crypto";
 import { createWriteStream, unlinkSync } from "node:fs";
 import { basename, extname, join } from "node:path";
@@ -81,8 +83,10 @@ export async function checkDraft(store: Store, publishers: Record<Platform, Publ
   if (!d.accountIds.length) throw new Error("pick at least one account");
   const accounts = d.accountIds.map((id) => store.account(id));
   if (accounts.some((a) => !a)) throw new Error("unknown account selected");
-  const src = await probe(d.sourcePath); // rejects non-video files before anything is queued
-  let durationSec = src.durationSec;
+  // A video-less slideshow has no source video, only its edit's output, so it can't be posted without the edit.
+  if (isManifestSource(d.sourcePath) && !d.editId) throw new Error("attach a video file");
+  const src = isManifestSource(d.sourcePath) ? null : await probe(d.sourcePath); // rejects non-video files before anything is queued
+  let durationSec = src?.durationSec ?? 0;
   if (d.editId) {
     const edit = store.edit(d.editId);
     if (!edit) throw new Error("unknown edit");
@@ -121,14 +125,16 @@ const fits = (publishers: Record<Platform, Publisher>, a: Account, sec: number) 
 
 /** What the page and agents see of an edit, including which accounts the trim made it fit. */
 export async function editView(store: Store, publishers: Record<Platform, Publisher>, edit: Edit) {
+  const hasSourceVideo = !isManifestSource(edit.sourcePath);
   let sourceDurationSec: number | null = null;
-  try { sourceDurationSec = (await probe(edit.sourcePath)).durationSec; } catch {}
+  if (hasSourceVideo) try { sourceDurationSec = (await probe(edit.sourcePath)).durationSec; } catch {}
   return {
     id: edit.id,
     state: edit.state,
     progress: edit.progress,
     error: edit.error,
-    settings: edit.settings,
+    settings: publicSettings(edit.settings),
+    hasSourceVideo,
     durationSec: edit.durationSec,
     sourceDurationSec,
     approved: Boolean(edit.approvedAt),

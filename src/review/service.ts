@@ -1,6 +1,7 @@
 // What a review does, whoever asks and wherever the user answers: an agent (or the window) asks for one, FreePoster
 // makes the exact file and writes the caption, the user decides on Telegram or in the window, and only an approval
 // makes a post: of that file, which the runner uploads only while it still has the approved hash.
+import { publicSettings } from "../edit/settings.ts";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { captionVideo, transcriptText, type CaptionDeps } from "../caption.ts";
@@ -600,7 +601,7 @@ export class ReviewService {
     if (r.subjectKind === "edit") {
       const edit = this.store.edit(r.subjectId!);
       if (!edit) return null;
-      const out: Record<string, unknown> = { edit_id: edit.id, settings: edit.settings };
+      const out: Record<string, unknown> = { edit_id: edit.id, settings: publicSettings(edit.settings) };
       if (r.reason && SUGGESTED[r.reason]) out.suggested_settings = SUGGESTED[r.reason];
       if (at !== null && edit.cutsPath && existsSync(edit.cutsPath)) {
         const segs = JSON.parse(readFileSync(edit.cutsPath, "utf8")) as Segment[];

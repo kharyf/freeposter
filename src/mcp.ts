@@ -20,7 +20,10 @@ import { codeDir, config, isConfigured } from "./config.ts";
 import type { Store } from "./db.ts";
 import type { Publisher } from "./platforms/base.ts";
 import { creatorInfo } from "./platforms/tiktok.ts";
+import { createEditFor, isManifestSource } from "./edit/create.ts";
 import { parseEditSettings } from "./edit/settings.ts";
+import { setIdFrom } from "./resources/routes.ts";
+import { parseRefs } from "./resources/use.ts";
 import { allStyles, createStyle, defaultStyleId, saveThumbnail, setDefaultStyle, STYLE_STEPS, styleToken, thumbnailProblem, uploadedThumbnail, type EditingStyle } from "./edit/styles.ts";
 import { EVENT_TYPES, eventView, nextEvent } from "./notify.ts";
 import type { ReviewService, ReviewRequest } from "./review/service.ts";
@@ -153,6 +156,7 @@ const POST_PROPS = {
 };
 
 export function mcpTools(store: Store, runner: Runner, publishers: Record<Platform, Publisher>, reviews: ReviewService, producer?: ProductionWorker, reviewChannel: () => Record<string, unknown> = () => ({}), campaigns?: CampaignWorker, agent: () => string = () => "agent"): Tool[] {
+  const resources = new ResourceStore(store);
   const view = (p: Parameters<typeof postView>[1]) => {
     const v = postView(store, p);
     return {
@@ -396,9 +400,11 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
               keep: { type: "array", items: { type: "object", properties: { start: { type: "number" }, end: { type: "number" } }, required: ["start", "end"] } },
               drop: { type: "array", items: { type: "object", properties: { start: { type: "number" }, end: { type: "number" } }, required: ["start", "end"] } },
               captionFixes: { type: "array", items: { type: "object", properties: { at: { type: "number" }, from: { type: "string" }, to: { type: "string" } }, required: ["at", "from", "to"] } },
+              instructions: { type: "string", maxLength: 2000 },
             },
             additionalProperties: false,
           },
+          resources: { type: "array", description: "Replaces the edit's resources: [{ tag, as? }]. Omit to keep them.", items: { type: "object", properties: { tag: { type: "string" }, as: { enum: ["music", "overlay", "slide", "clip", "context"] } }, required: ["tag"] } },
         },
         required: ["edit_id", "settings"],
         additionalProperties: false,
@@ -409,9 +415,16 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
         if (!old) throw new ToolError("no such edit");
         if (old.approvedAt) throw new ToolError(`edit ${old.id} was approved and posted; make a new edit with create_edit instead`);
         if (!["ready", "failed", "rejected"].includes(old.state)) throw new ToolError(`edit ${old.id} is ${old.state}; revise it once it's ready`);
-        let settings;
-        try { settings = parseEditSettings(args.settings, old.settings); } catch (err) { throw new ToolError((err as Error).message); }
-        const next = store.createEdit(old.sourcePath, old.sha256, settings, old.id);
+        let settings, refs;
+        try { settings = parseEditSettings(args.settings, old.settings); refs = parseRefs(args.resources); } catch (err) { throw new ToolError((err as Error).message); }
+        // New resources replace the old ones; with none given the old ones stay, and new @mentions are added.
+        const made = createEditFor(store, resources, {
+          source: isManifestSource(old.sourcePath) ? null : { path: old.sourcePath, sha256: old.sha256 },
+          settings, setId: old.settings.setId ?? defaultSetId(store), refs,
+          keep: args.resources === undefined ? old.settings.resources ?? [] : [], parentEditId: old.id,
+        });
+        if (typeof made === "string") throw new ToolError(made);
+        const next = made;
         if (next.id === old.id) throw new ToolError("those are the edit's settings already; change something");
         store.closeEdit(old.id, "superseded");
         return { ...(await editView(store, publishers, next)), parent_edit_id: old.id, next: "Call get_edit to follow it; when it's ready, request_review with its edit_id." };
@@ -430,11 +443,11 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
     {
       name: "create_edit",
       title: "Edit a video",
-      description: "Starts an edit of a video file on this computer, run locally in the background: cuts pauses, filler words and retakes, burns in word-synced captions, frames the speaker for 9:16, evens out the sound and zooms on cuts. Every setting defaults to on. Returns at once; follow with get_edit, then request_review with its edit_id so the user can approve, reject or redo it.",
+      description: "Starts an edit of a video file on this computer, run locally in the background: cuts pauses, filler words and retakes, burns in word-synced captions, frames the speaker for 9:16, evens out the sound and zooms on cuts. Every setting defaults to on. look slideshow makes a slideshow instead, and needs no video. Uses no resources unless you tag them in resources or as @tag in instructions. Returns at once; follow with get_edit, then request_review with its edit_id so the user can approve, reject or redo it.",
       inputSchema: {
         type: "object",
         properties: {
-          video_path: { type: "string", description: "Absolute path of the video file on this computer." },
+          video_path: { type: "string", description: "Absolute path of the video file on this computer. Optional for look slideshow." },
           settings: {
             type: "object",
             properties: {
@@ -443,21 +456,32 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
               reframe: { type: "boolean", default: true },
               audio: { type: "boolean", default: true },
               punchIn: { type: "boolean", default: true },
+              look: { enum: ["fancy", "slideshow"] },
+              instructions: { type: "string", maxLength: 2000 },
             },
             additionalProperties: false,
           },
+          account_set: { type: "string", description: "Whose resources @tags come from: a set's name, no-space name or id. Omit for the default set." },
+          resources: { type: "array", items: { type: "object", properties: { tag: { type: "string" }, as: { enum: ["music", "overlay", "slide", "clip", "context"] } }, required: ["tag"] } },
         },
-        required: ["video_path"],
         additionalProperties: false,
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       async run(args) {
-        const videoPath = checkedPath(str(args, "video_path"));
-        let settings;
-        try { settings = parseEditSettings(args.settings); } catch (err) { throw new ToolError((err as Error).message); }
-        const saved = await saveUpload(createReadStream(videoPath), videoPath);
-        const edit = store.createEdit(saved.path, saved.sha256, settings);
-        if (edit.sourcePath !== saved.path) try { unlinkSync(saved.path); } catch {}
+        let settings, refs;
+        try { settings = parseEditSettings(args.settings); refs = parseRefs(args.resources); } catch (err) { throw new ToolError((err as Error).message); }
+        const setId = setIdFrom(store, str(args, "account_set") || undefined);
+        if (typeof setId === "string") throw new ToolError(setId);
+        const videoPath = str(args, "video_path");
+        if (!videoPath && settings.look !== "slideshow") throw new ToolError("video_path is required unless look is slideshow");
+        const saved = videoPath ? await saveUpload(createReadStream(checkedPath(videoPath)), videoPath) : null;
+        const made = createEditFor(store, resources, { source: saved, settings, setId, refs });
+        if (typeof made === "string") {
+          if (saved) try { unlinkSync(saved.path); } catch {}
+          throw new ToolError(made);
+        }
+        const edit = made;
+        if (saved && edit.sourcePath !== saved.path) try { unlinkSync(saved.path); } catch {}
         return { ...(await editView(store, publishers, edit)), next: "Call get_edit to follow it. When it's ready, request_review with its edit_id: the user approves it there." };
       },
     },
@@ -630,7 +654,7 @@ export function mcpTools(store: Store, runner: Runner, publishers: Record<Platfo
     fail: (message) => new ToolError(message),
   }));
   tools.push(
-    ...resourceTools(store, new ResourceStore(store)),
+    ...resourceTools(store, resources),
     ...analyticsTools({ store, fail: (message) => new ToolError(message) }),
     ...campaignTools({ store, worker: () => campaigns, agent, fail: (message) => new ToolError(message) }),
     ...agentTools({ store, worker: () => campaigns, agent, fail: (message) => new ToolError(message) }),
