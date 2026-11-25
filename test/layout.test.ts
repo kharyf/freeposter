@@ -13,7 +13,7 @@ const d = () => L.defaultLayout();
 
 test("defaultLayout", () => {
   const l = j(d());
-  assert.deepEqual(l.areas.top.tabs, ["reviews", "analytics", "campaigns", "calendar", "styles"]);
+  assert.deepEqual(l.areas.top.tabs, ["reviews", "analytics", "campaigns", "calendar", "styles", "resources"]);
   assert.deepEqual(l.areas.left.tabs, ["accounts", "agents", "newpost"]);
   assert.deepEqual(l.areas.bottom.tabs, ["drive", "upcoming", "posts"]);
   assert.deepEqual(l.areas.right.tabs, ["console", "ai", "setup"]);
@@ -25,6 +25,7 @@ test("defaultLayout", () => {
   assert.deepEqual([l.areas.left.size, l.areas.bottom.size, l.areas.right.size, l.areas.top.size], [340, 280, 380, 0]);
   assert.deepEqual(j(L.AREAS), ["top", "left", "bottom", "right"]);
   assert.equal(L.TAB_LABELS.styles, "Editing Styles");
+  assert.equal(L.TAB_LABELS.resources, "Resources");
   assert.equal(L.DEFAULT_AREA.posts, "bottom");
 });
 
@@ -67,7 +68,7 @@ test("normalizeLayout", () => {
 
 test("moveTab", () => {
   let m = j(L.moveTab(d(), "posts", "top", 1));
-  assert.deepEqual(m.areas.top.tabs, ["reviews", "posts", "analytics", "campaigns", "calendar", "styles"]);
+  assert.deepEqual(m.areas.top.tabs, ["reviews", "posts", "analytics", "campaigns", "calendar", "styles", "resources"]);
   assert.equal(m.areas.top.active, "posts");
   assert.deepEqual(m.areas.bottom.tabs, ["drive", "upcoming"]);
   assert.equal(m.areas.bottom.active, "drive");
@@ -85,11 +86,11 @@ test("moveTab", () => {
   assert.deepEqual(m.areas.right, { tabs: [], active: null, size: 380, collapsed: true });
 
   let t = d();
-  for (const id of ["reviews", "analytics", "campaigns", "calendar"]) t = L.moveTab(t, id, "left");
-  assert.equal(L.moveTab(t, "styles", "left"), null);
+  for (const id of ["reviews", "analytics", "campaigns", "calendar", "styles"]) t = L.moveTab(t, id, "left");
+  assert.equal(L.moveTab(t, "resources", "left"), null);
 
   m = j(L.moveTab(d(), "calendar", "top", 0));
-  assert.deepEqual(m.areas.top.tabs, ["calendar", "reviews", "analytics", "campaigns", "styles"]);
+  assert.deepEqual(m.areas.top.tabs, ["calendar", "reviews", "analytics", "campaigns", "styles", "resources"]);
 
   assert.deepEqual(j(L.moveTab(d(), "posts", "bottom", 2)), j(d()));
   assert.deepEqual(j(L.moveTab(d(), "posts", "bottom")), j(d()));
@@ -139,8 +140,8 @@ test("setCollapsed ignores top and never mutates", () => {
 
 test("moveTab within a single-tab top is a no-op, not null", () => {
   let t = d();
-  for (const id of ["reviews", "analytics", "campaigns", "calendar"]) t = L.moveTab(t, id, "left");
-  const m = L.moveTab(t, "styles", "top", 0);
+  for (const id of ["reviews", "analytics", "campaigns", "calendar", "styles"]) t = L.moveTab(t, id, "left");
+  const m = L.moveTab(t, "resources", "top", 0);
   assert.notEqual(m, null);
   assert.deepEqual(j(m), j(t));
 });
@@ -171,9 +172,9 @@ test("closeTab", () => {
   c = L.closeTab(L.closeTab(L.closeTab(d(), "console"), "ai"), "setup");
   assert.deepEqual(j(c).areas.right, { tabs: [], active: null, size: 380, collapsed: true });
   let t = d();
-  for (const id of ["reviews", "analytics", "campaigns", "calendar"]) t = L.closeTab(t, id);
-  assert.equal(L.closeTab(t, "styles"), null);
-  assert.equal(L.canCloseTab(t, "styles"), false);
+  for (const id of ["reviews", "analytics", "campaigns", "calendar", "styles"]) t = L.closeTab(t, id);
+  assert.equal(L.closeTab(t, "resources"), null);
+  assert.equal(L.canCloseTab(t, "resources"), false);
   assert.equal(L.canCloseTab(d(), "styles"), true);
   assert.deepEqual(j(L.closeTab(c, "ai")), j(c));    // already closed: unchanged
 });
@@ -192,8 +193,8 @@ test("addTab: reopen, move, same area, refused", () => {
   assert.deepEqual(a.areas.bottom.tabs, ["drive", "upcoming", "posts"]);
   assert.equal(a.areas.bottom.active, "posts");
   let t = d();
-  for (const id of ["reviews", "analytics", "campaigns", "calendar"]) t = L.moveTab(t, id, "left");
-  assert.equal(L.addTab(t, "styles", "left"), null);
+  for (const id of ["reviews", "analytics", "campaigns", "calendar", "styles"]) t = L.moveTab(t, id, "left");
+  assert.equal(L.addTab(t, "resources", "left"), null);
 });
 
 test("activateTab reopens a closed tab in its default area", () => {
@@ -210,8 +211,8 @@ test("addTabChoices", () => {
   assert.equal(ch.find((c: any) => c.id === "posts").disabled, true);
   assert.equal(ch.find((c: any) => c.id === "console").disabled, false);
   let t = d();
-  for (const id of ["reviews", "analytics", "campaigns", "calendar"]) t = L.moveTab(t, id, "left");
-  assert.equal(j(L.addTabChoices(t, "right")).find((c: any) => c.id === "styles").disabled, true);
+  for (const id of ["reviews", "analytics", "campaigns", "calendar", "styles"]) t = L.moveTab(t, id, "left");
+  assert.equal(j(L.addTabChoices(t, "right")).find((c: any) => c.id === "resources").disabled, true);
   // an empty, opened side area offers everything not already there
   let e = L.closeTab(L.closeTab(L.closeTab(d(), "console"), "ai"), "setup");
   e = L.setCollapsed(e, "right", false);
