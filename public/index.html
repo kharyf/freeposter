@@ -2269,10 +2269,12 @@ const editSettings = () => {
 let editRes = {};
 let editSets = [];
 async function loadEditResources() {
-  try { editSets = (await (await fetch("/api/resources")).json()).sets; } catch { editSets = []; }
+  let fallback;
+  try { const body = await (await fetch("/api/resources")).json(); editSets = body.sets; fallback = String(body.defaultSetId); } catch { editSets = []; }
   const was = $("editSet").value;
   $("editSet").innerHTML = editSets.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
-  if (was && editSets.some((s) => String(s.id) === was)) $("editSet").value = was;
+  const pick = was && editSets.some((s) => String(s.id) === was) ? was : fallback;
+  if (pick && editSets.some((s) => String(s.id) === pick)) $("editSet").value = pick;
   drawEditResources();
 }
 function drawEditResources() {

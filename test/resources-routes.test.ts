@@ -26,6 +26,7 @@ test("upload, list, rename, delete", async () => {
   assert.equal(up.statusCode, 200, up.body);
   const id = up.json().id;
   const list = (await app.inject("/api/resources")).json();
+  assert.equal(list.defaultSetId, 1, "the page preselects the default set");
   const set1 = list.sets.find((s: any) => s.id === 1);
   assert.equal(set1.resources[0].kind, "image");
   assert(!JSON.stringify(list).includes(resourcesDir().replace(/\\/g, "\\\\")));

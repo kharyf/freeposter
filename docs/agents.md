@@ -189,3 +189,5 @@ Resources are text, audio, image and video files the user keeps for each account
 | video | `clip` | An end clip after the edit, or a muted slide in a Slideshow. |
 
 Deleting a resource keeps its file, so an edit that was already queued still renders.
+
+Known limitation: a JPEG's EXIF rotation is not applied to image slides, so a phone photo taken sideways can appear turned.

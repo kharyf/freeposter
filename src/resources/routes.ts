@@ -41,7 +41,7 @@ export function resourceSets(store: Store, rs: ResourceStore) {
 }
 
 export function registerResourceRoutes(app: FastifyInstance, store: Store, rs: ResourceStore): void {
-  app.get("/api/resources", async () => ({ sets: resourceSets(store, rs) }));
+  app.get("/api/resources", async () => ({ defaultSetId: defaultSetId(store), sets: resourceSets(store, rs) }));
 
   app.post("/api/resources", async (req, reply) => {
     const fields: Record<string, string> = {};
