@@ -27,7 +27,7 @@ test("a new style is listed after the built-in ones, with its steps, and can be 
   assert.equal(style.id, "fast-cuts");
   assert.equal(style.name, "Fast Cuts");
   assert.deepEqual(style.settings, { tighten: true, captions: false, reframe: true, audio: true, punchIn: true });
-  assert.deepEqual(allStyles(store).map((s) => [s.id, s.builtIn]), [["basic", true], ["fancy", true], ["fast-cuts", false]]);
+  assert.deepEqual(allStyles(store).map((s) => [s.id, s.builtIn]), [["basic", true], ["fancy", true], ["slideshow", true], ["fast-cuts", false]]);
   assert.equal(defaultStyleId(store), "basic");
   assert.equal(setDefaultStyle(store, "fast-cuts"), true);
   assert.equal(defaultStyleId(store), "fast-cuts");
@@ -66,7 +66,7 @@ test("deleting hides a style but videos already given it keep its edit; built-in
   assert.equal(deleteStyle(store, "basic"), "built-in styles can't be deleted");
   assert.equal(deleteStyle(store, style.id), null);
   assert.equal(deleteStyle(store, style.id), "no such editing style");
-  assert.deepEqual(allStyles(store).map((s) => s.id), ["basic", "fancy"]);
+  assert.deepEqual(allStyles(store).map((s) => s.id), ["basic", "fancy", "slideshow"]);
   assert.equal(styleById(store, style.id)?.settings.audio, false, "still found for a video on its way");
   assert.equal(defaultStyleId(store), "basic", "the default goes back to the first");
   assert.equal(setDefaultStyle(store, style.id), false);
@@ -112,7 +112,7 @@ test("the window adds a style with a thumbnail, shows it, and deletes it", async
   res = await post({ name: "Clean", steps: "{}" }, Buffer.from("not an image"));
   assert.equal(res.statusCode, 400);
   assert.match(res.json().error, /PNG, JPEG or WebP/);
-  assert.equal(allStyles(store).length, 2, "nothing made when the image is refused");
+  assert.equal(allStyles(store).length, 3, "nothing made when the image is refused");
 
   res = await post({ name: "Clean Look", description: "No captions.", steps: JSON.stringify({ captions: false }), makeDefault: "true" }, PNG);
   assert.equal(res.statusCode, 200, res.body);
@@ -129,7 +129,7 @@ test("the window adds a style with a thumbnail, shows it, and deletes it", async
   assert.equal((await app.inject({ method: "DELETE", url: "/api/styles/basic" })).statusCode, 400);
   assert.equal((await app.inject({ method: "DELETE", url: "/api/styles/clean-look" })).statusCode, 200);
   assert.equal((await app.inject({ method: "DELETE", url: "/api/styles/clean-look" })).statusCode, 404);
-  assert.deepEqual((await status()).editingStyles.map((x: any) => x.id), ["basic", "fancy"]);
+  assert.deepEqual((await status()).editingStyles.map((x: any) => x.id), ["basic", "fancy", "slideshow"]);
 });
 
 test("an agent lists the styles and adds one over MCP", async () => {
@@ -139,7 +139,7 @@ test("an agent lists the styles and adds one over MCP", async () => {
     (await app.inject({ method: "POST", url: "/mcp", headers: { host: `localhost:${config.port}` }, payload: { jsonrpc: "2.0", id: ++id, method: "tools/call", params: { name, arguments: args } } })).json().result;
 
   let r = await call("list_editing_styles");
-  assert.deepEqual(r.structuredContent.styles.map((s: any) => [s.id, s.filename_token, s.default, s.built_in]), [["basic", "Basic", true, true], ["fancy", "Fancy", false, true]]);
+  assert.deepEqual(r.structuredContent.styles.map((s: any) => [s.id, s.filename_token, s.default, s.built_in]), [["basic", "Basic", true, true], ["fancy", "Fancy", false, true], ["slideshow", "Slideshow", false, true]]);
   assert.deepEqual(r.structuredContent.steps.map((s: any) => s.key), ["tighten", "captions", "reframe", "audio", "punchIn"]);
 
   r = await call("add_editing_style", { name: "Basic" });
@@ -184,7 +184,7 @@ test("a Drive filename can name a style the user added", async () => {
 
 test("Fancy is a built-in style after Basic", () => {
   const store = newStore();
-  assert.deepEqual(allStyles(store).map((s) => [s.id, s.builtIn]), [["basic", true], ["fancy", true]]);
+  assert.deepEqual(allStyles(store).map((s) => [s.id, s.builtIn]), [["basic", true], ["fancy", true], ["slideshow", true]]);
   assert.equal(styleById(store, "fancy")!.settings.look, "fancy");
   assert.equal(deleteStyle(store, "fancy"), "built-in styles can't be deleted");
   assert.match(styleNameProblem(store, "fancy")!, /already the editing style Fancy/);
@@ -257,7 +257,7 @@ test("a deleted style with the id fancy is re-ided too, and a default of the bui
   assert.equal(styleById(store, "my-fancy-2")!.name, "Fancy", "deleted, so its name clashes with nothing");
   assert.equal(store.driveFile("d1")!.choice!.styleId, "my-fancy-2", "the video on its way keeps the user's style");
   assert.equal(defaultStyleId(store), "fancy", "deleting it had cleared the default, so this one is the built-in");
-  assert.deepEqual(allStyles(store).map((s) => s.id), ["basic", "fancy", "my-fancy"]);
+  assert.deepEqual(allStyles(store).map((s) => s.id), ["basic", "fancy", "slideshow", "my-fancy"]);
 });
 
 test("a default of the built-in Fancy is left alone when no saved style had its id", () => {
@@ -390,7 +390,7 @@ test("the Editing Styles list says which Fancy graphics will fall back", async (
   const res = await app.inject("/api/styles");
   assert.equal(res.statusCode, 200);
   const { styles } = res.json();
-  assert.deepEqual(styles.map((s: any) => s.id), ["basic", "fancy"]);
+  assert.deepEqual(styles.map((s: any) => s.id), ["basic", "fancy", "slideshow"]);
   const fancy = styles.find((s: any) => s.id === "fancy");
   assert.equal(fancy.toolNote, "Blender isn't installed: 3D graphics will be made with HyperFrames or as keyword cards");
   assert.equal(fancy.name, "Fancy");
