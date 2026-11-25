@@ -406,12 +406,12 @@ The templates:
 ${catalogue}`;
 }
 
-function prompt(words: Word[], durationSec: number, need: number, problems: string[] | null): string {
+function prompt(words: Word[], durationSec: number, need: number, problems: string[] | null, context = ""): string {
   const lines = words.map((w) => `[${w.start.toFixed(2)}-${w.end.toFixed(2)}] ${w.text}`);
   const ask = `The video is ${durationSec.toFixed(1)} s long. Plan at least ${need} graphics, on screen for ${(durationSec * 0.4).toFixed(1)}–${(durationSec * 0.6).toFixed(1)} s in total.
 
 The words said, as [start-end] word, in seconds:
-${lines.join("\n")}`;
+${lines.join("\n")}${context ? `\n\nNotes from the user for this video (follow them where they apply; never contradict what is said):\n${context}` : ""}`;
   if (!problems) return ask;
   return `${ask}
 
@@ -457,7 +457,7 @@ function schema(): object {
  * The plan for a video's graphics. The AI is asked once, and once more when too few graphics survive the
  * checks; it is topped up with keyword graphics if still short. Without an AI, it's keyword graphics only.
  */
-export async function planGraphics(words: Word[], durationSec: number, opts: { ask?: <T>(q: Question) => Promise<T> } = {}): Promise<FancyPlan> {
+export async function planGraphics(words: Word[], durationSec: number, opts: { ask?: <T>(q: Question) => Promise<T>; context?: string } = {}): Promise<FancyPlan> {
   const need = minimumGraphics(durationSec);
   if (!words.length || need <= 0) return { graphics: [], emphasis: [], cover: { title: "", at: 0 }, source: "keywords", notes: [] };
   const ask = opts.ask ?? (<T>(q: Question) => askAi<T>("graphics", q));
@@ -468,7 +468,7 @@ export async function planGraphics(words: Word[], durationSec: number, opts: { a
   for (let attempt = 0; attempt < 2; attempt++) {
     let raw: unknown;
     try {
-      raw = await ask({ system: system(), prompt: prompt(words, durationSec, need, problems), schema: schema(), effort: "high" });
+      raw = await ask({ system: system(), prompt: prompt(words, durationSec, need, problems, opts.context), schema: schema(), effort: "high" });
     } catch (err) {
       failure = (err as Error).message;
       break;

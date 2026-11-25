@@ -1,7 +1,7 @@
 // Runs queued edits one at a time, beside the job runner: transcribe (cached per source file), then render.
 // Edits are slow (minutes); they never hold up posting, and a quit or crash just starts the edit over.
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { campaignTaskFor } from "../campaigns/store.ts";
 import { dataDir } from "../config.ts";
@@ -20,6 +20,7 @@ import { renderFancy } from "./fancy/render.ts";
 import { fancyTemplates } from "./fancy/templates.ts";
 import { planFaceTrack, type FaceKey } from "./reframe.ts";
 import { planSegments, renderEdit } from "./render.ts";
+import { applyExtras, extrasOf, hasMediaExtras } from "./extras.ts";
 import { isFancy } from "./settings.ts";
 import { findLyricsWithAi, spokenWords, type FindLyrics } from "./speech.ts";
 import { transcribe as whisper, type Transcript } from "./transcribe.ts";
@@ -132,6 +133,8 @@ export class EditWorker {
       const out = join(this.dir, `${edit.key}.mp4`);
       // The kept source stretches: a redo note's "0:14" in the edit maps back to the source through these.
       const cuts = join(this.dir, `${edit.key}.cuts.json`);
+      const extras = extrasOf(edit.settings, (p) => readFileSync(p, "utf8"));
+      const media = hasMediaExtras(extras);
       let durationSec: number;
       if (existsSync(out)) {
         durationSec = (await probe(out)).durationSec;
@@ -139,13 +142,25 @@ export class EditWorker {
       } else {
         log(edit, "editing");
         let last = 0;
-        let segments;
-        ({ durationSec, segments } = await renderEdit(edit.sourcePath, transcript, edit.settings, out, (f) => {
+        const progress = (f: number) => {
           if (f - last >= 0.02) { last = f; this.store.updateEdit(edit.id, { progress: f }); }
-        }));
+        };
+        let segments;
+        // With a music bed, logo or end clip the edit is rendered first, then those are added in a second pass.
+        const base = media ? join(this.dir, `${edit.key}.base.mp4`) : out;
+        ({ durationSec, segments } = await renderEdit(edit.sourcePath, transcript, edit.settings, base, (f) => progress(media ? f * 0.9 : f)));
         writeFileSync(cuts, JSON.stringify(segments));
+        if (media) {
+          try {
+            ({ durationSec } = await applyExtras(base, out, extras, { signal: this.cancel.signal, onProgress: (f) => progress(0.9 + 0.1 * f) }));
+          } finally {
+            try { unlinkSync(base); } catch {}
+          }
+        }
       }
-      this.store.updateEdit(edit.id, { state: "ready", progress: 1, outputPath: out, durationSec, error: null, cutsPath: cuts });
+      // Basic and custom styles don't write the AI's notes; say so rather than ignore text the user gave.
+      const notes = extras.context ? ["text resources are only used by Fancy and Slideshow"] : [];
+      this.store.updateEdit(edit.id, { state: "ready", progress: 1, outputPath: out, durationSec, error: null, cutsPath: cuts, notes });
       this.announceReady(edit, durationSec);
     } catch (err) {
       this.fail(edit, err);
@@ -195,9 +210,13 @@ export class EditWorker {
     const cuts = join(this.dir, `${edit.key}.cuts.json`);
     writeFileSync(cuts, JSON.stringify(segments));
 
+    const extras = extrasOf(s, (p) => readFileSync(p, "utf8"));
+    const media = hasMediaExtras(extras);
     log(edit, "planning graphics");
-    const planPath = join(this.dir, `${edit.sha256}-${shortHash([segments, words])}-${catalogueHash()}-v${PLAN_VERSION}.fancy-plan.json`);
-    const plan = await cachedPlan(planPath, () => planGraphics(words, editedSec, { ask: this.fancy.ask }));
+    // Notes from the user change what the AI plans, so they are part of the plan's cache name.
+    const withContext = extras.context ? `-${shortHash(extras.context)}` : "";
+    const planPath = join(this.dir, `${edit.sha256}-${shortHash([segments, words])}-${catalogueHash()}${withContext}-v${PLAN_VERSION}.fancy-plan.json`);
+    const plan = await cachedPlan(planPath, () => planGraphics(words, editedSec, { ask: this.fancy.ask, context: extras.context }));
     progress(0.1);
 
     log(edit, "rendering graphics");
@@ -231,10 +250,19 @@ export class EditWorker {
 
     log(edit, "editing");
     const out = join(this.dir, `${edit.key}.mp4`);
-    const { durationSec } = await renderFancy(edit.sourcePath, {
-      segments, beats, clips: graphics.clips, faces, captionWords: s.captions ? words : null, settings: s, outPath: out, signal,
-      onProgress: (f) => progress(0.6 + 0.4 * f),
+    const base = media ? join(this.dir, `${edit.key}.base.mp4`) : out;
+    const scale = media ? 0.3 : 0.4; // the extras pass takes the last 0.1
+    let { durationSec } = await renderFancy(edit.sourcePath, {
+      segments, beats, clips: graphics.clips, faces, captionWords: s.captions ? words : null, settings: s, outPath: base, signal,
+      onProgress: (f) => progress(0.6 + scale * f),
     });
+    if (media) {
+      try {
+        ({ durationSec } = await applyExtras(base, out, extras, { signal, onProgress: (f) => progress(0.9 + 0.1 * f) }));
+      } finally {
+        try { unlinkSync(base); } catch {}
+      }
+    }
 
     let cover: Edit["cover"] = null;
     try {
